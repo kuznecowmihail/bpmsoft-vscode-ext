@@ -1,0 +1,5 @@
+{
+    "editor.wordBasedSuggestions": "off",
+    "editor.suggestSelection": "first",
+    "javascript.suggest.names": false
+}
