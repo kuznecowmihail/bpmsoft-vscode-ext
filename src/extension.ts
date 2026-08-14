@@ -24,7 +24,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		vscode.languages.registerCompletionItemProvider(
 			jsSelector,
 			completionProvider,
-			"."
+			".",
+			"$",
+			"\"",
+			"'",
+			"("
 		),
 		vscode.languages.registerCompletionItemProvider(
 			jsSelector,
@@ -61,6 +65,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				context.subscriptions.push(watcher);
 			}
 		}
+		for (const layout of resolveAppLayouts(folders.map((f) => f.uri.fsPath))) {
+			if (!layout.confContent) {
+				continue;
+			}
+			const confWatcher = vscode.workspace.createFileSystemWatcher(
+				new vscode.RelativePattern(layout.confContent, "*.js")
+			);
+			const invalidate = (uri: vscode.Uri) => index.invalidateEntity(uri.fsPath);
+			confWatcher.onDidCreate(invalidate);
+			confWatcher.onDidChange(invalidate);
+			confWatcher.onDidDelete(invalidate);
+			context.subscriptions.push(confWatcher);
+		}
 	}
 
 	await rebuildWithProgress();
@@ -89,6 +106,11 @@ async function preferIndexedCompletions(): Promise<void> {
 		await jsEditor.update(
 			"suggestSelection",
 			"first",
+			vscode.ConfigurationTarget.Workspace
+		);
+		await jsEditor.update(
+			"quickSuggestions",
+			{ other: true, comments: false, strings: true },
 			vscode.ConfigurationTarget.Workspace
 		);
 

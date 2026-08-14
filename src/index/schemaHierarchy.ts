@@ -82,6 +82,19 @@ export class SchemaHierarchyResolver {
 		return this.configurationRoots.length > 0 || this.confContentDirs.length > 0;
 	}
 
+	resolveEntitySchemaPath(entityName: string): string | undefined {
+		if (!entityName || !/^[A-Za-z_][\w]*$/.test(entityName)) {
+			return undefined;
+		}
+		for (const dir of this.confContentDirs) {
+			const filePath = path.join(dir, `${entityName}.js`);
+			if (fs.existsSync(filePath)) {
+				return filePath;
+			}
+		}
+		return undefined;
+	}
+
 	parseStructure(schemaName: string): SchemaStructure | null {
 		const cached = this.structureCache.get(schemaName);
 		if (cached !== undefined) {

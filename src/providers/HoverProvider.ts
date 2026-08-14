@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { getIdentifierAt, getMemberAccessPrefix } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext } from "../parse/amdParser";
 
 export class BpmsoftHoverProvider implements vscode.HoverProvider {
 	constructor(private readonly index: SymbolIndex) {}
@@ -11,9 +11,42 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 	): vscode.Hover | undefined {
 		const text = document.getText();
 		const offset = document.offsetAt(position);
+		const getSet = getThisGetSetContext(text, offset);
+		if (getSet?.name) {
+			const members = this.index.resolveThisMembers(document.uri.fsPath);
+			const m = members.find(
+				(x) => x.name === getSet.name && x.kind === "attribute"
+			);
+			if (m) {
+				const lines = [
+					`**this.${getSet.method}("${m.name}")** *(attribute)*`,
+					...(m.detail ? [m.detail] : []),
+					...(m.documentation ? ["", m.documentation] : [])
+				];
+				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
+			}
+		}
+
 		const ident = getIdentifierAt(text, offset);
 		if (!ident) {
 			return undefined;
+		}
+
+		const lookupAccess = getThisLookupAccessContext(text, offset);
+		if (lookupAccess) {
+			const members = this.index.resolveThisMembers(document.uri.fsPath);
+			const attr = members.find(
+				(x) => x.name === lookupAccess.attrName && x.kind === "attribute"
+			);
+			const field = attr?.children?.find((c) => c.name === ident.name);
+			if (attr && field) {
+				const lines = [
+					`**${field.name}** *(${attr.name} lookup/enum)*`,
+					...(field.documentation ? ["", field.documentation] : []),
+					...(attr.documentation ? ["", attr.documentation] : [])
+				];
+				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
+			}
 		}
 
 		const left = getMemberAccessPrefix(text, ident.start);
@@ -21,9 +54,15 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 
 		if (left === "this" || left?.startsWith("this")) {
 			const members = this.index.resolveThisMembers(document.uri.fsPath);
-			const m = members.find((x) => x.name === ident.name);
+			const dollar = ident.name.startsWith("$") && ident.name.length > 1;
+			const lookup = dollar ? ident.name.slice(1) : ident.name;
+			const m = dollar
+				? members.find((x) => x.name === lookup && x.kind === "attribute")
+				: members.find((x) => x.name === ident.name);
 			if (m) {
-				lines.push(`**${m.name}** *(${m.kind})*`);
+				const title =
+					m.kind === "attribute" ? `**$${m.name}** *(attribute)*` : `**${m.name}** *(${m.kind})*`;
+				lines.push(title);
 				if (m.detail) {
 					lines.push(m.detail);
 				}

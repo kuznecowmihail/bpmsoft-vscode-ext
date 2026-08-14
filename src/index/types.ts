@@ -1,4 +1,10 @@
-export type MemberKind = "method" | "const" | "enum" | "property" | "namespace";
+export type MemberKind =
+	| "method"
+	| "const"
+	| "enum"
+	| "property"
+	| "namespace"
+	| "attribute";
 
 export interface SourcePosition {
 	line: number;
@@ -12,6 +18,12 @@ export interface IndexedMember {
 	documentation?: string;
 	/** 0-based line/character in the owning file */
 	position?: SourcePosition;
+	/** Nested fields, e.g. lookup/enum value + displayValue */
+	children?: IndexedMember[];
+}
+
+export function memberDedupeKey(member: IndexedMember): string {
+	return member.kind === "attribute" ? `$${member.name}` : member.name;
 }
 
 export interface IndexedModule {
@@ -32,6 +44,8 @@ export interface IndexedModule {
 	override?: string;
 	/** Ext extend: "BPMSoft.controls.Component" */
 	extend?: string;
+	/** Client schema entity, e.g. Account → conf/content/Account.js columns */
+	entitySchemaName?: string;
 }
 
 export interface PlatformStubMember {

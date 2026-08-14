@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { getIdentifierAt, getMemberAccessPrefix } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext } from "../parse/amdParser";
 
 export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 	constructor(private readonly index: SymbolIndex) {}
@@ -11,12 +11,64 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 	): vscode.Definition | undefined {
 		const text = document.getText();
 		const offset = document.offsetAt(position);
+		const locations: vscode.Location[] = [];
+		const getSet = getThisGetSetContext(text, offset);
+		if (getSet?.name) {
+			for (const hit of this.index.findThisMemberLocations(
+				document.uri.fsPath,
+				getSet.name,
+				"attribute"
+			)) {
+				if (!hit.member.position) {
+					continue;
+				}
+				locations.push(
+					new vscode.Location(
+						vscode.Uri.file(hit.module.filePath),
+						new vscode.Position(
+							hit.member.position.line,
+							hit.member.position.character
+						)
+					)
+				);
+			}
+			if (locations.length) {
+				return locations;
+			}
+		}
+
 		const ident = getIdentifierAt(text, offset);
 		if (!ident) {
 			return undefined;
 		}
+		const lookupAccess = getThisLookupAccessContext(text, offset);
+		if (
+			lookupAccess &&
+			(ident.name === "value" || ident.name === "displayValue")
+		) {
+			for (const hit of this.index.findThisMemberLocations(
+				document.uri.fsPath,
+				lookupAccess.attrName,
+				"attribute"
+			)) {
+				if (!hit.member.position) {
+					continue;
+				}
+				locations.push(
+					new vscode.Location(
+						vscode.Uri.file(hit.module.filePath),
+						new vscode.Position(
+							hit.member.position.line,
+							hit.member.position.character
+						)
+					)
+				);
+			}
+			if (locations.length) {
+				return locations;
+			}
+		}
 
-		const locations: vscode.Location[] = [];
 		const leftExpr = getMemberAccessPrefix(text, ident.start);
 
 		if (leftExpr === "this" || leftExpr?.startsWith("this")) {
@@ -73,7 +125,7 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 		if (!locations.length) {
 			const line = document.lineAt(position.line).text;
 			const before = line.slice(0, position.character);
-			if (/\bthis\.\w*$/.test(before)) {
+			if (/\bthis\.[\w$]*$/.test(before)) {
 				for (const hit of this.index.findThisMemberLocations(
 					document.uri.fsPath,
 					ident.name

@@ -4,7 +4,8 @@ import {
 	IndexedMember,
 	IndexedModule,
 	MemberKind,
-	SourcePosition
+	SourcePosition,
+	memberDedupeKey
 } from "../index/types";
 
 type AnyNode = acorn.Node & Record<string, any>;
@@ -161,6 +162,21 @@ function stringProp(obj: AnyNode, key: string): string | undefined {
 	return undefined;
 }
 
+const EXT_DEFINE_META_KEYS = new Set([
+	"extend",
+	"override",
+	"mixins",
+	"alternateClassName",
+	"statics",
+	"inheritableStatics",
+	"requires",
+	"uses",
+	"alias",
+	"xtype",
+	"singleton",
+	"columns"
+]);
+
 /**
  * Apply Ext.define(className, { ... }) onto an IndexedModule.
  */
@@ -193,30 +209,21 @@ function applyExtDefine(
 
 	for (const prop of classBody.properties as AnyNode[]) {
 		const n = propName(prop);
-		if (
-			!n ||
-			n === "extend" ||
-			n === "override" ||
-			n === "mixins" ||
-			n === "alternateClassName" ||
-			n === "statics" ||
-			n === "inheritableStatics" ||
-			n.startsWith("_")
-		) {
+		if (!n || n.startsWith("_") || EXT_DEFINE_META_KEYS.has(n)) {
 			continue;
 		}
 		const value = prop.value as AnyNode;
-		if (
+		const isMethod =
 			value?.type === "FunctionExpression" ||
-			value?.type === "ArrowFunctionExpression"
-		) {
-			module.members.push({
-				name: n,
-				kind: "method",
-				documentation: getLeadingComment(comments, prop),
-				position: posFromNode(prop.key ?? prop)
-			});
-		}
+			value?.type === "ArrowFunctionExpression";
+		module.members.push({
+			name: n,
+			kind: isMethod ? "method" : "property",
+			documentation:
+				getLeadingComment(comments, prop) ||
+				(isMethod ? undefined : literalPreview(value)),
+			position: posFromNode(prop.key ?? prop)
+		});
 	}
 
 	if (className && !module.alternateClassName && !module.override) {
@@ -256,16 +263,192 @@ function extDefineParts(node: AnyNode): {
 	return { className, classBody };
 }
 
-function findMethodsObject(returnObj: AnyNode): AnyNode | undefined {
+function findSchemaSection(returnObj: AnyNode, key: string): AnyNode | undefined {
 	if (!returnObj || returnObj.type !== "ObjectExpression") {
 		return undefined;
 	}
 	for (const prop of returnObj.properties as AnyNode[]) {
-		if (propName(prop) === "methods") {
+		if (propName(prop) === key) {
 			return prop.value as AnyNode;
 		}
 	}
 	return undefined;
+}
+
+function literalPreview(value: AnyNode | undefined): string | undefined {
+	if (!value || value.type !== "Literal") {
+		return undefined;
+	}
+	if (typeof value.value === "string") {
+		return `"${value.value}"`;
+	}
+	if (
+		typeof value.value === "number" ||
+		typeof value.value === "boolean" ||
+		value.value === null
+	) {
+		return String(value.value);
+	}
+	return undefined;
+}
+
+function collectSchemaProperties(
+	obj: AnyNode,
+	comments: acorn.Comment[]
+): IndexedMember[] {
+	const members: IndexedMember[] = [];
+	if (!obj || obj.type !== "ObjectExpression") {
+		return members;
+	}
+	for (const prop of obj.properties as AnyNode[]) {
+		const name = propName(prop);
+		if (!name || name.startsWith("_")) {
+			continue;
+		}
+		const value = prop.value as AnyNode;
+		members.push({
+			name,
+			kind: inferMemberKind(value) === "method" ? "method" : "property",
+			documentation: getLeadingComment(comments, prop) || literalPreview(value),
+			position: posFromNode(prop.key ?? prop)
+		});
+	}
+	return members;
+}
+
+function exprPreview(node: AnyNode | undefined, depth = 0): string | undefined {
+	if (!node || depth > 6) {
+		return undefined;
+	}
+	if (node.type === "Literal") {
+		return literalPreview(node);
+	}
+	if (node.type === "Identifier") {
+		return node.name as string;
+	}
+	if (node.type === "MemberExpression" && !node.computed) {
+		const obj = exprPreview(node.object as AnyNode, depth + 1);
+		const prop = (node.property as AnyNode)?.name as string | undefined;
+		if (obj && prop) {
+			return `${obj}.${prop}`;
+		}
+	}
+	return undefined;
+}
+
+function attributeDataValueType(value: AnyNode | undefined): string | undefined {
+	if (!value || value.type !== "ObjectExpression") {
+		return undefined;
+	}
+	for (const p of value.properties as AnyNode[]) {
+		if (propName(p) === "dataValueType") {
+			return exprPreview(p.value as AnyNode);
+		}
+	}
+	return undefined;
+}
+
+function isLookupOrEnumDataValueType(preview: string | undefined): boolean {
+	if (!preview) {
+		return false;
+	}
+	const leaf = (preview.split(".").pop() || preview).replace(/^["']|["']$/g, "");
+	return leaf === "LOOKUP" || leaf === "ENUM" || leaf === "10" || leaf === "11";
+}
+
+function isLookupFlag(value: AnyNode | undefined): boolean {
+	if (!value || value.type !== "ObjectExpression") {
+		return false;
+	}
+	for (const p of value.properties as AnyNode[]) {
+		if (propName(p) !== "isLookup") {
+			continue;
+		}
+		const v = p.value as AnyNode;
+		return v?.type === "Literal" && v.value === true;
+	}
+	return false;
+}
+
+function attributeHasLookupFields(value: AnyNode | undefined): boolean {
+	return (
+		isLookupOrEnumDataValueType(attributeDataValueType(value)) ||
+		isLookupFlag(value)
+	);
+}
+
+function lookupEnumFieldMembers(): IndexedMember[] {
+	return [
+		{
+			name: "value",
+			kind: "property",
+			detail: "lookup/enum",
+			documentation: "Идентификатор / код значения"
+		},
+		{
+			name: "displayValue",
+			kind: "property",
+			detail: "lookup/enum",
+			documentation: "Отображаемое значение"
+		}
+	];
+}
+
+function attributeDocumentation(
+	value: AnyNode | undefined,
+	comments: acorn.Comment[],
+	prop: AnyNode
+): string | undefined {
+	const comment = getLeadingComment(comments, prop);
+	const bits: string[] = [];
+	if (value?.type === "ObjectExpression") {
+		for (const key of ["dataValueType", "type", "value", "referenceSchemaName", "isRequired"]) {
+			for (const p of value.properties as AnyNode[]) {
+				if (propName(p) !== key) {
+					continue;
+				}
+				const preview = exprPreview(p.value as AnyNode);
+				if (preview) {
+					bits.push(`${key}: ${preview}`);
+				}
+			}
+		}
+	}
+	if (attributeHasLookupFields(value)) {
+		bits.push("fields: value, displayValue");
+	}
+	const meta = bits.join("\n");
+	if (comment && meta) {
+		return `${comment}\n\n${meta}`;
+	}
+	return comment || meta || undefined;
+}
+
+function collectSchemaAttributes(
+	obj: AnyNode,
+	comments: acorn.Comment[]
+): IndexedMember[] {
+	const members: IndexedMember[] = [];
+	if (!obj || obj.type !== "ObjectExpression") {
+		return members;
+	}
+	for (const prop of obj.properties as AnyNode[]) {
+		const name = propName(prop);
+		if (!name || name.startsWith("_")) {
+			continue;
+		}
+		const value = prop.value as AnyNode;
+		members.push({
+			name,
+			kind: "attribute",
+			documentation: attributeDocumentation(value, comments, prop),
+			position: posFromNode(prop.key ?? prop),
+			children: attributeHasLookupFields(value)
+				? lookupEnumFieldMembers()
+				: undefined
+		});
+	}
+	return members;
 }
 
 function isSchemaReturn(obj: AnyNode): boolean {
@@ -279,6 +462,7 @@ function isSchemaReturn(obj: AnyNode): boolean {
 	);
 	return (
 		names.has("methods") ||
+		names.has("properties") ||
 		names.has("attributes") ||
 		names.has("entitySchemaName") ||
 		names.has("diff") ||
@@ -382,7 +566,11 @@ function parseDefineCall(
 		if (isSchemaReturn(returnArg)) {
 			module.kind = module.kind === "mixin" || module.kind === "class" ? module.kind : "page";
 			Object.assign(module.mixins, extractMixins(returnArg));
-			const methodsObj = findMethodsObject(returnArg);
+			const entityName = stringProp(returnArg, "entitySchemaName");
+			if (entityName) {
+				module.entitySchemaName = entityName;
+			}
+			const methodsObj = findSchemaSection(returnArg, "methods");
 			if (methodsObj) {
 				module.members.push(
 					...collectObjectMembers(methodsObj, comments, (_n, v) => {
@@ -393,19 +581,32 @@ function parseDefineCall(
 					})
 				);
 			}
+			const propertiesObj = findSchemaSection(returnArg, "properties");
+			if (propertiesObj) {
+				module.members.push(
+					...collectSchemaProperties(propertiesObj, comments)
+				);
+			}
+			const attributesObj = findSchemaSection(returnArg, "attributes");
+			if (attributesObj) {
+				module.members.push(
+					...collectSchemaAttributes(attributesObj, comments)
+				);
+			}
 		} else if (!module.members.length) {
 			module.kind = "constants";
 			module.members.push(...collectObjectMembers(returnArg, comments));
 		}
 	}
 
-	// de-dupe members by name
+	// de-dupe members by name (attributes keep a parallel $Name slot)
 	const seen = new Set<string>();
 	module.members = module.members.filter((m) => {
-		if (seen.has(m.name)) {
+		const key = memberDedupeKey(m);
+		if (seen.has(key)) {
 			return false;
 		}
-		seen.add(m.name);
+		seen.add(key);
 		return true;
 	});
 
@@ -483,10 +684,11 @@ export function parseAmdModule(
 			applyExtDefine(module, className, classBody, comments);
 			const seen = new Set<string>();
 			module.members = module.members.filter((m) => {
-				if (seen.has(m.name)) {
+				const key = memberDedupeKey(m);
+				if (seen.has(key)) {
 					return false;
 				}
-				seen.add(m.name);
+				seen.add(key);
 				return true;
 			});
 			found = module;
@@ -494,6 +696,70 @@ export function parseAmdModule(
 	} as any);
 
 	return found;
+}
+
+function parseScript(
+	source: string
+): { ast: AnyNode; comments: acorn.Comment[] } | undefined {
+	const comments: acorn.Comment[] = [];
+	const text = source.replace(/^\uFEFF/, "");
+	try {
+		return {
+			ast: acorn.parse(text, {
+				ecmaVersion: "latest",
+				sourceType: "script",
+				locations: true,
+				allowReturnOutsideFunction: true,
+				onComment: comments
+			}) as AnyNode,
+			comments
+		};
+	} catch {
+		try {
+			return {
+				ast: acorn.parse(text, {
+					ecmaVersion: 2020,
+					sourceType: "script",
+					locations: true,
+					allowReturnOutsideFunction: true,
+					onComment: comments
+				}) as AnyNode,
+				comments
+			};
+		} catch {
+			return undefined;
+		}
+	}
+}
+
+/**
+ * Columns from conf/content/{Entity}.js (Ext.define … columns: { Name: { dataValueType } }).
+ */
+export function parseEntityColumns(
+	source: string,
+	filePath: string
+): IndexedMember[] {
+	const parsed = parseScript(source);
+	if (!parsed) {
+		return [];
+	}
+	let columns: IndexedMember[] = [];
+	walk.simple(parsed.ast, {
+		CallExpression(node: AnyNode) {
+			if (columns.length || !isExtDefineCall(node)) {
+				return;
+			}
+			const { classBody } = extDefineParts(node);
+			if (!classBody) {
+				return;
+			}
+			const columnsObj = findSchemaSection(classBody, "columns");
+			if (columnsObj) {
+				columns = collectSchemaAttributes(columnsObj, parsed.comments);
+			}
+		}
+	} as any);
+	return columns;
 }
 
 /**
@@ -549,4 +815,157 @@ export function getIdentifierAt(
 		return undefined;
 	}
 	return { name: documentText.slice(start, end), start, end };
+}
+
+export interface ThisGetSetContext {
+	method: "get" | "set";
+	quote: '"' | "'" | undefined;
+	name: string;
+	nameStart: number;
+	nameEnd: number;
+}
+
+/**
+ * Cursor inside this.get("…") / this.set("…", …) first argument.
+ */
+export function getThisGetSetContext(
+	documentText: string,
+	offset: number
+): ThisGetSetContext | undefined {
+	const before = documentText.slice(Math.max(0, offset - 300), offset);
+	const m = before.match(
+		/\bthis\s*\.\s*(get|set)\s*\(\s*(?:(["'])([\w$]*))?$/
+	);
+	if (!m) {
+		return undefined;
+	}
+	const method = m[1] as "get" | "set";
+	const quote = m[2] as '"' | "'" | undefined;
+	const typed = m[3] || "";
+	if (!quote) {
+		return {
+			method,
+			quote: undefined,
+			name: "",
+			nameStart: offset,
+			nameEnd: offset
+		};
+	}
+	let nameEnd = offset;
+	while (
+		nameEnd < documentText.length &&
+		/[\w$]/.test(documentText[nameEnd])
+	) {
+		nameEnd++;
+	}
+	return {
+		method,
+		quote,
+		name: typed + documentText.slice(offset, nameEnd),
+		nameStart: offset - typed.length,
+		nameEnd
+	};
+}
+
+function skipWsBack(text: string, i: number): number {
+	while (i >= 0 && /\s/.test(text[i])) {
+		i--;
+	}
+	return i;
+}
+
+function readIdentBack(
+	text: string,
+	i: number
+): { i: number; name: string } | undefined {
+	if (i < 0 || !/[A-Za-z0-9_$]/.test(text[i])) {
+		return undefined;
+	}
+	const end = i + 1;
+	while (i >= 0 && /[A-Za-z0-9_$]/.test(text[i])) {
+		i--;
+	}
+	return { i, name: text.slice(i + 1, end) };
+}
+
+export interface ThisLookupAccessContext {
+	attrName: string;
+}
+
+/**
+ * Cursor after this.$Attr. or this.get("Attr"). — lookup/enum nested fields.
+ * Also accepts this.get("Attr". (dot before the auto-closed ')').
+ */
+export function getThisLookupAccessContext(
+	documentText: string,
+	offset: number
+): ThisLookupAccessContext | undefined {
+	let i = skipWsBack(documentText, offset - 1);
+	if (i >= 0 && /[A-Za-z0-9_$]/.test(documentText[i])) {
+		const field = readIdentBack(documentText, i);
+		if (!field) {
+			return undefined;
+		}
+		i = skipWsBack(documentText, field.i);
+	}
+	if (i < 0 || documentText[i] !== ".") {
+		return undefined;
+	}
+	i = skipWsBack(documentText, i - 1);
+	if (i >= 0 && documentText[i] === "?") {
+		i = skipWsBack(documentText, i - 1);
+	}
+	if (i >= 0 && documentText[i] === ")") {
+		i = skipWsBack(documentText, i - 1);
+	}
+	if (i >= 0 && (documentText[i] === '"' || documentText[i] === "'")) {
+		const quote = documentText[i];
+		i--;
+		const nameEnd = i + 1;
+		while (
+			i >= 0 &&
+			documentText[i] !== quote &&
+			/[A-Za-z0-9_$]/.test(documentText[i])
+		) {
+			i--;
+		}
+		const attrName = documentText.slice(i + 1, nameEnd);
+		if (!attrName || documentText[i] !== quote) {
+			return undefined;
+		}
+		i = skipWsBack(documentText, i - 1);
+		if (i < 0 || documentText[i] !== "(") {
+			return undefined;
+		}
+		i = skipWsBack(documentText, i - 1);
+		const meth = readIdentBack(documentText, i);
+		if (!meth || meth.name !== "get") {
+			return undefined;
+		}
+		i = skipWsBack(documentText, meth.i);
+		if (i < 0 || documentText[i] !== ".") {
+			return undefined;
+		}
+		i = skipWsBack(documentText, i - 1);
+		const obj = readIdentBack(documentText, i);
+		if (!obj || obj.name !== "this") {
+			return undefined;
+		}
+		return { attrName };
+	}
+
+	const attr = readIdentBack(documentText, i);
+	if (!attr?.name.startsWith("$") || attr.name.length < 2) {
+		return undefined;
+	}
+	i = skipWsBack(documentText, attr.i);
+	if (i < 0 || documentText[i] !== ".") {
+		return undefined;
+	}
+	i = skipWsBack(documentText, i - 1);
+	const obj = readIdentBack(documentText, i);
+	if (!obj || obj.name !== "this") {
+		return undefined;
+	}
+	return { attrName: attr.name.slice(1) };
 }

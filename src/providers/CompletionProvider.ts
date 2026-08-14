@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind } from "../index/types";
-import { getMemberAccessPrefix } from "../parse/amdParser";
+import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext } from "../parse/amdParser";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -33,6 +33,8 @@ function kindToCompletion(
 			return vscode.CompletionItemKind.Module;
 		case "const":
 			return vscode.CompletionItemKind.Constant;
+		case "attribute":
+			return vscode.CompletionItemKind.Field;
 		default:
 			return vscode.CompletionItemKind.Property;
 	}
@@ -40,19 +42,58 @@ function kindToCompletion(
 
 function toItems(members: IndexedMember[]): vscode.CompletionItem[] {
 	return members.map((m, i) => {
-		const item = new vscode.CompletionItem(m.name, kindToCompletion(m.kind));
+		const isAttr = m.kind === "attribute";
+		const label = isAttr ? `$${m.name}` : m.name;
+		const item = new vscode.CompletionItem(label, kindToCompletion(m.kind));
 		item.detail = `BPMSoft · ${m.detail || m.kind}`;
 		item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
-		item.filterText = m.name;
+		item.filterText = isAttr ? `$${m.name} ${m.name}` : m.name;
 		item.preselect = i === 0;
 		if (m.documentation) {
 			item.documentation = new vscode.MarkdownString(m.documentation);
 		}
 		if (m.kind === "method") {
 			item.insertText = new vscode.SnippetString(`${m.name}($0)`);
+		} else if (isAttr) {
+			item.insertText = `$${m.name}`;
 		}
 		return item;
 	});
+}
+
+function toGetSetItems(
+	members: IndexedMember[],
+	ctx: { method: "get" | "set"; quote?: string; nameStart: number; nameEnd: number },
+	document: vscode.TextDocument
+): vscode.CompletionItem[] {
+	return members
+		.filter((m) => m.kind === "attribute")
+		.map((m, i) => {
+			const item = new vscode.CompletionItem(
+				m.name,
+				vscode.CompletionItemKind.Field
+			);
+			item.detail = `BPMSoft · attribute`;
+			item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
+			item.filterText = m.name;
+			item.preselect = i === 0;
+			if (m.documentation) {
+				item.documentation = new vscode.MarkdownString(m.documentation);
+			}
+			if (!ctx.quote) {
+				item.insertText =
+					ctx.method === "set"
+						? new vscode.SnippetString(`"${m.name}", $0`)
+						: `"${m.name}"`;
+			} else {
+				item.insertText = m.name;
+				item.range = new vscode.Range(
+					document.positionAt(ctx.nameStart),
+					document.positionAt(ctx.nameEnd)
+				);
+			}
+			return item;
+		});
 }
 
 function asList(items: vscode.CompletionItem[]): vscode.CompletionList | undefined {
@@ -100,8 +141,30 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 			.lineAt(position.line)
 			.text.slice(0, position.character);
 
-		// Member access: BPMSoft. / this. / Module.
-		if (/\.\w*$/.test(linePrefix)) {
+		const lookupAccess = getThisLookupAccessContext(text, offset);
+		if (lookupAccess) {
+			const attr = this.index
+				.resolveThisMembers(document.uri.fsPath)
+				.find(
+					(m) =>
+						m.name === lookupAccess.attrName && m.kind === "attribute"
+				);
+			return asList(toItems(attr?.children || []));
+		}
+
+		const getSet = getThisGetSetContext(text, offset);
+		if (getSet) {
+			return asList(
+				toGetSetItems(
+					this.index.resolveThisMembers(document.uri.fsPath),
+					getSet,
+					document
+				)
+			);
+		}
+
+		// Member access: BPMSoft. / this. / Module. / this.$
+		if (/\.[\w$]*$/.test(linePrefix)) {
 			return this.memberCompletions(
 				document,
 				offset,
@@ -127,7 +190,7 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 		linePrefix: string,
 		enableStubs: boolean
 	): vscode.CompletionList | undefined {
-		const dotMatch = linePrefix.match(/([A-Za-z_$][\w.$]*)\.\w*$/);
+		const dotMatch = linePrefix.match(/([A-Za-z_$][\w.$]*)\.[\w$]*$/);
 		const rawPrefix =
 			dotMatch?.[1] || getMemberAccessPrefix(text, offset);
 		if (!rawPrefix) {

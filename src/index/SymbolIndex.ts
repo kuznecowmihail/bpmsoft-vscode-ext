@@ -1,7 +1,7 @@
 import * as fs from "fs";
-import { IndexedMember, IndexedModule, PlatformStubMember } from "./types";
+import { IndexedMember, IndexedModule, PlatformStubMember, memberDedupeKey } from "./types";
 import { SchemaHierarchyResolver } from "./schemaHierarchy";
-import { parseAmdModule } from "../parse/amdParser";
+import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
 
 function packageLabel(filePath: string): string {
 	const norm = filePath.replace(/\\/g, "/");
@@ -38,6 +38,7 @@ export class SymbolIndex {
 	private alternateToModules = new Map<string, IndexedModule[]>();
 	private platformRoot: PlatformStubMember[] = [];
 	private extRoot: PlatformStubMember[] = [];
+	private entityCache = new Map<string, IndexedModule | null>();
 	readonly hierarchy = new SchemaHierarchyResolver();
 
 	setPlatformStubs(members: PlatformStubMember[]): void {
@@ -50,12 +51,22 @@ export class SymbolIndex {
 
 	setWorkspaceRoots(roots: string[]): void {
 		this.hierarchy.setWorkspaceRoots(roots);
+		this.entityCache.clear();
 	}
 
 	clearModules(): void {
 		this.modulesByName.clear();
 		this.modulesByPath.clear();
 		this.alternateToModules.clear();
+		this.entityCache.clear();
+	}
+
+	invalidateEntity(filePath: string): void {
+		const base = filePath.replace(/\\/g, "/").split("/").pop() || "";
+		const name = base.replace(/\.js$/i, "");
+		if (name) {
+			this.entityCache.delete(name);
+		}
 	}
 
 	upsertModule(mod: IndexedModule): void {
@@ -367,14 +378,16 @@ export class SymbolIndex {
 			: [mod, ...this.collectInheritanceChain(mod)];
 
 		const result = this.mergeMembers(chainMods, true);
-		const seen = new Set(result.map((m) => m.name));
+		const seen = new Set(result.map((m) => memberDedupeKey(m)));
 		this.appendMixinMembers(chainMods, result, seen);
+		this.appendEntityColumns(chainMods, result, seen);
 		return result;
 	}
 
 	findThisMemberLocations(
 		filePath: string,
-		memberName: string
+		memberName: string,
+		kind?: IndexedMember["kind"]
 	): Array<{ module: IndexedModule; member: IndexedMember }> {
 		const mod = this.getByPath(filePath) || this.ensureModule(filePath);
 		if (!mod) {
@@ -382,14 +395,25 @@ export class SymbolIndex {
 		}
 		const hits: Array<{ module: IndexedModule; member: IndexedMember }> = [];
 		const seenPaths = new Set<string>();
+		const dollar = memberName.startsWith("$") && memberName.length > 1;
+		const lookupName = dollar ? memberName.slice(1) : memberName;
+		const requiredKind = kind || (dollar ? "attribute" : undefined);
 
 		const consider = (m: IndexedModule) => {
 			if (seenPaths.has(m.filePath)) {
 				return;
 			}
 			seenPaths.add(m.filePath);
-			const member = m.members.find((x) => x.name === memberName);
-			if (member?.position) {
+			for (const member of m.members) {
+				if (member.name !== lookupName) {
+					continue;
+				}
+				if (requiredKind && member.kind !== requiredKind) {
+					continue;
+				}
+				if (!member.position) {
+					continue;
+				}
 				hits.push({ module: m, member });
 			}
 		};
@@ -415,6 +439,11 @@ export class SymbolIndex {
 			)) {
 				consider(mixinMod);
 			}
+		}
+
+		const entityMod = this.getEntityModuleForChain(chainMods);
+		if (entityMod) {
+			consider(entityMod);
 		}
 		return hits;
 	}
@@ -469,10 +498,11 @@ export class SymbolIndex {
 			}
 			for (const mixinMod of uniqueMixins.values()) {
 				for (const member of mixinMod.members) {
-					if (seen.has(member.name)) {
+					const key = memberDedupeKey(member);
+					if (seen.has(key)) {
 						continue;
 					}
-					seen.add(member.name);
+					seen.add(key);
 					result.push({
 						...member,
 						detail:
@@ -481,6 +511,70 @@ export class SymbolIndex {
 					});
 				}
 			}
+		}
+	}
+
+	private appendEntityColumns(
+		owners: IndexedModule[],
+		result: IndexedMember[],
+		seen: Set<string>
+	): void {
+		const entityMod = this.getEntityModuleForChain(owners);
+		if (!entityMod) {
+			return;
+		}
+		for (const member of entityMod.members) {
+			const key = memberDedupeKey(member);
+			if (seen.has(key)) {
+				continue;
+			}
+			seen.add(key);
+			result.push({
+				...member,
+				detail: member.detail || `entity ${entityMod.name}`
+			});
+		}
+	}
+
+	private getEntityModuleForChain(
+		owners: IndexedModule[]
+	): IndexedModule | undefined {
+		const entityName = owners
+			.map((m) => m.entitySchemaName)
+			.find((name): name is string => Boolean(name));
+		if (!entityName) {
+			return undefined;
+		}
+		return this.getEntityModule(entityName);
+	}
+
+	private getEntityModule(entityName: string): IndexedModule | undefined {
+		if (this.entityCache.has(entityName)) {
+			return this.entityCache.get(entityName) || undefined;
+		}
+		const filePath = this.hierarchy.resolveEntitySchemaPath(entityName);
+		if (!filePath) {
+			this.entityCache.set(entityName, null);
+			return undefined;
+		}
+		try {
+			const source = fs.readFileSync(filePath, "utf8");
+			const members = parseEntityColumns(source, filePath);
+			const mod: IndexedModule = {
+				name: entityName,
+				filePath,
+				kind: "unknown",
+				dependencies: [],
+				paramNames: [],
+				members,
+				mixins: {},
+				entitySchemaName: entityName
+			};
+			this.entityCache.set(entityName, mod);
+			return mod;
+		} catch {
+			this.entityCache.set(entityName, null);
+			return undefined;
 		}
 	}
 
@@ -511,10 +605,11 @@ export class SymbolIndex {
 		for (const mod of mods) {
 			const label = packageLabel(mod.filePath);
 			for (const member of mod.members) {
-				if (seen.has(member.name)) {
+				const key = memberDedupeKey(member);
+				if (seen.has(key)) {
 					continue;
 				}
-				seen.add(member.name);
+				seen.add(key);
 				result.push(
 					annotateSource
 						? {

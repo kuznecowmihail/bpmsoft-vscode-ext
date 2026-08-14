@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule } = require("../out/parse/amdParser");
+const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext } = require("../out/parse/amdParser");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
 const { buildPlatformStubs } = require("../out/stubs/platformGlobals");
 const { buildExtStubs } = require("../out/stubs/extGlobals");
@@ -252,6 +252,18 @@ if (thisMembers.length < 50) {
 	console.error("Expected rich this. members from hierarchy");
 	failed = true;
 }
+const leadIndustryCol = thisMembers.find((m) => m.name === "Industry" && m.kind === "attribute");
+const leadTitleCol = thisMembers.find((m) => m.name === "Title" && m.kind === "attribute");
+if (!leadTitleCol) {
+	console.error("Expected Lead entity column this.$Title from conf/content/Lead.js");
+	failed = true;
+}
+if (!leadIndustryCol?.children?.some((c) => c.name === "displayValue")) {
+	console.error("Expected Lead.Industry lookup fields value/displayValue");
+	failed = true;
+} else {
+	console.log("Lead entity columns OK", "Title", !!leadTitleCol, "Industry.lookup", true);
+}
 
 const headerPath = path.join(root, samples[3]);
 const headerThis = index.resolveThisMembers(headerPath);
@@ -284,6 +296,332 @@ if (!wsThis.some((m) => m.name === "getFilterCollectionResult")) {
 	failed = true;
 } else {
 	console.log("GoWSFieldManagementMixinOverride OK");
+}
+if (!wsThis.some((m) => m.name === "colorTimeout" && m.kind === "property")) {
+	console.error("Expected colorTimeout property from parent mixin");
+	failed = true;
+} else {
+	console.log("GoWSFieldManagementMixinOverride this.colorTimeout OK");
+}
+
+const syntheticChild = parseAmdModule(
+	`
+define("GoPropChild", [], function() {
+	return {
+		entitySchemaName: "Lead",
+		properties: {
+			childFlag: true,
+			titleText: "hello"
+		},
+		methods: {
+			onEntityInitialized: function() {}
+		}
+	};
+});
+`,
+	path.join(root, "synthetic/GoPropChild.js")
+);
+const syntheticParent = parseAmdModule(
+	`
+define("GoPropParent", [], function() {
+	return {
+		entitySchemaName: "Lead",
+		properties: {
+			parentProp: "from-parent",
+			titleText: "parent-title"
+		},
+		methods: {
+			parentMethod: function() {}
+		}
+	};
+});
+`,
+	path.join(root, "synthetic/GoPropParent.js")
+);
+if (!syntheticChild || !syntheticParent) {
+	console.error("Failed to parse synthetic property schemas");
+	failed = true;
+} else {
+	index.upsertModule(syntheticParent);
+	index.upsertModule(syntheticChild);
+	const childProps = syntheticChild.members.filter((m) => m.kind === "property");
+	const parentProps = syntheticParent.members.filter((m) => m.kind === "property");
+	console.log(
+		"synthetic properties: child=",
+		childProps.map((m) => m.name).join(","),
+		"parent=",
+		parentProps.map((m) => m.name).join(",")
+	);
+	if (!childProps.some((m) => m.name === "titleText" && m.documentation === '"hello"')) {
+		console.error("Expected child property titleText with literal preview");
+		failed = true;
+	}
+	if (!childProps.some((m) => m.name === "childFlag")) {
+		console.error("Expected childFlag property");
+		failed = true;
+	}
+	if (syntheticChild.members.some((m) => m.name === "onEntityInitialized" && m.kind !== "method")) {
+		console.error("Expected onEntityInitialized to remain a method");
+		failed = true;
+	}
+	const childThis = index.resolveThisMembers(syntheticChild.filePath);
+	if (!childThis.some((m) => m.name === "titleText" && m.kind === "property")) {
+		console.error("Expected this.titleText from properties");
+		failed = true;
+	}
+	const titleHits = index.findThisMemberLocations(
+		syntheticChild.filePath,
+		"titleText"
+	);
+	if (!titleHits.length || titleHits[0].member.kind !== "property") {
+		console.error("Expected Go to Definition for this.titleText");
+		failed = true;
+	}
+}
+
+const syntheticMixin = parseAmdModule(
+	`
+define("GoSynthMixin", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoSynthMixin", {
+		alternateClassName: "BPMSoft.GoSynthMixin",
+		colorTimeout: 0,
+		getFilterCollectionResult: function() {}
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoSynthMixin");
+});
+`,
+	path.join(root, "synthetic/GoSynthMixin.js")
+);
+const syntheticOverride = parseAmdModule(
+	`
+define("GoSynthMixinOverride", ["GoSynthMixin"], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoSynthMixinOverride", {
+		override: "BPMSoft.GoSynthMixin",
+		maxColoringRetryCount: 50,
+		getFieldsColors: function() {}
+	});
+});
+`,
+	path.join(root, "synthetic/GoSynthMixinOverride.js")
+);
+if (!syntheticMixin || !syntheticOverride) {
+	console.error("Failed to parse synthetic mixin/override");
+	failed = true;
+} else {
+	index.upsertModule(syntheticMixin);
+	index.upsertModule(syntheticOverride);
+	if (!syntheticMixin.members.some((m) => m.name === "colorTimeout" && m.kind === "property")) {
+		console.error("Expected mixin root property colorTimeout");
+		failed = true;
+	}
+	if (syntheticMixin.members.some((m) => m.name === "alternateClassName")) {
+		console.error("Did not expect Ext.define meta key alternateClassName as member");
+		failed = true;
+	}
+	const overrideThis = index.resolveThisMembers(syntheticOverride.filePath);
+	if (!overrideThis.some((m) => m.name === "colorTimeout" && m.kind === "property")) {
+		console.error("Expected this.colorTimeout from parent mixin");
+		failed = true;
+	}
+	if (!overrideThis.some((m) => m.name === "maxColoringRetryCount")) {
+		console.error("Expected this.maxColoringRetryCount from override");
+		failed = true;
+	}
+	const colorHits = index.findThisMemberLocations(
+		syntheticOverride.filePath,
+		"colorTimeout"
+	);
+	if (!colorHits.length) {
+		console.error("Expected Go to Definition for this.colorTimeout");
+		failed = true;
+	} else {
+		console.log("synthetic mixin this.colorTimeout OK");
+	}
+}
+
+const syntheticAttrChild = parseAmdModule(
+	`
+define("GoAttrChild", [], function() {
+	return {
+		entitySchemaName: "Lead",
+		attributes: {
+			"ChildFlag": {
+				dataValueType: BPMSoft.DataValueType.BOOLEAN,
+				value: true
+			},
+			"TitleText": {
+				dataValueType: BPMSoft.DataValueType.TEXT,
+				value: "hello"
+			},
+			"SearchFieldFilterList": {
+				dataValueType: BPMSoft.DataValueType.ENUM
+			},
+			"Owner": {
+				dataValueType: BPMSoft.DataValueType.LOOKUP
+			}
+		},
+		methods: {
+			onEntityInitialized: function() {
+				this.get("TitleText");
+				this.set("ChildFlag", false);
+				this.$TitleText = "x";
+			}
+		}
+	};
+});
+`,
+	path.join(root, "synthetic/GoAttrChild.js")
+);
+const syntheticAttrParent = parseAmdModule(
+	`
+define("GoAttrChild", [], function() {
+	return {
+		entitySchemaName: "Lead",
+		attributes: {
+			"ParentAttr": {
+				dataValueType: BPMSoft.DataValueType.INTEGER,
+				value: 1
+			},
+			"TitleText": {
+				dataValueType: BPMSoft.DataValueType.TEXT,
+				value: "parent"
+			}
+		}
+	};
+});
+`,
+	path.join(root, "synthetic/GoAttrParent.js")
+);
+if (!syntheticAttrChild || !syntheticAttrParent) {
+	console.error("Failed to parse synthetic attribute schemas");
+	failed = true;
+} else {
+	const attrIndex = new SymbolIndex();
+	attrIndex.upsertModule(syntheticAttrParent);
+	attrIndex.upsertModule(syntheticAttrChild);
+	const childAttrs = syntheticAttrChild.members.filter((m) => m.kind === "attribute");
+	if (!childAttrs.some((m) => m.name === "TitleText")) {
+		console.error("Expected TitleText attribute");
+		failed = true;
+	}
+	if (!childAttrs.some((m) => m.documentation && m.documentation.includes("DataValueType.TEXT"))) {
+		console.error("Expected attribute dataValueType in documentation");
+		failed = true;
+	}
+	const attrThis = attrIndex.resolveThisMembers(syntheticAttrChild.filePath);
+	if (!attrThis.some((m) => m.name === "TitleText" && m.kind === "attribute")) {
+		console.error("Expected this.$TitleText from attributes");
+		failed = true;
+	}
+	if (!attrThis.some((m) => m.name === "ParentAttr" && m.kind === "attribute")) {
+		console.error("Expected parent attribute ParentAttr via same-name replacement");
+		failed = true;
+	}
+	const dollarHits = attrIndex.findThisMemberLocations(
+		syntheticAttrChild.filePath,
+		"$TitleText"
+	);
+	if (!dollarHits.length || dollarHits[0].member.kind !== "attribute") {
+		console.error("Expected Go to Definition for this.$TitleText");
+		failed = true;
+	}
+	const getHits = attrIndex.findThisMemberLocations(
+		syntheticAttrChild.filePath,
+		"TitleText",
+		"attribute"
+	);
+	if (!getHits.length) {
+		console.error("Expected Go to Definition for this.get(\"TitleText\")");
+		failed = true;
+	}
+	const src = "this.get(\"TitleText\"); this.set(\"ChildFlag\", 1);";
+	const getCtx = getThisGetSetContext(src, src.indexOf("TitleText") + 2);
+	const setCtx = getThisGetSetContext(src, src.indexOf("ChildFlag") + 2);
+	if (!getCtx || getCtx.method !== "get" || getCtx.name !== "TitleText") {
+		console.error("getThisGetSetContext failed for this.get");
+		failed = true;
+	}
+	if (!setCtx || setCtx.method !== "set" || setCtx.name !== "ChildFlag") {
+		console.error("getThisGetSetContext failed for this.set");
+		failed = true;
+	}
+	const enumAttr = childAttrs.find((m) => m.name === "SearchFieldFilterList");
+	const lookupAttr = childAttrs.find((m) => m.name === "Owner");
+	const textAttr = childAttrs.find((m) => m.name === "TitleText");
+	if (!enumAttr?.children?.some((c) => c.name === "value") ||
+		!enumAttr?.children?.some((c) => c.name === "displayValue")) {
+		console.error("Expected ENUM attribute children value/displayValue");
+		failed = true;
+	}
+	if (!lookupAttr?.children?.some((c) => c.name === "displayValue")) {
+		console.error("Expected LOOKUP attribute children value/displayValue");
+		failed = true;
+	}
+	if (textAttr?.children?.length) {
+		console.error("Did not expect nested fields on TEXT attribute");
+		failed = true;
+	}
+	const dollarLookup = "this.$SearchFieldFilterList.";
+	const getLookup = 'this.get("Owner").';
+	const dollarCtx = getThisLookupAccessContext(dollarLookup, dollarLookup.length);
+	const getLookupCtx = getThisLookupAccessContext(getLookup, getLookup.length);
+	if (!dollarCtx || dollarCtx.attrName !== "SearchFieldFilterList") {
+		console.error("getThisLookupAccessContext failed for this.$Enum.");
+		failed = true;
+	}
+	if (!getLookupCtx || getLookupCtx.attrName !== "Owner") {
+		console.error("getThisLookupAccessContext failed for this.get(\"Lookup\").");
+		failed = true;
+	}
+	const getInsideDot = 'this.get("Owner".';
+	const getValue = 'this.get("Owner").value';
+	const getInsideCtx = getThisLookupAccessContext(getInsideDot, getInsideDot.length);
+	const getValueCtx = getThisLookupAccessContext(getValue, getValue.length);
+	if (!getInsideCtx || getInsideCtx.attrName !== "Owner") {
+		console.error("getThisLookupAccessContext failed for this.get(\"Owner\".");
+		failed = true;
+	}
+	if (!getValueCtx || getValueCtx.attrName !== "Owner") {
+		console.error("getThisLookupAccessContext failed for this.get(\"Owner\").value");
+		failed = true;
+	} else {
+		console.log("synthetic attributes this.$ / get / set OK");
+	}
+}
+
+const syntheticEntityCols = parseEntityColumns(
+	`
+define("Account", ["BPMSoft"], function(BPMSoft) {
+	Ext.define("BPMSoft.data.models.Account", {
+		extend: "BPMSoft.BaseEntitySchema",
+		columns: {
+			Id: {
+				dataValueType: BPMSoft.DataValueType.GUID,
+				isRequired: true
+			},
+			Name: {
+				dataValueType: BPMSoft.DataValueType.TEXT
+			},
+			Owner: {
+				dataValueType: BPMSoft.DataValueType.LOOKUP,
+				isLookup: true,
+				referenceSchemaName: "Contact"
+			}
+		}
+	});
+});
+`,
+	"/tmp/conf/content/Account.js"
+);
+if (!syntheticEntityCols.some((m) => m.name === "Name" && m.kind === "attribute")) {
+	console.error("Expected entity column Name");
+	failed = true;
+}
+if (!syntheticEntityCols.some((m) => m.name === "Owner" && m.children?.some((c) => c.name === "value"))) {
+	console.error("Expected entity LOOKUP Owner.value");
+	failed = true;
+} else {
+	console.log("synthetic entity columns OK", syntheticEntityCols.map((m) => m.name).join(","));
 }
 
 if (failed) {

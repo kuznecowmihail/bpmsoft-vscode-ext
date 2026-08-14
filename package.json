@@ -20,6 +20,11 @@
         "editor.wordBasedSuggestions": "off",
         "editor.suggestSelection": "first",
         "editor.suggest.showStatusBar": false,
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        },
         "javascript.suggest.names": false,
         "javascript.suggestionActions.enabled": false
       }
