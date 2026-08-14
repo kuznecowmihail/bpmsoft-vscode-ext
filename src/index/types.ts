@@ -18,6 +18,8 @@ export interface IndexedMember {
 	documentation?: string;
 	/** 0-based line/character in the owning file */
 	position?: SourcePosition;
+	/** Owning file when the member is not on the current schema module */
+	filePath?: string;
 	/** Nested fields, e.g. lookup/enum value + displayValue */
 	children?: IndexedMember[];
 }

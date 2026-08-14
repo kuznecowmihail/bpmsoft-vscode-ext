@@ -2,6 +2,7 @@ import * as fs from "fs";
 import { IndexedMember, IndexedModule, PlatformStubMember, memberDedupeKey } from "./types";
 import { SchemaHierarchyResolver } from "./schemaHierarchy";
 import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
+import { buildSandboxStubs } from "../stubs/sandboxGlobals";
 
 function packageLabel(filePath: string): string {
 	const norm = filePath.replace(/\\/g, "/");
@@ -38,6 +39,9 @@ export class SymbolIndex {
 	private alternateToModules = new Map<string, IndexedModule[]>();
 	private platformRoot: PlatformStubMember[] = [];
 	private extRoot: PlatformStubMember[] = [];
+	private sandboxMembers: IndexedMember[] = [];
+	private sandboxOrigin?: { filePath: string; position: { line: number; character: number } };
+	private workspaceRoots: string[] = [];
 	private entityCache = new Map<string, IndexedModule | null>();
 	readonly hierarchy = new SchemaHierarchyResolver();
 
@@ -49,7 +53,16 @@ export class SymbolIndex {
 		this.extRoot = members;
 	}
 
+	setSandboxStubs(
+		members: IndexedMember[],
+		origin?: { filePath: string; position: { line: number; character: number } }
+	): void {
+		this.sandboxMembers = members;
+		this.sandboxOrigin = origin;
+	}
+
 	setWorkspaceRoots(roots: string[]): void {
+		this.workspaceRoots = roots;
 		this.hierarchy.setWorkspaceRoots(roots);
 		this.entityCache.clear();
 	}
@@ -381,6 +394,7 @@ export class SymbolIndex {
 		const seen = new Set(result.map((m) => memberDedupeKey(m)));
 		this.appendMixinMembers(chainMods, result, seen);
 		this.appendEntityColumns(chainMods, result, seen);
+		this.appendRuntimeThisMembers(result, seen);
 		return result;
 	}
 
@@ -475,7 +489,33 @@ export class SymbolIndex {
 			}
 		}
 
+		const platformClass = this.hierarchy.resolvePlatformExtendClass(mod.name);
+		if (platformClass) {
+			const rootExt = this.pickNamedModule(platformClass);
+			if (rootExt) {
+				push(rootExt);
+				for (const parent of this.collectInheritanceChain(rootExt)) {
+					push(parent);
+				}
+			}
+		}
+
 		return ordered;
+	}
+
+	private pickNamedModule(name: string): IndexedModule | undefined {
+		const candidates = this.getAllByName(name);
+		if (!candidates.length) {
+			return undefined;
+		}
+		return (
+			candidates.find(
+				(m) => !m.override && /\/Resources\/ui\//i.test(m.filePath)
+			) ||
+			candidates.find((m) => !m.override) ||
+			candidates.find((m) => /\/Resources\/ui\//i.test(m.filePath)) ||
+			candidates[0]
+		);
 	}
 
 	private appendMixinMembers(
@@ -512,6 +552,60 @@ export class SymbolIndex {
 				}
 			}
 		}
+	}
+
+	private appendRuntimeThisMembers(
+		result: IndexedMember[],
+		seen: Set<string>
+	): void {
+		const runtime: IndexedMember[] = [
+			{
+				name: "Ext",
+				kind: "property",
+				detail: "injected Ext",
+				documentation:
+					"Экземпляр Ext модуля (тот же API, что у глобального Ext)"
+			},
+			{
+				name: "BPMSoft",
+				kind: "property",
+				detail: "injected BPMSoft",
+				documentation:
+					"Экземпляр BPMSoft модуля (тот же API, что у глобального BPMSoft)"
+			},
+			{
+				name: "sandbox",
+				kind: "property",
+				detail: "module sandbox",
+				documentation:
+					"Песочница модуля: publish / subscribe / loadModule",
+				children: this.getSandboxMembers(),
+				filePath: this.sandboxOrigin?.filePath,
+				position: this.sandboxOrigin?.position
+			}
+		];
+		for (const member of runtime) {
+			const key = memberDedupeKey(member);
+			if (seen.has(key)) {
+				continue;
+			}
+			seen.add(key);
+			result.push(member);
+		}
+	}
+
+	private getSandboxMembers(): IndexedMember[] {
+		if (this.sandboxMembers.length) {
+			return this.sandboxMembers;
+		}
+		const built = buildSandboxStubs(this.workspaceRoots);
+		this.sandboxMembers = built.members;
+		this.sandboxOrigin = built.origin;
+		return this.sandboxMembers;
+	}
+
+	findSandboxMember(name: string): IndexedMember | undefined {
+		return this.getSandboxMembers().find((m) => m.name === name);
 	}
 
 	private appendEntityColumns(

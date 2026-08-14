@@ -1,6 +1,17 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
+import { IndexedMember } from "../index/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext } from "../parse/amdParser";
+
+function memberLocation(member: IndexedMember | undefined): vscode.Location | undefined {
+	if (!member?.filePath || !member.position) {
+		return undefined;
+	}
+	return new vscode.Location(
+		vscode.Uri.file(member.filePath),
+		new vscode.Position(member.position.line, member.position.character)
+	);
+}
 
 export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 	constructor(private readonly index: SymbolIndex) {}
@@ -70,6 +81,23 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 		}
 
 		const leftExpr = getMemberAccessPrefix(text, ident.start);
+
+		if (leftExpr === "this.sandbox") {
+			const loc = memberLocation(this.index.findSandboxMember(ident.name));
+			if (loc) {
+				return loc;
+			}
+		}
+
+		if (leftExpr === "this" && ident.name === "sandbox") {
+			const sandbox = this.index
+				.resolveThisMembers(document.uri.fsPath)
+				.find((m) => m.name === "sandbox");
+			const loc = memberLocation(sandbox);
+			if (loc) {
+				return loc;
+			}
+		}
 
 		if (leftExpr === "this" || leftExpr?.startsWith("this")) {
 			for (const hit of this.index.findThisMemberLocations(

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind } from "../index/types";
-import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext } from "../parse/amdParser";
+import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -202,6 +202,21 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 				toItems(this.index.resolveThisMembers(document.uri.fsPath))
 			);
 		}
+
+		const runtimePrefix = rewriteThisRuntimePrefix(rawPrefix);
+		if (runtimePrefix) {
+			return asList(
+				toItems(this.index.resolveMembers(runtimePrefix, enableStubs))
+			);
+		}
+
+		if (rawPrefix === "this.sandbox") {
+			const sandbox = this.index
+				.resolveThisMembers(document.uri.fsPath)
+				.find((m) => m.name === "sandbox");
+			return asList(toItems(sandbox?.children || []));
+		}
+
 		if (rawPrefix.startsWith("this.")) {
 			return undefined;
 		}

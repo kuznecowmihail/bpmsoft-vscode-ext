@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 
 export class BpmsoftHoverProvider implements vscode.HoverProvider {
 	constructor(private readonly index: SymbolIndex) {}
@@ -51,6 +51,47 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 
 		const left = getMemberAccessPrefix(text, ident.start);
 		const lines: string[] = [];
+		const enableStubs = vscode.workspace
+			.getConfiguration("bpmsoft")
+			.get<boolean>("enablePlatformStubs", true);
+
+		if (left === "this.sandbox") {
+			const sandbox = this.index
+				.resolveThisMembers(document.uri.fsPath)
+				.find((x) => x.name === "sandbox");
+			const m = sandbox?.children?.find((c) => c.name === ident.name);
+			if (m) {
+				lines.push(`**this.sandbox.${m.name}** *(${m.kind})*`);
+				if (m.documentation) {
+					lines.push("", m.documentation);
+				}
+				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
+			}
+		}
+
+		const runtimePrefix = left
+			? rewriteThisRuntimePrefix(left)
+			: undefined;
+		const globalLeft = runtimePrefix || left;
+		if (
+			globalLeft === "BPMSoft" ||
+			globalLeft?.startsWith("BPMSoft.") ||
+			globalLeft === "Ext" ||
+			globalLeft?.startsWith("Ext.")
+		) {
+			const members = this.index.resolveMembers(globalLeft, enableStubs);
+			const m = members.find((x) => x.name === ident.name);
+			if (m) {
+				const titleRoot = runtimePrefix ? `this.${globalLeft}` : globalLeft;
+				lines.push(
+					`**${titleRoot}.${m.name}** *(${m.kind})*`
+				);
+				if (m.documentation) {
+					lines.push("", m.documentation);
+				}
+				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
+			}
+		}
 
 		if (left === "this" || left?.startsWith("this")) {
 			const members = this.index.resolveThisMembers(document.uri.fsPath);
@@ -66,23 +107,6 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 				if (m.detail) {
 					lines.push(m.detail);
 				}
-				if (m.documentation) {
-					lines.push("", m.documentation);
-				}
-				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
-			}
-		}
-
-		if (left === "BPMSoft" || left?.startsWith("BPMSoft.")) {
-			const enableStubs = vscode.workspace
-				.getConfiguration("bpmsoft")
-				.get<boolean>("enablePlatformStubs", true);
-			const members = this.index.resolveMembers(left, enableStubs);
-			const m = members.find((x) => x.name === ident.name);
-			if (m) {
-				lines.push(
-					`**BPMSoft.${left === "BPMSoft" ? m.name : left.slice(9) + "." + m.name}** *(${m.kind})*`
-				);
 				if (m.documentation) {
 					lines.push("", m.documentation);
 				}

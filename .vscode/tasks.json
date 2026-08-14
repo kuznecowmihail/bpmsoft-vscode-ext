@@ -18,6 +18,15 @@
       "presentation": {
         "reveal": "never"
       }
+    },
+    {
+      "type": "npm",
+      "script": "package",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
     }
   ]
 }

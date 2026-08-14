@@ -969,3 +969,16 @@ export function getThisLookupAccessContext(
 	}
 	return { attrName: attr.name.slice(1) };
 }
+
+/**
+ * this.Ext / this.BPMSoft → same lookup as global Ext / BPMSoft.
+ */
+export function rewriteThisRuntimePrefix(prefix: string): string | undefined {
+	if (prefix === "this.Ext" || prefix.startsWith("this.Ext.")) {
+		return prefix.slice("this.".length);
+	}
+	if (prefix === "this.BPMSoft" || prefix.startsWith("this.BPMSoft.")) {
+		return prefix.slice("this.".length);
+	}
+	return undefined;
+}

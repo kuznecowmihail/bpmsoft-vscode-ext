@@ -36,11 +36,13 @@ export class SchemaHierarchyResolver {
 	private structureCache = new Map<string, SchemaStructure | null>();
 	private pkgNamesCache: string[] | null = null;
 	private layouts: BpmsoftAppLayout[] = [];
+	private platformExtendCache = new Map<string, string | null>();
 
 	setWorkspaceRoots(roots: string[]): void {
 		this.confContentDirs = [];
 		this.configurationRoots = [];
 		this.structureCache.clear();
+		this.platformExtendCache.clear();
 		this.pkgNamesCache = null;
 		this.layouts = resolveAppLayouts(roots);
 
@@ -118,6 +120,55 @@ export class SchemaHierarchyResolver {
 		}
 		this.structureCache.set(schemaName, null);
 		return null;
+	}
+
+	/**
+	 * Walk structureParent to the root schema (no parent), then read
+	 * extend: "BPMSoft.model.BaseViewModel" from that conf Structure define.
+	 */
+	resolvePlatformExtendClass(schemaName: string): string | undefined {
+		if (!schemaName) {
+			return undefined;
+		}
+		const chain: string[] = [];
+		const visited = new Set<string>();
+		let current: string | undefined = schemaName;
+		while (current && !visited.has(current)) {
+			visited.add(current);
+			chain.push(current);
+			const structure = this.parseStructure(current);
+			current = structure?.structureParent || undefined;
+		}
+		for (let i = chain.length - 1; i >= 0; i--) {
+			const ext = this.readPlatformExtend(chain[i]);
+			if (ext) {
+				return ext;
+			}
+		}
+		return undefined;
+	}
+
+	private readPlatformExtend(schemaName: string): string | undefined {
+		const cached = this.platformExtendCache.get(schemaName);
+		if (cached !== undefined) {
+			return cached || undefined;
+		}
+		for (const dir of this.confContentDirs) {
+			const filePath = path.join(dir, `${schemaName}.js`);
+			if (!fs.existsSync(filePath)) {
+				continue;
+			}
+			try {
+				const head = fs.readFileSync(filePath, "utf8").slice(0, 30000);
+				const ext = parseStructurePlatformExtend(head);
+				this.platformExtendCache.set(schemaName, ext || null);
+				return ext;
+			} catch {
+				// ignore
+			}
+		}
+		this.platformExtendCache.set(schemaName, null);
+		return undefined;
 	}
 
 	/**
@@ -415,6 +466,18 @@ export function parseStructuresLine(
 		innerHierarchyStack,
 		structureParent: parentMatch?.[1] || undefined
 	};
+}
+
+/**
+ * First Structure `extend: "BPMSoft.…"` / `Ext.…` in a conf/content schema file.
+ * Schema-to-schema extend (extend: "BaseDataViewNUI") is ignored.
+ */
+export function parseStructurePlatformExtend(source: string): string | undefined {
+	const text = source.replace(/^\uFEFF/, "");
+	const match = text.match(
+		/\bextend\s*:\s*['"]((?:BPMSoft|Ext)\.[\w.]+)['"]/
+	);
+	return match?.[1];
 }
 
 function packageFromPkgPath(filePath: string): string | undefined {

@@ -1,5 +1,10 @@
 {
     "editor.wordBasedSuggestions": "off",
     "editor.suggestSelection": "first",
-    "javascript.suggest.names": false
+    "javascript.suggest.names": false,
+    "editor.quickSuggestions": {
+        "other": true,
+        "comments": false,
+        "strings": true
+    }
 }
