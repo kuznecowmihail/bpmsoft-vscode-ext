@@ -24,6 +24,19 @@ function packageLabel(filePath: string): string {
 	return filePath;
 }
 
+function inheritdocTarget(mod: IndexedModule): string {
+	if (mod.alternateClassName) {
+		return mod.alternateClassName;
+	}
+	if (mod.className) {
+		return mod.className;
+	}
+	if (mod.name.includes(".")) {
+		return mod.name;
+	}
+	return `BPMSoft.${mod.name}`;
+}
+
 const MAX_INHERIT_DEPTH = 25;
 
 function isPageSchema(mod: IndexedModule): boolean {
@@ -124,10 +137,6 @@ export class SymbolIndex {
 		}
 	}
 
-	getByName(name: string): IndexedModule | undefined {
-		return this.getAllByName(name)[0];
-	}
-
 	getAllByName(name: string): IndexedModule[] {
 		if (!name) {
 			return [];
@@ -149,14 +158,6 @@ export class SymbolIndex {
 
 	getByPath(filePath: string): IndexedModule | undefined {
 		return this.modulesByPath.get(filePath);
-	}
-
-	getAllModules(): IndexedModule[] {
-		return Array.from(this.modulesByPath.values());
-	}
-
-	moduleCount(): number {
-		return this.modulesByPath.size;
 	}
 
 	ensureModule(filePath: string): IndexedModule | undefined {
@@ -194,7 +195,7 @@ export class SymbolIndex {
 		if (parts[0] === "BPMSoft") {
 			if (!enablePlatformStubs) {
 				if (parts.length === 1) {
-					return this.collectBpmsoftMixinShortcuts();
+					return this.collectBpmsoftShortcuts();
 				}
 				const alt = `BPMSoft.${parts[1]}`;
 				const mods = this.getAllByName(alt);
@@ -220,22 +221,28 @@ export class SymbolIndex {
 		return [];
 	}
 
-	private collectBpmsoftMixinShortcuts(): IndexedMember[] {
+	private collectBpmsoftShortcuts(): IndexedMember[] {
 		const out: IndexedMember[] = [];
 		const seen = new Set<string>();
 		for (const mod of this.modulesByPath.values()) {
-			if (!mod.alternateClassName?.startsWith("BPMSoft.")) {
+			const alt = mod.alternateClassName;
+			if (!alt?.startsWith("BPMSoft.")) {
 				continue;
 			}
-			const short = mod.alternateClassName.slice("BPMSoft.".length);
-			if (seen.has(short) || short.includes(".")) {
+			const short = alt.slice("BPMSoft.".length);
+			if (!short || short.includes(".") || seen.has(short)) {
 				continue;
 			}
 			seen.add(short);
 			out.push({
 				name: short,
 				kind: "namespace",
-				detail: "mixin",
+				detail:
+					mod.kind === "mixin"
+						? "mixin"
+						: mod.kind === "class"
+							? "class"
+							: "type",
 				documentation: mod.filePath
 			});
 		}
@@ -267,9 +274,8 @@ export class SymbolIndex {
 	private resolvePlatformPath(rest: string[]): IndexedMember[] {
 		if (rest.length === 0) {
 			const stubs = this.platformRoot.map((s) => this.stubToMember(s));
-			const mixins = this.collectBpmsoftMixinShortcuts();
-			const classes = this.collectBpmsoftClassShortcuts();
-			return this.mergeMemberLists(stubs, mixins, classes);
+			const shortcuts = this.collectBpmsoftShortcuts();
+			return this.mergeMemberLists(stubs, shortcuts);
 		}
 		let current: PlatformStubMember[] | undefined = this.platformRoot;
 		let node: PlatformStubMember | undefined;
@@ -299,30 +305,6 @@ export class SymbolIndex {
 		return [];
 	}
 
-	/** Ext.define alternateClassName BPMSoft.X (single segment) as root completions. */
-	private collectBpmsoftClassShortcuts(): IndexedMember[] {
-		const out: IndexedMember[] = [];
-		const seen = new Set<string>();
-		for (const mod of this.modulesByPath.values()) {
-			const alt = mod.alternateClassName;
-			if (!alt?.startsWith("BPMSoft.")) {
-				continue;
-			}
-			const short = alt.slice("BPMSoft.".length);
-			if (!short || short.includes(".") || seen.has(short)) {
-				continue;
-			}
-			seen.add(short);
-			out.push({
-				name: short,
-				kind: "namespace",
-				detail: mod.kind === "class" ? "class" : "type",
-				documentation: mod.filePath
-			});
-		}
-		return out;
-	}
-
 	private mergeMemberLists(...lists: IndexedMember[][]): IndexedMember[] {
 		const map = new Map<string, IndexedMember>();
 		for (const list of lists) {
@@ -344,7 +326,7 @@ export class SymbolIndex {
 		};
 	}
 
-	collectInheritanceChain(mod: IndexedModule): IndexedModule[] {
+	private collectInheritanceChain(mod: IndexedModule): IndexedModule[] {
 		const out: IndexedModule[] = [];
 		const visitedNames = new Set<string>();
 		let current: IndexedModule | undefined = mod;
@@ -386,9 +368,7 @@ export class SymbolIndex {
 			return [];
 		}
 
-		const chainMods = isPageSchema(mod)
-			? this.collectSchemaHierarchyModules(mod)
-			: [mod, ...this.collectInheritanceChain(mod)];
+		const chainMods = this.collectOwnerChain(mod);
 
 		const result = this.mergeMembers(chainMods, true);
 		const seen = new Set(result.map((m) => memberDedupeKey(m)));
@@ -396,6 +376,78 @@ export class SymbolIndex {
 		this.appendEntityColumns(chainMods, result, seen);
 		this.appendRuntimeThisMembers(result, seen);
 		return result;
+	}
+
+	/**
+	 * Parent/mixin methods that can be overridden in the current schema or class.
+	 * Current file members are excluded (already defined).
+	 */
+	resolveOverridableMethods(
+		filePath: string
+	): Array<{ name: string; params: string[]; owner: string; documentation?: string }> {
+		const mod = this.getByPath(filePath) || this.ensureModule(filePath);
+		if (!mod) {
+			return [];
+		}
+
+		const chainMods = this.collectOwnerChain(mod);
+
+		const seen = new Set<string>();
+		for (const member of mod.members) {
+			if (member.kind === "method") {
+				seen.add(member.name);
+			}
+		}
+
+		const out: Array<{
+			name: string;
+			params: string[];
+			owner: string;
+			documentation?: string;
+		}> = [];
+
+		const addFrom = (ownerMod: IndexedModule) => {
+			if (ownerMod.filePath === mod.filePath) {
+				return;
+			}
+			const owner = inheritdocTarget(ownerMod);
+			for (const member of ownerMod.members) {
+				if (member.kind !== "method" || seen.has(member.name)) {
+					continue;
+				}
+				seen.add(member.name);
+				out.push({
+					name: member.name,
+					params: member.params || [],
+					owner,
+					documentation: member.documentation
+				});
+			}
+		};
+
+		for (const ownerMod of chainMods) {
+			addFrom(ownerMod);
+		}
+
+		const mixinAlts = new Set<string>();
+		for (const schemaMod of chainMods) {
+			for (const alt of Object.values(schemaMod.mixins)) {
+				mixinAlts.add(alt);
+			}
+		}
+		for (const alt of mixinAlts) {
+			const short = alt.replace(/^BPMSoft\./, "");
+			const mixinMods = this.getAllByName(alt).concat(this.getAllByName(short));
+			const uniqueMixins = new Map<string, IndexedModule>();
+			for (const m of mixinMods) {
+				uniqueMixins.set(m.filePath, m);
+			}
+			for (const mixinMod of uniqueMixins.values()) {
+				addFrom(mixinMod);
+			}
+		}
+
+		return out;
 	}
 
 	findThisMemberLocations(
@@ -432,9 +484,7 @@ export class SymbolIndex {
 			}
 		};
 
-		const chainMods = isPageSchema(mod)
-			? this.collectSchemaHierarchyModules(mod)
-			: [mod, ...this.collectInheritanceChain(mod)];
+		const chainMods = this.collectOwnerChain(mod);
 
 		for (const m of chainMods) {
 			consider(m);
@@ -460,6 +510,12 @@ export class SymbolIndex {
 			consider(entityMod);
 		}
 		return hits;
+	}
+
+	private collectOwnerChain(mod: IndexedModule): IndexedModule[] {
+		return isPageSchema(mod)
+			? this.collectSchemaHierarchyModules(mod)
+			: [mod, ...this.collectInheritanceChain(mod)];
 	}
 
 	private collectSchemaHierarchyModules(mod: IndexedModule): IndexedModule[] {

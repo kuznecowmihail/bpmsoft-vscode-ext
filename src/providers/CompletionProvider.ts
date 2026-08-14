@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind } from "../index/types";
-import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -163,6 +163,13 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 			);
 		}
 
+		const overrideCtx = getOverrideInsertContext(text, offset);
+		if (overrideCtx && !/\.[\w$]*$/.test(linePrefix)) {
+			return asList(
+				this.overrideCompletions(document, overrideCtx)
+			);
+		}
+
 		// Member access: BPMSoft. / this. / Module. / this.$
 		if (/\.[\w$]*$/.test(linePrefix)) {
 			return this.memberCompletions(
@@ -238,5 +245,47 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 		return asList(
 			toItems(this.index.resolveMembers(rawPrefix, enableStubs))
 		);
+	}
+
+	private overrideCompletions(
+		document: vscode.TextDocument,
+		ctx: { typed: string; identStart: number; identEnd: number }
+	): vscode.CompletionItem[] {
+		const typed = ctx.typed.toLowerCase();
+		const localKeys = collectLocalMethodKeys(
+			document.getText(),
+			ctx.identStart,
+			ctx.identEnd
+		);
+		const methods = this.index
+			.resolveOverridableMethods(document.uri.fsPath)
+			.filter((m) => !localKeys.has(m.name));
+		const range = new vscode.Range(
+			document.positionAt(ctx.identStart),
+			document.positionAt(ctx.identEnd)
+		);
+		return methods
+			.filter((m) => !typed || m.name.toLowerCase().startsWith(typed))
+			.map((m, i) => {
+				const item = new vscode.CompletionItem(
+					m.name,
+					vscode.CompletionItemKind.Snippet
+				);
+				item.detail = `override · ${m.owner}`;
+				item.sortText = `!ov${String(i).padStart(5, "0")}_${m.name}`;
+				item.filterText = m.name;
+				item.preselect = i === 0;
+				item.insertText = new vscode.SnippetString(
+					formatOverrideSnippet(m.owner, m.name, m.params)
+				);
+				item.range = range;
+				const doc = [
+					`@inheritdoc ${m.owner}#${m.name}`,
+					"@overriden",
+					...(m.documentation ? ["", m.documentation] : [])
+				].join("\n");
+				item.documentation = new vscode.MarkdownString(doc);
+				return item;
+			});
 	}
 }

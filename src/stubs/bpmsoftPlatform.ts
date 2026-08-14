@@ -105,8 +105,3 @@ export function getStaticPlatformStubs(): PlatformStubMember[] {
 		}
 	];
 }
-
-/** @deprecated use getStaticPlatformStubs / buildPlatformStubs */
-export function getPlatformStubs(): PlatformStubMember[] {
-	return getStaticPlatformStubs();
-}

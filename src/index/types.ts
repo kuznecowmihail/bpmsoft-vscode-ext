@@ -20,6 +20,8 @@ export interface IndexedMember {
 	position?: SourcePosition;
 	/** Owning file when the member is not on the current schema module */
 	filePath?: string;
+	/** Function parameter names, for override snippets */
+	params?: string[];
 	/** Nested fields, e.g. lookup/enum value + displayValue */
 	children?: IndexedMember[];
 }

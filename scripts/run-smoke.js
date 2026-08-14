@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext } = require("../out/parse/amdParser");
+const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys } = require("../out/parse/amdParser");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
 const { buildPlatformStubs } = require("../out/stubs/platformGlobals");
 const { buildExtStubs } = require("../out/stubs/extGlobals");
@@ -533,6 +533,96 @@ if (!syntheticMixin || !syntheticOverride) {
 		failed = true;
 	} else {
 		console.log("synthetic mixin this.colorTimeout OK");
+	}
+}
+
+const overrideSrc = `
+define("LeadPageV2", [], function() {
+	return {
+		attributes: {
+			Foo: {}
+		},
+		methods: {
+			foo: function() {
+				var inside = 1;
+			},
+			onEnt
+		}
+	};
+});
+`;
+const ovAtKey = getOverrideInsertContext(overrideSrc, overrideSrc.indexOf("onEnt") + 5);
+const ovInsideFn = getOverrideInsertContext(overrideSrc, overrideSrc.indexOf("inside"));
+const ovInAttrs = getOverrideInsertContext(
+	overrideSrc,
+	overrideSrc.indexOf("Foo:")
+);
+if (!ovAtKey || ovAtKey.kind !== "methods" || ovAtKey.typed !== "onEnt") {
+	console.error("Expected override context at methods key", ovAtKey);
+	failed = true;
+} else {
+	console.log("override context in methods OK");
+}
+const localKeys = collectLocalMethodKeys(
+	overrideSrc,
+	overrideSrc.lastIndexOf("onEnt"),
+	overrideSrc.lastIndexOf("onEnt") + 5
+);
+if (!localKeys.has("foo")) {
+	console.error("Expected local methods to include existing foo");
+	failed = true;
+}
+if (localKeys.has("onEnt")) {
+	console.error("Did not expect the name currently being typed as a local method");
+	failed = true;
+}
+if (ovInsideFn) {
+	console.error("Did not expect override context inside method body");
+	failed = true;
+}
+if (ovInAttrs) {
+	console.error("Did not expect override context in attributes");
+	failed = true;
+}
+const classSrc = `
+Ext.define("BPMSoft.GoOvChild", {
+	override: "BPMSoft.GoOvBase",
+	onEnt
+});
+`;
+const ovClass = getOverrideInsertContext(classSrc, classSrc.indexOf("onEnt") + 5);
+if (!ovClass || ovClass.kind !== "class") {
+	console.error("Expected override context in Ext.define class body", ovClass);
+	failed = true;
+}
+const snippet = formatOverrideSnippet(
+	"BPMSoft.BasePageV2",
+	"onEntityInitialized"
+);
+if (
+	!snippet.includes("@inheritdoc BPMSoft.BasePageV2#onEntityInitialized") ||
+	!snippet.includes("@overriden") ||
+	!snippet.includes("onEntityInitialized: function () {") ||
+	snippet.split("\n").some((line, i) => i > 0 && line.startsWith("\t\t"))
+) {
+	console.error("Unexpected override snippet", snippet);
+	failed = true;
+}
+
+if (syntheticOverride) {
+	const overridable = index.resolveOverridableMethods(syntheticOverride.filePath);
+	const parentHook = overridable.find((m) => m.name === "getFilterCollectionResult");
+	if (!parentHook || parentHook.owner !== "BPMSoft.GoSynthMixin") {
+		console.error(
+			"Expected overridable getFilterCollectionResult from mixin parent",
+			parentHook
+		);
+		failed = true;
+	} else if (overridable.some((m) => m.name === "getFieldsColors")) {
+		console.error("Did not expect current-file method in overridable list");
+		failed = true;
+	} else {
+		console.log("overridable methods OK", parentHook.owner);
 	}
 }
 
