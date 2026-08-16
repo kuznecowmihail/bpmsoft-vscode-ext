@@ -5,13 +5,22 @@ import { resolveAppLayouts } from "./index/workspaceLayout";
 import { BpmsoftCompletionProvider } from "./providers/CompletionProvider";
 import { BpmsoftDefinitionProvider } from "./providers/DefinitionProvider";
 import { BpmsoftHoverProvider } from "./providers/HoverProvider";
+import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
+import {
+	CREATE_MEMBER_COMMAND,
+	CreateMemberArgs,
+	CreateMemberCodeActionProvider,
+	executeCreateMember
+} from "./providers/CreateMemberCodeActionProvider";
 
 let index: SymbolIndex;
 let indexer: ModuleIndexer;
+let diagnostics: MissingMemberDiagnostics;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
 	index = new SymbolIndex();
 	indexer = new ModuleIndexer(index);
+	diagnostics = new MissingMemberDiagnostics(index);
 
 	await preferIndexedCompletions();
 
@@ -20,6 +29,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	const completionProvider = new BpmsoftCompletionProvider(index);
 
 	context.subscriptions.push(
+		diagnostics,
 		// After "." — members; without trigger — bare "BPMSoft" / "Ext" while typing
 		vscode.languages.registerCompletionItemProvider(
 			jsSelector,
@@ -42,8 +52,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			jsSelector,
 			new BpmsoftHoverProvider(index)
 		),
+		vscode.languages.registerCodeActionsProvider(
+			jsSelector,
+			new CreateMemberCodeActionProvider(),
+			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+		),
 		vscode.commands.registerCommand("bpmsoft.rebuildIndex", async () => {
 			await rebuildWithProgress();
+		}),
+		vscode.commands.registerCommand(
+			CREATE_MEMBER_COMMAND,
+			(args: CreateMemberArgs) => executeCreateMember(args, diagnostics)
+		),
+		vscode.workspace.onDidChangeTextDocument((e) => {
+			diagnostics.schedule(e.document);
+		}),
+		vscode.workspace.onDidOpenTextDocument((document) => {
+			diagnostics.refresh(document);
+		}),
+		vscode.workspace.onDidCloseTextDocument((document) => {
+			diagnostics.clear(document.uri);
+			if (document.uri.scheme === "file" && document.languageId === "javascript") {
+				void indexer.indexFile(document.uri.fsPath);
+			}
 		})
 	);
 
@@ -138,6 +169,7 @@ async function rebuildWithProgress(): Promise<void> {
 				`BPMSoft: indexed ${count} modules (${kind})`,
 				5000
 			);
+			diagnostics.refreshOpenDocuments();
 		}
 	);
 }

@@ -10,6 +10,61 @@ import {
 
 type AnyNode = acorn.Node & Record<string, any>;
 
+const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
+
+function parseJs(source: string, comments?: acorn.Comment[]): AnyNode | undefined {
+	const options: acorn.Options = {
+		ecmaVersion: "latest",
+		sourceType: "script",
+		locations: true,
+		allowReturnOutsideFunction: true
+	};
+	if (comments) {
+		options.onComment = comments;
+	}
+	try {
+		return acorn.parse(source, options) as AnyNode;
+	} catch {
+		try {
+			return acorn.parse(source, { ...options, ecmaVersion: 2020 }) as AnyNode;
+		} catch {
+			return undefined;
+		}
+	}
+}
+
+function defineFactory(call: AnyNode): AnyNode | undefined {
+	const args = call.arguments as AnyNode[];
+	if (args.length >= 2 && args[1].type === "ArrayExpression") {
+		return args[2];
+	}
+	return args[1];
+}
+
+function isFunctionNode(node: AnyNode | undefined): boolean {
+	return (
+		node?.type === "FunctionExpression" ||
+		node?.type === "ArrowFunctionExpression"
+	);
+}
+
+function factoryReturnArg(factory: AnyNode | undefined): AnyNode | undefined {
+	if (!factory || !isFunctionNode(factory)) {
+		return undefined;
+	}
+	const body = factory.body as AnyNode;
+	if (body.type !== "BlockStatement") {
+		return body;
+	}
+	let returnArg: AnyNode | undefined;
+	for (const stmt of body.body as AnyNode[]) {
+		if (stmt.type === "ReturnStatement" && stmt.argument) {
+			returnArg = stmt.argument as AnyNode;
+		}
+	}
+	return returnArg;
+}
+
 function posFromNode(node: AnyNode): SourcePosition | undefined {
 	if (typeof node.start !== "number") {
 		return undefined;
@@ -65,10 +120,7 @@ function inferMemberKind(value: AnyNode | undefined): MemberKind {
 	if (!value) {
 		return "property";
 	}
-	if (
-		value.type === "FunctionExpression" ||
-		value.type === "ArrowFunctionExpression"
-	) {
+	if (isFunctionNode(value)) {
 		return "method";
 	}
 	if (value.type === "ObjectExpression") {
@@ -78,11 +130,7 @@ function inferMemberKind(value: AnyNode | undefined): MemberKind {
 }
 
 function functionParamNames(value: AnyNode | undefined): string[] | undefined {
-	if (
-		!value ||
-		(value.type !== "FunctionExpression" &&
-			value.type !== "ArrowFunctionExpression")
-	) {
+	if (!value || !isFunctionNode(value)) {
 		return undefined;
 	}
 	const names: string[] = [];
@@ -236,9 +284,7 @@ function applyExtDefine(
 			continue;
 		}
 		const value = prop.value as AnyNode;
-		const isMethod =
-			value?.type === "FunctionExpression" ||
-			value?.type === "ArrowFunctionExpression";
+		const isMethod = isFunctionNode(value);
 		module.members.push({
 			name: n,
 			kind: isMethod ? "method" : "property",
@@ -512,25 +558,17 @@ function parseDefineCall(
 	const moduleName = nameArg.value as string;
 
 	let deps: string[] = [];
-	let factory: AnyNode | undefined;
-
 	if (args.length >= 2 && args[1].type === "ArrayExpression") {
 		deps = (args[1].elements as AnyNode[])
 			.filter((e) => e && e.type === "Literal" && typeof e.value === "string")
 			.map((e) => e.value as string)
 			.filter((d) => !d.startsWith("css!") && !d.startsWith("text!"));
-		factory = args[2];
-	} else {
-		factory = args[1];
 	}
+	const factory = defineFactory(call);
 
 	const paramNames: string[] = [];
-	if (
-		factory &&
-		(factory.type === "FunctionExpression" ||
-			factory.type === "ArrowFunctionExpression")
-	) {
-		for (const p of factory.params as AnyNode[]) {
+	if (factory && isFunctionNode(factory)) {
+		for (const p of (factory.params as AnyNode[]) || []) {
 			if (p.type === "Identifier") {
 				paramNames.push(p.name as string);
 			}
@@ -547,26 +585,12 @@ function parseDefineCall(
 		mixins: {}
 	};
 
-	if (
-		!factory ||
-		(factory.type !== "FunctionExpression" &&
-			factory.type !== "ArrowFunctionExpression")
-	) {
+	if (!factory || !isFunctionNode(factory)) {
 		return module;
 	}
 
 	const body = factory.body as AnyNode;
-	let returnArg: AnyNode | undefined;
-
-	if (body.type === "BlockStatement") {
-		for (const stmt of body.body as AnyNode[]) {
-			if (stmt.type === "ReturnStatement" && stmt.argument) {
-				returnArg = stmt.argument as AnyNode;
-			}
-		}
-	} else {
-		returnArg = body;
-	}
+	const returnArg = factoryReturnArg(factory);
 
 	// Ext.define inside factory (mixins / overrides / controls)
 	walk.simple(body, {
@@ -646,27 +670,9 @@ export function parseAmdModule(
 	filePath: string
 ): IndexedModule | undefined {
 	const comments: acorn.Comment[] = [];
-	let ast: AnyNode;
-	try {
-		ast = acorn.parse(source, {
-			ecmaVersion: "latest",
-			sourceType: "script",
-			locations: true,
-			allowReturnOutsideFunction: true,
-			onComment: comments
-		}) as AnyNode;
-	} catch {
-		try {
-			ast = acorn.parse(source, {
-				ecmaVersion: 2020,
-				sourceType: "script",
-				locations: true,
-				allowReturnOutsideFunction: true,
-				onComment: comments
-			}) as AnyNode;
-		} catch {
-			return undefined;
-		}
+	const ast = parseJs(source, comments);
+	if (!ast) {
+		return undefined;
 	}
 
 	let found: IndexedModule | undefined;
@@ -1006,6 +1012,337 @@ export function rewriteThisRuntimePrefix(prefix: string): string | undefined {
 		return prefix.slice("this.".length);
 	}
 	return undefined;
+}
+
+export type ThisMemberAccessKind = "methodCall" | "bare" | "attribute";
+
+export interface ThisMemberAccess {
+	kind: ThisMemberAccessKind;
+	name: string;
+	start: number;
+	end: number;
+	argNames?: string[];
+}
+
+export type CreateMemberKind = "method" | "property" | "attribute";
+
+export interface TextInsert {
+	start: number;
+	end: number;
+	text: string;
+}
+
+/**
+ * All `this.foo` / `this.$Foo` / `this.get("Foo")` / `this.set("Foo"` accesses.
+ * Skips comments/strings (AST) and computed `this[expr]`.
+ */
+export function collectThisMemberAccesses(source: string): ThisMemberAccess[] {
+	const ast = parseJs(source);
+	if (!ast) {
+		return [];
+	}
+	const out: ThisMemberAccess[] = [];
+	walk.ancestor(
+		ast,
+		{
+			MemberExpression(node: AnyNode, ancestors: AnyNode[]) {
+				if (node.computed) {
+					return;
+				}
+				const object = node.object as AnyNode;
+				const property = node.property as AnyNode;
+				if (object?.type !== "ThisExpression" || property?.type !== "Identifier") {
+					return;
+				}
+				const name = property.name as string;
+				const start = property.start as number;
+				const end = property.end as number;
+				const call = enclosingCall(node, ancestors);
+				if (name === "get" || name === "set") {
+					const attr = literalStringArg(call);
+					if (attr) {
+						out.push(attr);
+					}
+					return;
+				}
+				if (name.startsWith("$") && name.length > 1) {
+					out.push({
+						kind: "attribute",
+						name: name.slice(1),
+						start,
+						end
+					});
+					return;
+				}
+				if (call) {
+					out.push({
+						kind: "methodCall",
+						name,
+						start,
+						end,
+						argNames: callArgNames(call)
+					});
+					return;
+				}
+				out.push({ kind: "bare", name, start, end });
+			}
+		} as any
+	);
+	return out;
+}
+
+/**
+ * Insert a new method/property/attribute into the current file's schema
+ * section or Ext.define class body.
+ */
+export function planCreateMemberInsert(
+	source: string,
+	kind: CreateMemberKind,
+	name: string,
+	params?: string[]
+): TextInsert | undefined {
+	const ast = parseJs(source);
+	if (!ast) {
+		return undefined;
+	}
+	const schema = findSchemaReturnObject(ast);
+	const unit = detectIndentUnit(source);
+	if (schema) {
+		return insertInSchemaSection(
+			source,
+			schema,
+			kind === "method" ? "methods" : kind === "property" ? "properties" : "attributes",
+			kind,
+			name,
+			params,
+			unit
+		);
+	}
+	if (kind === "attribute") {
+		return undefined;
+	}
+	const extBody = findExtClassBody(ast);
+	if (extBody) {
+		return insertMemberIntoObject(source, extBody, kind, name, params, unit);
+	}
+	return undefined;
+}
+
+function enclosingCall(node: AnyNode, ancestors: AnyNode[]): AnyNode | undefined {
+	for (let i = ancestors.length - 2; i >= 0; i--) {
+		const parent = ancestors[i];
+		if (parent.type === "ChainExpression") {
+			continue;
+		}
+		if (parent.type === "CallExpression") {
+			const callee = parent.callee as AnyNode;
+			if (callee === node || callee === ancestors[i + 1]) {
+				return parent;
+			}
+		}
+		return undefined;
+	}
+	return undefined;
+}
+
+function literalStringArg(call: AnyNode | undefined): ThisMemberAccess | undefined {
+	if (!call) {
+		return undefined;
+	}
+	const arg0 = (call.arguments as AnyNode[])?.[0];
+	if (!arg0 || arg0.type !== "Literal" || typeof arg0.value !== "string") {
+		return undefined;
+	}
+	const name = arg0.value;
+	if (!IDENT_RE.test(name)) {
+		return undefined;
+	}
+	return {
+		kind: "attribute",
+		name,
+		start: (arg0.start as number) + 1,
+		end: (arg0.end as number) - 1
+	};
+}
+
+function callArgNames(call: AnyNode): string[] {
+	const args = (call.arguments as AnyNode[]) || [];
+	return args.map((arg, i) =>
+		arg?.type === "Identifier" ? (arg.name as string) : `arg${i}`
+	);
+}
+
+function findSchemaReturnObject(ast: AnyNode): AnyNode | undefined {
+	let found: AnyNode | undefined;
+	walk.simple(ast, {
+		CallExpression(node: AnyNode) {
+			if (found) {
+				return;
+			}
+			const callee = node.callee as AnyNode;
+			if (callee?.type !== "Identifier" || callee.name !== "define") {
+				return;
+			}
+			const returnArg = factoryReturnArg(defineFactory(node));
+			if (returnArg?.type === "ObjectExpression" && isSchemaReturn(returnArg)) {
+				found = returnArg;
+			}
+		}
+	} as any);
+	return found;
+}
+
+function findExtClassBody(ast: AnyNode): AnyNode | undefined {
+	let found: AnyNode | undefined;
+	walk.simple(ast, {
+		CallExpression(node: AnyNode) {
+			if (found || !isExtDefineCall(node)) {
+				return;
+			}
+			const { classBody } = extDefineParts(node);
+			if (classBody?.type === "ObjectExpression") {
+				found = classBody;
+			}
+		}
+	} as any);
+	return found;
+}
+
+function detectIndentUnit(source: string): string {
+	const m = source.match(/\n([\t ]+)/);
+	if (!m) {
+		return "\t";
+	}
+	if (m[1].includes("\t")) {
+		return "\t";
+	}
+	if (m[1].length % 4 === 0) {
+		return "    ";
+	}
+	if (m[1].length % 2 === 0) {
+		return "  ";
+	}
+	return "\t";
+}
+
+function indentAt(source: string, offset: number): string {
+	let i = offset;
+	while (i > 0 && source[i - 1] !== "\n") {
+		i--;
+	}
+	let j = i;
+	while (j < source.length && (source[j] === " " || source[j] === "\t")) {
+		j++;
+	}
+	return source.slice(i, j);
+}
+
+function formatCreateMemberText(
+	kind: CreateMemberKind,
+	name: string,
+	params: string[] | undefined,
+	indent: string,
+	unit: string
+): string {
+	if (kind === "method") {
+		const args = (params || []).join(", ");
+		return `${name}: function (${args}) {\n${indent}${unit}\n${indent}}`;
+	}
+	if (kind === "property") {
+		return `${name}: null`;
+	}
+	return `${name}: {\n${indent}${unit}dataValueType: BPMSoft.DataValueType.TEXT\n${indent}}`;
+}
+
+function insertIntoObject(
+	source: string,
+	obj: AnyNode,
+	inner: string,
+	innerIndent: string
+): TextInsert | undefined {
+	const close = (obj.end as number) - 1;
+	if (close < 0 || source[close] !== "}") {
+		return undefined;
+	}
+	const props = (obj.properties as AnyNode[]) || [];
+	let comma = "";
+	if (props.length) {
+		const last = props[props.length - 1];
+		const between = source.slice(last.end as number, close);
+		if (!between.includes(",")) {
+			comma = ",";
+		}
+	}
+	let padStart = close;
+	while (padStart > 0 && /[ \t\n\r]/.test(source[padStart - 1])) {
+		padStart--;
+	}
+	const closeIndent = indentAt(source, close);
+	return {
+		start: padStart,
+		end: close,
+		text: `${comma}\n${innerIndent}${inner}\n${closeIndent}`
+	};
+}
+
+function objectPropIndent(source: string, obj: AnyNode, unit: string): string {
+	const props = (obj.properties as AnyNode[]) || [];
+	return props.length
+		? indentAt(source, props[props.length - 1].start as number)
+		: indentAt(source, obj.start as number) + unit;
+}
+
+function insertInSchemaSection(
+	source: string,
+	schema: AnyNode,
+	sectionName: string,
+	kind: CreateMemberKind,
+	name: string,
+	params: string[] | undefined,
+	unit: string
+): TextInsert | undefined {
+	const section = findSchemaSection(schema, sectionName);
+	if (section?.type === "ObjectExpression") {
+		return insertMemberIntoObject(source, section, kind, name, params, unit);
+	}
+	return insertNewSchemaSection(
+		source,
+		schema,
+		sectionName,
+		kind,
+		name,
+		params,
+		unit
+	);
+}
+
+function insertMemberIntoObject(
+	source: string,
+	obj: AnyNode,
+	kind: CreateMemberKind,
+	name: string,
+	params: string[] | undefined,
+	unit: string
+): TextInsert | undefined {
+	const innerIndent = objectPropIndent(source, obj, unit);
+	const inner = formatCreateMemberText(kind, name, params, innerIndent, unit);
+	return insertIntoObject(source, obj, inner, innerIndent);
+}
+
+function insertNewSchemaSection(
+	source: string,
+	schema: AnyNode,
+	sectionName: string,
+	kind: CreateMemberKind,
+	name: string,
+	params: string[] | undefined,
+	unit: string
+): TextInsert | undefined {
+	const sectionIndent = objectPropIndent(source, schema, unit);
+	const innerIndent = sectionIndent + unit;
+	const member = formatCreateMemberText(kind, name, params, innerIndent, unit);
+	const section = `${sectionName}: {\n${innerIndent}${member}\n${sectionIndent}}`;
+	return insertIntoObject(source, schema, section, sectionIndent);
 }
 
 export interface OverrideInsertContext {

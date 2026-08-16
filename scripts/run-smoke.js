@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys } = require("../out/parse/amdParser");
+const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
 const { buildPlatformStubs } = require("../out/stubs/platformGlobals");
 const { buildExtStubs } = require("../out/stubs/extGlobals");
@@ -809,6 +809,71 @@ if (!syntheticEntityCols.some((m) => m.name === "Owner" && m.children?.some((c) 
 	failed = true;
 } else {
 	console.log("synthetic entity columns OK", syntheticEntityCols.map((m) => m.name).join(","));
+}
+
+{
+	const schemaSrc = `
+define("FooPage", [], function() {
+	return {
+		entitySchemaName: "Foo",
+		attributes: {
+			ExistingAttr: { dataValueType: BPMSoft.DataValueType.TEXT }
+		},
+		properties: {
+			existingProp: null
+		},
+		methods: {
+			existingMethod: function() {
+				this.missingMethod(entity);
+				this.existingMethod();
+				this.missingProp;
+				this.$MissingAttr;
+				this.get("MissingGet");
+				this.set("ExistingAttr", 1);
+				this.sandbox;
+			}
+		}
+	};
+});
+`;
+	const accesses = collectThisMemberAccesses(schemaSrc);
+	const byKey = (kind, name) =>
+		accesses.find((a) => a.kind === kind && a.name === name);
+	if (!byKey("methodCall", "missingMethod")?.argNames?.includes("entity")) {
+		console.error("collectThisMemberAccesses missing methodCall", accesses);
+		failed = true;
+	}
+	if (!byKey("bare", "missingProp") || !byKey("bare", "sandbox")) {
+		console.error("collectThisMemberAccesses missing bare access", accesses);
+		failed = true;
+	}
+	if (!byKey("attribute", "MissingAttr") || !byKey("attribute", "MissingGet")) {
+		console.error("collectThisMemberAccesses missing attribute access", accesses);
+		failed = true;
+	}
+	if (byKey("methodCall", "get") || byKey("methodCall", "set")) {
+		console.error("collectThisMemberAccesses should not flag get/set as methods");
+		failed = true;
+	}
+	const methodInsert = planCreateMemberInsert(schemaSrc, "method", "newOne", ["a"]);
+	if (!methodInsert || !methodInsert.text.includes("newOne: function (a)")) {
+		console.error("planCreateMemberInsert method failed", methodInsert);
+		failed = true;
+	}
+	const noMethods = `define("X", [], function() { return { entitySchemaName: "E", diff: [] }; });`;
+	const sectionInsert = planCreateMemberInsert(noMethods, "method", "init");
+	if (!sectionInsert || !sectionInsert.text.includes("methods:")) {
+		console.error("planCreateMemberInsert should create methods section", sectionInsert);
+		failed = true;
+	}
+	const extSrc = `Ext.define("BPMSoft.Foo", { extend: "BPMSoft.Bar", init: function() {} });`;
+	const propInsert = planCreateMemberInsert(extSrc, "property", "flag");
+	if (!propInsert || !propInsert.text.includes("flag: null")) {
+		console.error("planCreateMemberInsert Ext property failed", propInsert);
+		failed = true;
+	} else {
+		console.log("this-member diagnostics parse/insert OK");
+	}
 }
 
 if (failed) {
