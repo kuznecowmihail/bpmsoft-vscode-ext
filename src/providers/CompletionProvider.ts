@@ -217,15 +217,15 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 			);
 		}
 
-		if (rawPrefix === "this.sandbox") {
-			const sandbox = this.index
-				.resolveThisMembers(document.uri.fsPath)
-				.find((m) => m.name === "sandbox");
-			return asList(toItems(sandbox?.children || []));
-		}
-
 		if (rawPrefix.startsWith("this.")) {
-			return undefined;
+			return asList(
+				toItems(
+					this.index.resolveThisPathMembers(
+						document.uri.fsPath,
+						rawPrefix.slice("this.".length)
+					)
+				)
+			);
 		}
 
 		const parts = rawPrefix.split(".");

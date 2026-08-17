@@ -15,11 +15,12 @@ export interface HierarchyLayer {
 	packageName?: string;
 	/** Stack entry that produced this layer, if any */
 	stackEntry?: string;
-	source: "stack" | "pkg-extra" | "structure-parent";
+		source: "stack" | "pkg-extra";
 }
 
 const STRUCTURES_RE =
 	/BPMSoft\.configuration\.Structures\["([^"]+)"\]\s*=\s*\{([^}]*)\}/;
+const MAX_SCHEMA_WALK_DEPTH = 50;
 
 /**
  * Resolves Creatio/BPMSoft schema replacement chains via conf/content Structures.
@@ -31,15 +32,15 @@ export class SchemaHierarchyResolver {
 	private confContentDirs: string[] = [];
 	private configurationRoots: string[] = [];
 	private structureCache = new Map<string, SchemaStructure | null>();
-	private pkgNamesCache: string[] | null = null;
 	private platformExtendCache = new Map<string, string | null>();
+	private descriptorParentCache = new Map<string, string | null>();
 
 	setWorkspaceRoots(roots: string[]): void {
 		this.confContentDirs = [];
 		this.configurationRoots = [];
 		this.structureCache.clear();
 		this.platformExtendCache.clear();
-		this.pkgNamesCache = null;
+		this.descriptorParentCache.clear();
 		const layouts = resolveAppLayouts(roots);
 
 		for (const layout of layouts) {
@@ -115,6 +116,71 @@ export class SchemaHierarchyResolver {
 	}
 
 	/**
+	 * Parent schema from Pkg/.../Schemas/{Name}/descriptor.json.
+	 * Used only when the schema is absent from conf/content.
+	 *
+	 * Parent.Name === schemaName is a replacement (ExtendParent from another
+	 * package), not a walk target — skip it and look at other packages for a
+	 * real parent so the walk cannot loop on the same name.
+	 */
+	private readDescriptorParent(
+		schemaName: string,
+		preferredFilePath?: string
+	): string | undefined {
+		if (!preferredFilePath) {
+			const cached = this.descriptorParentCache.get(schemaName);
+			if (cached !== undefined) {
+				return cached || undefined;
+			}
+		}
+		const files = this.descriptorSchemaFiles(schemaName, preferredFilePath);
+		for (const filePath of files) {
+			const parent = this.parseDescriptorFile(
+				descriptorPathForSchemaFile(filePath)
+			);
+			if (parent && parent !== schemaName) {
+				if (!preferredFilePath) {
+					this.descriptorParentCache.set(schemaName, parent);
+				}
+				return parent;
+			}
+		}
+		if (!preferredFilePath) {
+			this.descriptorParentCache.set(schemaName, null);
+		}
+		return undefined;
+	}
+
+	private descriptorSchemaFiles(
+		schemaName: string,
+		preferredFilePath?: string
+	): string[] {
+		const preferred = preferredFilePath
+			? normalizePath(preferredFilePath)
+			: "";
+		const files = this.findPkgSchemaFiles(schemaName).map(normalizePath);
+		if (!preferred) {
+			return files;
+		}
+		const rest = files.filter((p) => p !== preferred);
+		if (fs.existsSync(preferred)) {
+			return [preferred, ...rest];
+		}
+		return rest;
+	}
+
+	private parseDescriptorFile(descriptorPath: string): string | undefined {
+		if (!descriptorPath || !fs.existsSync(descriptorPath)) {
+			return undefined;
+		}
+		try {
+			return parseDescriptorParent(fs.readFileSync(descriptorPath, "utf8"));
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
 	 * Walk structureParent to the root schema (no parent), then read
 	 * extend: "BPMSoft.model.BaseViewModel" from that conf Structure define.
 	 */
@@ -125,11 +191,30 @@ export class SchemaHierarchyResolver {
 		const chain: string[] = [];
 		const visited = new Set<string>();
 		let current: string | undefined = schemaName;
-		while (current && !visited.has(current)) {
+		while (
+			current &&
+			!visited.has(current) &&
+			chain.length < MAX_SCHEMA_WALK_DEPTH
+		) {
 			visited.add(current);
 			chain.push(current);
 			const structure = this.parseStructure(current);
-			current = structure?.structureParent || undefined;
+			if (structure?.structureParent) {
+				current = shouldWalkDescriptorParent(
+					current,
+					structure.structureParent,
+					visited
+				)
+					? structure.structureParent
+					: undefined;
+			} else if (!structure) {
+				const parent = this.readDescriptorParent(current);
+				current = shouldWalkDescriptorParent(current, parent, visited)
+					? parent
+					: undefined;
+			} else {
+				current = undefined;
+			}
 		}
 		for (let i = chain.length - 1; i >= 0; i--) {
 			const ext = this.readPlatformExtend(chain[i]);
@@ -165,12 +250,17 @@ export class SchemaHierarchyResolver {
 
 	/**
 	 * Full schema inheritance as file layers, child → parent.
-	 * Includes structureParent recursion and Pkg schemas missing from the stack.
+	 * Includes structureParent recursion, descriptor.json Parent when the
+	 * schema is missing from conf/content, and Pkg schemas missing from the stack.
 	 */
-	resolveSchemaLayers(schemaName: string): HierarchyLayer[] {
+	resolveSchemaLayers(
+		schemaName: string,
+		fromFilePath?: string
+	): HierarchyLayer[] {
 		const layers: HierarchyLayer[] = [];
 		const seenFiles = new Set<string>();
 		const visitedSchemas = new Set<string>();
+		let depth = 0;
 
 		const appendUnique = (layer: HierarchyLayer) => {
 			const key = normalizePath(layer.filePath);
@@ -185,10 +275,15 @@ export class SchemaHierarchyResolver {
 		};
 
 		const walk = (name: string) => {
-			if (!name || visitedSchemas.has(name)) {
+			if (
+				!name ||
+				visitedSchemas.has(name) ||
+				depth >= MAX_SCHEMA_WALK_DEPTH
+			) {
 				return;
 			}
 			visitedSchemas.add(name);
+			depth += 1;
 
 			const structure = this.parseStructure(name);
 			const stack = structure?.innerHierarchyStack?.length
@@ -237,7 +332,22 @@ export class SchemaHierarchyResolver {
 			}
 
 			if (structure?.structureParent) {
-				walk(structure.structureParent);
+				if (
+					shouldWalkDescriptorParent(
+						name,
+						structure.structureParent,
+						visitedSchemas
+					)
+				) {
+					walk(structure.structureParent);
+				}
+			} else if (!structure) {
+				const preferred =
+					name === schemaName ? fromFilePath : undefined;
+				const parent = this.readDescriptorParent(name, preferred);
+				if (shouldWalkDescriptorParent(name, parent, visitedSchemas)) {
+					walk(parent);
+				}
 			}
 		};
 
@@ -386,31 +496,6 @@ export class SchemaHierarchyResolver {
 		}
 		return out;
 	}
-
-	listPackageNames(): string[] {
-		if (this.pkgNamesCache) {
-			return this.pkgNamesCache;
-		}
-		const names = new Set<string>();
-		for (const root of this.configurationRoots) {
-			const pkgRoot = path.join(root, "Pkg");
-			if (!fs.existsSync(pkgRoot)) {
-				continue;
-			}
-			try {
-				for (const name of fs.readdirSync(pkgRoot)) {
-					if (name === "README.md" || name.startsWith(".")) {
-						continue;
-					}
-					names.add(name);
-				}
-			} catch {
-				// ignore
-			}
-		}
-		this.pkgNamesCache = Array.from(names);
-		return this.pkgNamesCache;
-	}
 }
 
 export function packageFromStackEntry(
@@ -470,6 +555,46 @@ export function parseStructurePlatformExtend(source: string): string | undefined
 		/\bextend\s*:\s*['"]((?:BPMSoft|Ext)\.[\w.]+)['"]/
 	);
 	return match?.[1];
+}
+
+/**
+ * Whether to follow descriptor/structure parent.
+ * Same-name Parent is a replacement from another package — do not walk it
+ * (that would recurse forever). Already visited names are also skipped.
+ */
+export function shouldWalkDescriptorParent(
+	currentSchema: string,
+	parentName: string | undefined,
+	visitedSchemas: Set<string>
+): parentName is string {
+	return Boolean(
+		parentName &&
+			parentName !== currentSchema &&
+			!visitedSchemas.has(parentName)
+	);
+}
+
+/**
+ * Parent.Name from a client schema descriptor.json.
+ */
+export function parseDescriptorParent(source: string): string | undefined {
+	try {
+		const json = JSON.parse(source.replace(/^\uFEFF/, ""));
+		const root = json?.Descriptor && typeof json.Descriptor === "object"
+			? json.Descriptor
+			: json;
+		const name = root?.Parent?.Name;
+		if (typeof name === "string" && /^[A-Za-z_][\w]*$/.test(name)) {
+			return name;
+		}
+	} catch {
+		// ignore
+	}
+	return undefined;
+}
+
+function descriptorPathForSchemaFile(filePath: string): string {
+	return path.join(path.dirname(filePath), "descriptor.json");
 }
 
 function packageFromPkgPath(filePath: string): string | undefined {

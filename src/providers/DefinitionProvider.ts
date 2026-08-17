@@ -13,6 +13,19 @@ function memberLocation(member: IndexedMember | undefined): vscode.Location | un
 	);
 }
 
+function hitLocation(hit: {
+	module: { filePath: string };
+	member: IndexedMember;
+}): vscode.Location | undefined {
+	if (!hit.member.position) {
+		return undefined;
+	}
+	return new vscode.Location(
+		vscode.Uri.file(hit.module.filePath),
+		new vscode.Position(hit.member.position.line, hit.member.position.character)
+	);
+}
+
 export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 	constructor(private readonly index: SymbolIndex) {}
 
@@ -25,24 +38,7 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 		const locations: vscode.Location[] = [];
 		const getSet = getThisGetSetContext(text, offset);
 		if (getSet?.name) {
-			for (const hit of this.index.findThisMemberLocations(
-				document.uri.fsPath,
-				getSet.name,
-				"attribute"
-			)) {
-				if (!hit.member.position) {
-					continue;
-				}
-				locations.push(
-					new vscode.Location(
-						vscode.Uri.file(hit.module.filePath),
-						new vscode.Position(
-							hit.member.position.line,
-							hit.member.position.character
-						)
-					)
-				);
-			}
+			this.pushThisHits(locations, document.uri.fsPath, getSet.name, "attribute");
 			if (locations.length) {
 				return locations;
 			}
@@ -57,24 +53,12 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 			lookupAccess &&
 			(ident.name === "value" || ident.name === "displayValue")
 		) {
-			for (const hit of this.index.findThisMemberLocations(
+			this.pushThisHits(
+				locations,
 				document.uri.fsPath,
 				lookupAccess.attrName,
 				"attribute"
-			)) {
-				if (!hit.member.position) {
-					continue;
-				}
-				locations.push(
-					new vscode.Location(
-						vscode.Uri.file(hit.module.filePath),
-						new vscode.Position(
-							hit.member.position.line,
-							hit.member.position.character
-						)
-					)
-				);
-			}
+			);
 			if (locations.length) {
 				return locations;
 			}
@@ -82,40 +66,30 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 
 		const leftExpr = getMemberAccessPrefix(text, ident.start);
 
-		if (leftExpr === "this.sandbox") {
-			const loc = memberLocation(this.index.findSandboxMember(ident.name));
-			if (loc) {
-				return loc;
-			}
-		}
-
-		if (leftExpr === "this" && ident.name === "sandbox") {
-			const sandbox = this.index
-				.resolveThisMembers(document.uri.fsPath)
-				.find((m) => m.name === "sandbox");
-			const loc = memberLocation(sandbox);
+		if (leftExpr?.startsWith("this.")) {
+			const loc = memberLocation(
+				this.index.findThisPathMember(
+					document.uri.fsPath,
+					leftExpr.slice("this.".length),
+					ident.name
+				)
+			);
 			if (loc) {
 				return loc;
 			}
 		}
 
 		if (leftExpr === "this" || leftExpr?.startsWith("this")) {
-			for (const hit of this.index.findThisMemberLocations(
-				document.uri.fsPath,
-				ident.name
-			)) {
-				if (!hit.member.position) {
-					continue;
-				}
-				locations.push(
-					new vscode.Location(
-						vscode.Uri.file(hit.module.filePath),
-						new vscode.Position(
-							hit.member.position.line,
-							hit.member.position.character
-						)
-					)
+			this.pushThisHits(locations, document.uri.fsPath, ident.name);
+			if (!locations.length && leftExpr === "this") {
+				const loc = memberLocation(
+					this.index
+						.resolveThisMembers(document.uri.fsPath)
+						.find((m) => m.name === ident.name)
 				);
+				if (loc) {
+					locations.push(loc);
+				}
 			}
 		} else if (leftExpr && leftExpr !== ident.name) {
 			for (const m of this.resolveModulesFromExpr(
@@ -154,27 +128,25 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 			const line = document.lineAt(position.line).text;
 			const before = line.slice(0, position.character);
 			if (/\bthis\.[\w$]*$/.test(before)) {
-				for (const hit of this.index.findThisMemberLocations(
-					document.uri.fsPath,
-					ident.name
-				)) {
-					if (!hit.member.position) {
-						continue;
-					}
-					locations.push(
-						new vscode.Location(
-							vscode.Uri.file(hit.module.filePath),
-							new vscode.Position(
-								hit.member.position.line,
-								hit.member.position.character
-							)
-						)
-					);
-				}
+				this.pushThisHits(locations, document.uri.fsPath, ident.name);
 			}
 		}
 
 		return locations.length ? locations : undefined;
+	}
+
+	private pushThisHits(
+		locations: vscode.Location[],
+		filePath: string,
+		name: string,
+		kind?: IndexedMember["kind"]
+	): void {
+		for (const hit of this.index.findThisMemberLocations(filePath, name, kind)) {
+			const loc = hitLocation(hit);
+			if (loc) {
+				locations.push(loc);
+			}
+		}
 	}
 
 	private resolveModulesFromExpr(filePath: string, expr: string) {

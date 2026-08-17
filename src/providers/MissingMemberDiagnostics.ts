@@ -1,12 +1,17 @@
+import * as path from "path";
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember } from "../index/types";
+import { IndexedMember, isPrivateMemberFromOtherFile } from "../index/types";
 import { collectThisMemberAccesses, parseAmdModule, ThisMemberAccess } from "../parse/amdParser";
 
 export const DIAG_SOURCE = "BPMSoft";
 export const DIAG_MISSING_METHOD = "bpmsoft.missingMethod";
 export const DIAG_MISSING_PROPERTY = "bpmsoft.missingProperty";
 export const DIAG_MISSING_ATTRIBUTE = "bpmsoft.missingAttribute";
+export const DIAG_MISSING_MIXIN = "bpmsoft.missingMixin";
+export const DIAG_MISSING_MIXIN_METHOD = "bpmsoft.missingMixinMethod";
+export const DIAG_MISSING_MIXIN_PROPERTY = "bpmsoft.missingMixinProperty";
+export const DIAG_PRIVATE_MEMBER = "bpmsoft.privateMember";
 
 const DEBOUNCE_MS = 300;
 const METHOD_ALLOWLIST = new Set(["callParent"]);
@@ -63,7 +68,7 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 		const isPage = parsed.kind === "page";
 		const diags: vscode.Diagnostic[] = [];
 		for (const access of collectThisMemberAccesses(source)) {
-			const diag = diagnosticForAccess(document, access, known, isPage);
+			const diag = diagnosticForAccess(document, access, known, isPage, filePath);
 			if (diag) {
 				diags.push(diag);
 			}
@@ -86,34 +91,106 @@ function isJsFile(document: vscode.TextDocument): boolean {
 	return document.languageId === "javascript" && document.uri.scheme === "file";
 }
 
+interface MemberCatalog {
+	methods: Set<string>;
+	all: Set<string>;
+	origins: Map<string, string>;
+}
+
+interface MixinCatalog extends MemberCatalog {
+	resolved: boolean;
+}
+
+function catalogMembers(members: IndexedMember[]): MemberCatalog {
+	const methods = new Set<string>();
+	const all = new Set<string>();
+	const origins = new Map<string, string>();
+	for (const member of members) {
+		all.add(member.name);
+		if (member.filePath) {
+			origins.set(member.name, member.filePath);
+		}
+		if (member.kind === "method") {
+			methods.add(member.name);
+		}
+	}
+	return { methods, all, origins };
+}
+
 function indexKnownMembers(members: IndexedMember[]): {
 	methods: Set<string>;
 	attributes: Set<string>;
 	all: Set<string>;
+	origins: Map<string, string>;
+	mixins: Set<string>;
+	mixinMembers: Map<string, MixinCatalog>;
 } {
-	const methods = new Set<string>();
+	const catalog = catalogMembers(members);
 	const attributes = new Set<string>();
-	const all = new Set<string>();
 	for (const member of members) {
-		all.add(member.name);
-		if (member.kind === "method") {
-			methods.add(member.name);
-		} else if (member.kind === "attribute") {
+		if (member.kind === "attribute") {
 			attributes.add(member.name);
 		}
 	}
-	return { methods, attributes, all };
+	const mixins = new Set<string>();
+	const mixinMembers = new Map<string, MixinCatalog>();
+	const bag = members.find((m) => m.name === "mixins");
+	for (const child of bag?.children || []) {
+		mixins.add(child.name);
+		const nested = catalogMembers(child.children || []);
+		if (child.filePath) {
+			for (const item of child.children || []) {
+				if (!nested.origins.has(item.name)) {
+					nested.origins.set(item.name, child.filePath);
+				}
+			}
+		}
+		mixinMembers.set(child.name, {
+			...nested,
+			resolved: Boolean(child.filePath)
+		});
+	}
+	return {
+		methods: catalog.methods,
+		attributes,
+		all: catalog.all,
+		origins: catalog.origins,
+		mixins,
+		mixinMembers
+	};
 }
 
 function diagnosticForAccess(
 	document: vscode.TextDocument,
 	access: ThisMemberAccess,
-	known: { methods: Set<string>; attributes: Set<string>; all: Set<string> },
-	isPage: boolean
+	known: ReturnType<typeof indexKnownMembers>,
+	isPage: boolean,
+	currentFilePath: string
 ): vscode.Diagnostic | undefined {
+	if (access.kind === "mixin") {
+		if (known.mixins.has(access.name)) {
+			return undefined;
+		}
+		return makeDiag(
+			document,
+			access,
+			vscode.DiagnosticSeverity.Error,
+			DIAG_MISSING_MIXIN,
+			`Миксин «${access.name}» не найден в схеме или иерархии`
+		);
+	}
+	if (access.kind === "mixinMethod" || access.kind === "mixinProperty") {
+		return diagnosticForMixinMember(document, access, known, currentFilePath);
+	}
 	if (access.kind === "methodCall") {
 		if (METHOD_ALLOWLIST.has(access.name) || known.methods.has(access.name)) {
-			return undefined;
+			return privateMemberDiag(
+				document,
+				access,
+				"метод",
+				known.origins.get(access.name),
+				currentFilePath
+			);
 		}
 		return makeDiag(
 			document,
@@ -125,7 +202,13 @@ function diagnosticForAccess(
 	}
 	if (access.kind === "bare") {
 		if (BARE_ALLOWLIST.has(access.name) || known.all.has(access.name)) {
-			return undefined;
+			return privateMemberDiag(
+				document,
+				access,
+				"свойство",
+				known.origins.get(access.name),
+				currentFilePath
+			);
 		}
 		return makeDiag(
 			document,
@@ -144,6 +227,81 @@ function diagnosticForAccess(
 		vscode.DiagnosticSeverity.Warning,
 		DIAG_MISSING_ATTRIBUTE,
 		`Атрибут «${access.name}» не найден в схеме или иерархии`
+	);
+}
+
+function diagnosticForMixinMember(
+	document: vscode.TextDocument,
+	access: ThisMemberAccess,
+	known: ReturnType<typeof indexKnownMembers>,
+	currentFilePath: string
+): vscode.Diagnostic | undefined {
+	const mixinName = access.mixinName;
+	if (!mixinName || !known.mixins.has(mixinName)) {
+		return undefined;
+	}
+	const members = known.mixinMembers.get(mixinName);
+	if (!members?.resolved) {
+		return undefined;
+	}
+	if (access.kind === "mixinMethod") {
+		if (METHOD_ALLOWLIST.has(access.name) || members.methods.has(access.name)) {
+			return privateMemberDiag(
+				document,
+				access,
+				"метод",
+				members.origins.get(access.name),
+				currentFilePath,
+				mixinName
+			);
+		}
+		return makeDiag(
+			document,
+			access,
+			vscode.DiagnosticSeverity.Error,
+			DIAG_MISSING_MIXIN_METHOD,
+			`Метод «${access.name}» не найден в миксине «${mixinName}»`
+		);
+	}
+	if (METHOD_ALLOWLIST.has(access.name) || members.all.has(access.name)) {
+		return privateMemberDiag(
+			document,
+			access,
+			"свойство",
+			members.origins.get(access.name),
+			currentFilePath,
+			mixinName
+		);
+	}
+	return makeDiag(
+		document,
+		access,
+		vscode.DiagnosticSeverity.Error,
+		DIAG_MISSING_MIXIN_PROPERTY,
+		`Свойство «${access.name}» не найдено в миксине «${mixinName}»`
+	);
+}
+
+function privateMemberDiag(
+	document: vscode.TextDocument,
+	access: ThisMemberAccess,
+	kindLabel: "метод" | "свойство",
+	originFilePath: string | undefined,
+	currentFilePath: string,
+	mixinName?: string
+): vscode.Diagnostic | undefined {
+	if (!isPrivateMemberFromOtherFile(access.name, originFilePath, currentFilePath)) {
+		return undefined;
+	}
+	const where = mixinName
+		? `миксине «${mixinName}»`
+		: path.basename(originFilePath as string);
+	return makeDiag(
+		document,
+		access,
+		vscode.DiagnosticSeverity.Warning,
+		DIAG_PRIVATE_MEMBER,
+		`Приватный ${kindLabel} «${access.name}» вызывается вне файла определения (${where})`
 	);
 }
 

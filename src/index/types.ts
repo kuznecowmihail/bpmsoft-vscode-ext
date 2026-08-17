@@ -1,3 +1,5 @@
+import * as path from "path";
+
 export type MemberKind =
 	| "method"
 	| "const"
@@ -28,6 +30,22 @@ export interface IndexedMember {
 
 export function memberDedupeKey(member: IndexedMember): string {
 	return member.kind === "attribute" ? `$${member.name}` : member.name;
+}
+
+/** Names like `_closePage` — intended as file-private in BPMSoft schemas. */
+export function isPrivateMemberName(name: string): boolean {
+	return name.startsWith("_") && name.length > 1;
+}
+
+export function isPrivateMemberFromOtherFile(
+	name: string,
+	originFilePath: string | undefined,
+	currentFilePath: string
+): boolean {
+	if (!isPrivateMemberName(name) || !originFilePath || !currentFilePath) {
+		return false;
+	}
+	return path.normalize(originFilePath) !== path.normalize(currentFilePath);
 }
 
 export interface IndexedModule {

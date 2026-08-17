@@ -373,9 +373,36 @@ export class SymbolIndex {
 		const result = this.mergeMembers(chainMods, true);
 		const seen = new Set(result.map((m) => memberDedupeKey(m)));
 		this.appendMixinMembers(chainMods, result, seen);
+		this.appendMixinAccessors(chainMods, result, seen);
 		this.appendEntityColumns(chainMods, result, seen);
 		this.appendRuntimeThisMembers(result, seen);
 		return result;
+	}
+
+	/**
+	 * Members under `this.{path}`, e.g. `mixins`, `mixins.LocalName`, `sandbox`.
+	 */
+	resolveThisPathMembers(filePath: string, pathAfterThis: string): IndexedMember[] {
+		let current = this.resolveThisMembers(filePath);
+		const parts = pathAfterThis.split(".").filter(Boolean);
+		for (const part of parts) {
+			const node = current.find((m) => m.name === part);
+			if (!node?.children?.length) {
+				return [];
+			}
+			current = node.children;
+		}
+		return current;
+	}
+
+	findThisPathMember(
+		filePath: string,
+		pathAfterThis: string,
+		name: string
+	): IndexedMember | undefined {
+		return this.resolveThisPathMembers(filePath, pathAfterThis).find(
+			(m) => m.name === name
+		);
 	}
 
 	/**
@@ -428,25 +455,7 @@ export class SymbolIndex {
 		for (const ownerMod of chainMods) {
 			addFrom(ownerMod);
 		}
-
-		const mixinAlts = new Set<string>();
-		for (const schemaMod of chainMods) {
-			for (const alt of Object.values(schemaMod.mixins)) {
-				mixinAlts.add(alt);
-			}
-		}
-		for (const alt of mixinAlts) {
-			const short = alt.replace(/^BPMSoft\./, "");
-			const mixinMods = this.getAllByName(alt).concat(this.getAllByName(short));
-			const uniqueMixins = new Map<string, IndexedModule>();
-			for (const m of mixinMods) {
-				uniqueMixins.set(m.filePath, m);
-			}
-			for (const mixinMod of uniqueMixins.values()) {
-				addFrom(mixinMod);
-			}
-		}
-
+		this.forEachMixinModule(chainMods, addFrom);
 		return out;
 	}
 
@@ -489,22 +498,7 @@ export class SymbolIndex {
 		for (const m of chainMods) {
 			consider(m);
 		}
-
-		const mixinAlts = new Set<string>();
-		for (const schemaMod of chainMods) {
-			for (const alt of Object.values(schemaMod.mixins)) {
-				mixinAlts.add(alt);
-			}
-		}
-		for (const alt of mixinAlts) {
-			const short = alt.replace(/^BPMSoft\./, "");
-			for (const mixinMod of this.getAllByName(alt).concat(
-				this.getAllByName(short)
-			)) {
-				consider(mixinMod);
-			}
-		}
-
+		this.forEachMixinModule(chainMods, consider);
 		const entityMod = this.getEntityModuleForChain(chainMods);
 		if (entityMod) {
 			consider(entityMod);
@@ -534,7 +528,7 @@ export class SymbolIndex {
 		push(mod);
 
 		if (this.hierarchy.hasRoots()) {
-			const layers = this.hierarchy.resolveSchemaLayers(mod.name);
+			const layers = this.hierarchy.resolveSchemaLayers(mod.name, mod.filePath);
 			for (const layer of layers) {
 				push(this.ensureModule(layer.filePath));
 			}
@@ -545,18 +539,47 @@ export class SymbolIndex {
 			}
 		}
 
-		const platformClass = this.hierarchy.resolvePlatformExtendClass(mod.name);
-		if (platformClass) {
-			const rootExt = this.pickNamedModule(platformClass);
-			if (rootExt) {
-				push(rootExt);
-				for (const parent of this.collectInheritanceChain(rootExt)) {
-					push(parent);
-				}
-			}
-		}
+		// Runtime parent of every client schema: ViewModelGenerator.baseViewModelClassName
+		this.appendExtClassChain(this.schemaViewModelClassName(), push);
+		this.appendExtClassChain(
+			this.hierarchy.resolvePlatformExtendClass(mod.name),
+			push
+		);
 
 		return ordered;
+	}
+
+	/**
+	 * Ext class that SchemaBuilder uses as the root of generated schema view models.
+	 * Vanilla Creatio: BPMSoft.BaseSchemaViewModel (not listed in structureParent).
+	 */
+	private schemaViewModelClassName(): string {
+		const generator =
+			this.pickNamedModule("BPMSoft.ViewModelGenerator") ||
+			this.pickNamedModule("ViewModelGeneratorV2");
+		const member = generator?.members.find(
+			(m) => m.name === "baseViewModelClassName"
+		);
+		const raw = `${member?.detail || ""} ${member?.documentation || ""}`;
+		const match = raw.match(/BPMSoft(?:\.\w+)+/);
+		return match?.[0] || "BPMSoft.BaseSchemaViewModel";
+	}
+
+	private appendExtClassChain(
+		className: string | undefined,
+		push: (m?: IndexedModule) => void
+	): void {
+		if (!className) {
+			return;
+		}
+		const root = this.pickNamedModule(className);
+		if (!root) {
+			return;
+		}
+		push(root);
+		for (const parent of this.collectInheritanceChain(root)) {
+			push(parent);
+		}
 	}
 
 	private pickNamedModule(name: string): IndexedModule | undefined {
@@ -574,40 +597,151 @@ export class SymbolIndex {
 		);
 	}
 
+	private declaredMixins(
+		owners: IndexedModule[]
+	): Array<{ localName: string; className: string }> {
+		const out: Array<{ localName: string; className: string }> = [];
+		const seen = new Set<string>();
+		for (const schemaMod of owners) {
+			for (const [localName, className] of Object.entries(schemaMod.mixins)) {
+				if (seen.has(localName)) {
+					continue;
+				}
+				seen.add(localName);
+				out.push({ localName, className });
+			}
+		}
+		return out;
+	}
+
+	private mixinModulesForClass(className: string): IndexedModule[] {
+		const short = className.replace(/^BPMSoft\./, "");
+		const mixinMods = this.getAllByName(className).concat(this.getAllByName(short));
+		const unique = new Map<string, IndexedModule>();
+		for (const m of mixinMods) {
+			unique.set(m.filePath, m);
+		}
+		return Array.from(unique.values());
+	}
+
+	private forEachMixinModule(
+		owners: IndexedModule[],
+		visit: (mod: IndexedModule) => void
+	): void {
+		const seen = new Set<string>();
+		for (const { className } of this.declaredMixins(owners)) {
+			for (const mixinMod of this.mixinModulesForClass(className)) {
+				if (seen.has(mixinMod.filePath)) {
+					continue;
+				}
+				seen.add(mixinMod.filePath);
+				visit(mixinMod);
+			}
+		}
+	}
+
+	private mixinMembersFromModules(mods: IndexedModule[]): IndexedMember[] {
+		const result: IndexedMember[] = [];
+		const seen = new Set<string>();
+		for (const mixinMod of mods) {
+			for (const member of mixinMod.members) {
+				const key = memberDedupeKey(member);
+				if (seen.has(key)) {
+					continue;
+				}
+				seen.add(key);
+				result.push({
+					...member,
+					filePath: member.filePath || mixinMod.filePath,
+					detail:
+						member.detail ||
+						`mixin ${mixinMod.name} (${packageLabel(mixinMod.filePath)})`
+				});
+			}
+		}
+		return result;
+	}
+
+	private mixinMembersForClass(className: string): IndexedMember[] {
+		return this.mixinMembersFromModules(this.mixinModulesForClass(className));
+	}
+
+	private mixinAccessorMember(
+		localName: string,
+		className: string
+	): IndexedMember {
+		const mods = this.mixinModulesForClass(className);
+		const origin = mods[0];
+		return {
+			name: localName,
+			kind: "namespace",
+			detail: `mixin ${className}`,
+			documentation: `Миксин ${className}`,
+			children: this.mixinMembersFromModules(mods),
+			filePath: origin?.filePath,
+			position:
+				origin?.members[0]?.position ||
+				(origin ? { line: 0, character: 0 } : undefined)
+		};
+	}
+
 	private appendMixinMembers(
 		owners: IndexedModule[],
 		result: IndexedMember[],
 		seen: Set<string>
 	): void {
-		const mixinAlts = new Set<string>();
-		for (const schemaMod of owners) {
-			for (const alt of Object.values(schemaMod.mixins)) {
-				mixinAlts.add(alt);
-			}
-		}
+		const mixinAlts = new Set(
+			this.declaredMixins(owners).map((item) => item.className)
+		);
 		for (const alt of mixinAlts) {
-			const short = alt.replace(/^BPMSoft\./, "");
-			const mixinMods = this.getAllByName(alt).concat(this.getAllByName(short));
-			const uniqueMixins = new Map<string, IndexedModule>();
-			for (const m of mixinMods) {
-				uniqueMixins.set(m.filePath, m);
-			}
-			for (const mixinMod of uniqueMixins.values()) {
-				for (const member of mixinMod.members) {
-					const key = memberDedupeKey(member);
-					if (seen.has(key)) {
-						continue;
-					}
-					seen.add(key);
-					result.push({
-						...member,
-						detail:
-							member.detail ||
-							`mixin ${mixinMod.name} (${packageLabel(mixinMod.filePath)})`
-					});
+			for (const member of this.mixinMembersForClass(alt)) {
+				const key = memberDedupeKey(member);
+				if (seen.has(key)) {
+					continue;
 				}
+				seen.add(key);
+				result.push(member);
 			}
 		}
+	}
+
+	/**
+	 * `this.LocalMixin` and `this.mixins.LocalMixin` with mixin methods as children.
+	 */
+	private appendMixinAccessors(
+		owners: IndexedModule[],
+		result: IndexedMember[],
+		seen: Set<string>
+	): void {
+		const declared = this.declaredMixins(owners);
+		if (!declared.length) {
+			return;
+		}
+		const mixinItems = declared.map((item) =>
+			this.mixinAccessorMember(item.localName, item.className)
+		);
+		for (const item of mixinItems) {
+			if (seen.has(item.name)) {
+				continue;
+			}
+			seen.add(item.name);
+			result.push(item);
+		}
+		const mixinsMember: IndexedMember = {
+			name: "mixins",
+			kind: "property",
+			detail: "schema mixins",
+			documentation:
+				"Миксины схемы и иерархии: this.mixins.Name и this.Name",
+			children: mixinItems
+		};
+		const existing = result.findIndex((m) => m.name === "mixins");
+		if (existing >= 0) {
+			result[existing] = mixinsMember;
+		} else {
+			result.push(mixinsMember);
+		}
+		seen.add("mixins");
 	}
 
 	private appendRuntimeThisMembers(
@@ -642,7 +776,18 @@ export class SymbolIndex {
 		];
 		for (const member of runtime) {
 			const key = memberDedupeKey(member);
-			if (seen.has(key)) {
+			const existingIdx = result.findIndex((m) => memberDedupeKey(m) === key);
+			if (existingIdx >= 0) {
+				const existing = result[existingIdx];
+				if (member.children?.length && !existing.children?.length) {
+					result[existingIdx] = {
+						...existing,
+						children: member.children,
+						documentation: existing.documentation || member.documentation,
+						filePath: existing.filePath || member.filePath,
+						position: existing.position || member.position
+					};
+				}
 				continue;
 			}
 			seen.add(key);
@@ -658,10 +803,6 @@ export class SymbolIndex {
 		this.sandboxMembers = built.members;
 		this.sandboxOrigin = built.origin;
 		return this.sandboxMembers;
-	}
-
-	findSandboxMember(name: string): IndexedMember | undefined {
-		return this.getSandboxMembers().find((m) => m.name === name);
 	}
 
 	private appendEntityColumns(
@@ -681,7 +822,8 @@ export class SymbolIndex {
 			seen.add(key);
 			result.push({
 				...member,
-				detail: member.detail || `entity ${entityMod.name}`
+				detail: member.detail || `entity ${entityMod.name}`,
+				filePath: member.filePath || entityMod.filePath
 			});
 		}
 	}
@@ -764,7 +906,8 @@ export class SymbolIndex {
 					annotateSource
 						? {
 								...member,
-								detail: member.detail || label
+								detail: member.detail || label,
+								filePath: member.filePath || mod.filePath
 							}
 						: member
 				);

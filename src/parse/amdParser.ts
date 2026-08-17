@@ -48,6 +48,25 @@ function isFunctionNode(node: AnyNode | undefined): boolean {
 	);
 }
 
+/** BPMSoft.emptyFn / this.BPMSoft.emptyFn / Ext.emptyFn — stub method, not a property. */
+function isEmptyFnRef(node: AnyNode | undefined): boolean {
+	if (!node) {
+		return false;
+	}
+	if (node.type === "Identifier") {
+		return node.name === "emptyFn";
+	}
+	if (node.type !== "MemberExpression" || node.computed) {
+		return false;
+	}
+	const prop = node.property as AnyNode;
+	return prop?.type === "Identifier" && prop.name === "emptyFn";
+}
+
+function isMethodValue(node: AnyNode | undefined): boolean {
+	return isFunctionNode(node) || isEmptyFnRef(node);
+}
+
 function factoryReturnArg(factory: AnyNode | undefined): AnyNode | undefined {
 	if (!factory || !isFunctionNode(factory)) {
 		return undefined;
@@ -120,7 +139,7 @@ function inferMemberKind(value: AnyNode | undefined): MemberKind {
 	if (!value) {
 		return "property";
 	}
-	if (isFunctionNode(value)) {
+	if (isMethodValue(value)) {
 		return "method";
 	}
 	if (value.type === "ObjectExpression") {
@@ -158,7 +177,7 @@ function collectObjectMembers(
 	}
 	for (const prop of obj.properties as AnyNode[]) {
 		const name = propName(prop);
-		if (!name || name.startsWith("_")) {
+		if (!name) {
 			continue;
 		}
 		const value = prop.value as AnyNode;
@@ -280,11 +299,11 @@ function applyExtDefine(
 
 	for (const prop of classBody.properties as AnyNode[]) {
 		const n = propName(prop);
-		if (!n || n.startsWith("_") || EXT_DEFINE_META_KEYS.has(n)) {
+		if (!n || EXT_DEFINE_META_KEYS.has(n)) {
 			continue;
 		}
 		const value = prop.value as AnyNode;
-		const isMethod = isFunctionNode(value);
+		const isMethod = isMethodValue(value);
 		module.members.push({
 			name: n,
 			kind: isMethod ? "method" : "property",
@@ -372,7 +391,7 @@ function collectSchemaProperties(
 	}
 	for (const prop of obj.properties as AnyNode[]) {
 		const name = propName(prop);
-		if (!name || name.startsWith("_")) {
+		if (!name) {
 			continue;
 		}
 		const value = prop.value as AnyNode;
@@ -505,7 +524,7 @@ function collectSchemaAttributes(
 	}
 	for (const prop of obj.properties as AnyNode[]) {
 		const name = propName(prop);
-		if (!name || name.startsWith("_")) {
+		if (!name) {
 			continue;
 		}
 		const value = prop.value as AnyNode;
@@ -623,10 +642,7 @@ function parseDefineCall(
 			if (methodsObj) {
 				module.members.push(
 					...collectObjectMembers(methodsObj, comments, (_n, v) => {
-						return (
-							v.type === "FunctionExpression" ||
-							v.type === "ArrowFunctionExpression"
-						);
+						return isMethodValue(v);
 					})
 				);
 			}
@@ -1014,7 +1030,13 @@ export function rewriteThisRuntimePrefix(prefix: string): string | undefined {
 	return undefined;
 }
 
-export type ThisMemberAccessKind = "methodCall" | "bare" | "attribute";
+export type ThisMemberAccessKind =
+	| "methodCall"
+	| "bare"
+	| "attribute"
+	| "mixin"
+	| "mixinMethod"
+	| "mixinProperty";
 
 export interface ThisMemberAccess {
 	kind: ThisMemberAccessKind;
@@ -1022,6 +1044,8 @@ export interface ThisMemberAccess {
 	start: number;
 	end: number;
 	argNames?: string[];
+	/** Local mixin name for this.mixins.Name.foo / this.Name.foo */
+	mixinName?: string;
 }
 
 export type CreateMemberKind = "method" | "property" | "attribute";
@@ -1032,8 +1056,11 @@ export interface TextInsert {
 	text: string;
 }
 
+const NESTED_THIS_SKIP = new Set(["sandbox", "Ext", "BPMSoft", "mixins"]);
+
 /**
- * All `this.foo` / `this.$Foo` / `this.get("Foo")` / `this.set("Foo"` accesses.
+ * All `this.foo` / `this.$Foo` / `this.get("Foo")` / `this.set("Foo"` /
+ * `this.mixins.Name` / `this.mixins.Name.foo` accesses.
  * Skips comments/strings (AST) and computed `this[expr]`.
  */
 export function collectThisMemberAccesses(source: string): ThisMemberAccess[] {
@@ -1051,12 +1078,35 @@ export function collectThisMemberAccesses(source: string): ThisMemberAccess[] {
 				}
 				const object = node.object as AnyNode;
 				const property = node.property as AnyNode;
-				if (object?.type !== "ThisExpression" || property?.type !== "Identifier") {
+				if (property?.type !== "Identifier") {
 					return;
 				}
 				const name = property.name as string;
 				const start = property.start as number;
 				const end = property.end as number;
+				const mixinName = mixinNameFromThisMixinsAccess(object);
+				if (mixinName) {
+					out.push(mixinMemberAccess(name, mixinName, start, end, node, ancestors));
+					return;
+				}
+				if (isThisMixinsMemberExpression(object)) {
+					out.push({ kind: "mixin", name, start, end });
+					return;
+				}
+				const directMixin = thisDotIdentifier(object);
+				if (
+					directMixin &&
+					!NESTED_THIS_SKIP.has(directMixin) &&
+					!directMixin.startsWith("$")
+				) {
+					out.push(
+						mixinMemberAccess(name, directMixin, start, end, node, ancestors)
+					);
+					return;
+				}
+				if (object?.type !== "ThisExpression") {
+					return;
+				}
 				const call = enclosingCall(node, ancestors);
 				if (name === "get" || name === "set") {
 					const attr = literalStringArg(call);
@@ -1089,6 +1139,62 @@ export function collectThisMemberAccesses(source: string): ThisMemberAccess[] {
 		} as any
 	);
 	return out;
+}
+
+function isThisMixinsMemberExpression(object: AnyNode | undefined): boolean {
+	if (!object || object.type !== "MemberExpression" || object.computed) {
+		return false;
+	}
+	if ((object.object as AnyNode)?.type !== "ThisExpression") {
+		return false;
+	}
+	const inner = object.property as AnyNode;
+	return inner?.type === "Identifier" && inner.name === "mixins";
+}
+
+function thisDotIdentifier(object: AnyNode | undefined): string | undefined {
+	if (!object || object.type !== "MemberExpression" || object.computed) {
+		return undefined;
+	}
+	if ((object.object as AnyNode)?.type !== "ThisExpression") {
+		return undefined;
+	}
+	const inner = object.property as AnyNode;
+	return inner?.type === "Identifier" ? (inner.name as string) : undefined;
+}
+
+/** `this.mixins.Name` → Name */
+function mixinNameFromThisMixinsAccess(object: AnyNode | undefined): string | undefined {
+	if (!object || object.type !== "MemberExpression" || object.computed) {
+		return undefined;
+	}
+	if (!isThisMixinsMemberExpression(object.object as AnyNode)) {
+		return undefined;
+	}
+	const inner = object.property as AnyNode;
+	return inner?.type === "Identifier" ? (inner.name as string) : undefined;
+}
+
+function mixinMemberAccess(
+	name: string,
+	mixinName: string,
+	start: number,
+	end: number,
+	node: AnyNode,
+	ancestors: AnyNode[]
+): ThisMemberAccess {
+	const call = enclosingCall(node, ancestors);
+	if (call) {
+		return {
+			kind: "mixinMethod",
+			name,
+			mixinName,
+			start,
+			end,
+			argNames: callArgNames(call)
+		};
+	}
+	return { kind: "mixinProperty", name, mixinName, start, end };
 }
 
 /**

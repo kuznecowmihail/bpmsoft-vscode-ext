@@ -55,15 +55,20 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 			.getConfiguration("bpmsoft")
 			.get<boolean>("enablePlatformStubs", true);
 
-		if (left === "this.sandbox") {
-			const sandbox = this.index
-				.resolveThisMembers(document.uri.fsPath)
-				.find((x) => x.name === "sandbox");
-			const m = sandbox?.children?.find((c) => c.name === ident.name);
-			if (m) {
-				lines.push(`**this.sandbox.${m.name}** *(${m.kind})*`);
-				if (m.documentation) {
-					lines.push("", m.documentation);
+		if (left?.startsWith("this.")) {
+			const nested = this.index.findThisPathMember(
+				document.uri.fsPath,
+				left.slice("this.".length),
+				ident.name
+			);
+			if (nested) {
+				const titlePath = `${left}.${nested.name}`;
+				lines.push(`**${titlePath}** *(${nested.kind})*`);
+				if (nested.detail) {
+					lines.push(nested.detail);
+				}
+				if (nested.documentation) {
+					lines.push("", nested.documentation);
 				}
 				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
 			}
