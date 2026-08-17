@@ -3,13 +3,15 @@ const fs = require("fs");
 const path = require("path");
 const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
+const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
 const { isPrivateMemberFromOtherFile, sandboxMessageIssue } = require("../out/index/types");
 const { buildPlatformStubs } = require("../out/stubs/platformGlobals");
 const { buildExtStubs } = require("../out/stubs/extGlobals");
 const { buildSandboxStubs } = require("../out/stubs/sandboxGlobals");
 const { buildNavigationMessages } = require("../out/stubs/navigationMessages");
-const { resolveAppLayout } = require("../out/index/workspaceLayout");
+const { resolveAppLayout, findDevDotnetProject, devDotnetLoadFile, pathRelativePosix } = require("../out/index/workspaceLayout");
+const { formatDevDotnetSln, ensureDevDotnetSln } = require("../out/dotnet/devSln");
 const {
 	parseStructuresLine,
 	packageFromStackEntry,
@@ -18,9 +20,25 @@ const {
 	shouldWalkDescriptorParent
 } = require("../out/index/schemaHierarchy");
 
-const root =
-	process.env.BPMSOFT_APP_ROOT ||
-	path.resolve(__dirname, "../../crm-volumes/suppliers2_190_test");
+function resolveSmokeRoot() {
+	const candidates = [
+		process.env.BPMSOFT_APP_ROOT,
+		path.resolve(__dirname, "../../crm-volumes/suppliers2_190_test"),
+		path.resolve(__dirname, "../../../crm-volumes/suppliers2_190_test"),
+		path.resolve(__dirname, "../../../crm-infrastructure/crm-volumes/suppliers2_190_test"),
+		path.resolve(__dirname, "../../crm-infrastructure/crm-volumes/suppliers2_190_test")
+	].filter(Boolean);
+	const found = candidates.find((p) =>
+		fs.existsSync(path.join(p, "BPMSoft.Configuration"))
+	);
+	if (!found) {
+		console.error("Smoke app root not found. Tried:", candidates);
+		process.exit(1);
+	}
+	return found;
+}
+
+const root = resolveSmokeRoot();
 
 // --- layout detection for different open roots ---
 const layoutCases = [
@@ -49,6 +67,77 @@ for (const [label, openPath] of layoutCases) {
 	);
 	if (!ok) {
 		console.error("Layout detection failed for", label, openPath, layout);
+		process.exit(1);
+	}
+	const dotnet = findDevDotnetProject(layout);
+	if (!dotnet?.csprojPath || !fs.existsSync(dotnet.csprojPath)) {
+		console.error("Expected BPMSoft.Configuration.Dev.csproj for", label, dotnet);
+		process.exit(1);
+	}
+	const loadFile = devDotnetLoadFile(dotnet);
+	const rel = pathRelativePosix(openPath, loadFile);
+	const expectedRel = {
+		"app-root": "BPMSoft.Configuration/BPMSoft.Configuration.Dev.sln",
+		configuration: "BPMSoft.Configuration.Dev.sln",
+		pkg: "../BPMSoft.Configuration.Dev.sln",
+		package: "../../BPMSoft.Configuration.Dev.sln"
+	}[label];
+	if (rel !== expectedRel) {
+		console.error(
+			"Dev csproj/sln relative path mismatch for",
+			label,
+			{ rel, expectedRel, loadFile }
+		);
+		process.exit(1);
+	}
+}
+{
+	const slnText = formatDevDotnetSln("BPMSoft.Configuration.Dev.csproj");
+	if (
+		!slnText.includes('BPMSoft.Configuration.Dev.csproj') ||
+		!slnText.includes("Format Version 12.00")
+	) {
+		console.error("formatDevDotnetSln missing project reference", slnText.slice(0, 200));
+		process.exit(1);
+	}
+	const tmpRoot = fs.mkdtempSync(path.join(require("os").tmpdir(), "bpmsoft-dev-sln-"));
+	const tmpCsproj = path.join(tmpRoot, "BPMSoft.Configuration.Dev.csproj");
+	const tmpSln = path.join(tmpRoot, "BPMSoft.Configuration.Dev.sln");
+	fs.writeFileSync(tmpCsproj, "<Project Sdk=\"Microsoft.NET.Sdk\" />\n");
+	const written = ensureDevDotnetSln({
+		configurationRoot: tmpRoot,
+		csprojPath: tmpCsproj,
+		slnPath: tmpSln
+	});
+	if (written !== tmpSln || !fs.existsSync(tmpSln)) {
+		console.error("ensureDevDotnetSln should create missing sln", written);
+		process.exit(1);
+	}
+	const second = ensureDevDotnetSln({
+		configurationRoot: tmpRoot,
+		csprojPath: tmpCsproj,
+		slnPath: tmpSln
+	});
+	if (second !== tmpSln) {
+		console.error("ensureDevDotnetSln should keep existing sln");
+		process.exit(1);
+	}
+	fs.rmSync(tmpRoot, { recursive: true, force: true });
+	const slnPath = path.join(root, "BPMSoft.Configuration", "BPMSoft.Configuration.Dev.sln");
+	const fromPkg = pathRelativePosix(
+		path.join(root, "BPMSoft.Configuration", "Pkg"),
+		slnPath
+	);
+	const fromPackageDirect = pathRelativePosix(
+		path.join(root, "BPMSoft.Configuration", "GoRestaurantsMain"),
+		slnPath
+	);
+	if (fromPkg !== "../BPMSoft.Configuration.Dev.sln") {
+		console.error("Expected ../sln from Pkg", fromPkg);
+		process.exit(1);
+	}
+	if (fromPackageDirect !== "../BPMSoft.Configuration.Dev.sln") {
+		console.error("Expected ../sln from Configuration/{Package}", fromPackageDirect);
 		process.exit(1);
 	}
 }
@@ -1898,6 +1987,55 @@ define("GoMsgChildClass", [], function() {
 		console.error("Expected duplicate object key");
 		failed = true;
 	}
+	const jsNaming = collectStyleIssues(`
+function OnSave() {
+	const UserName = 1;
+	return UserName;
+}
+`);
+	if (!jsNaming.some((i) => i.kind === "camelMethod" && i.fix && i.fix.text === "onSave")) {
+		console.error("Expected JS method camelCase warning", jsNaming.filter((i) => i.kind === "camelMethod"));
+		failed = true;
+	}
+	if (!jsNaming.some((i) => i.kind === "camelLocal" && i.fix && i.fix.text === "userName")) {
+		console.error("Expected JS local camelCase warning", jsNaming.filter((i) => i.kind === "camelLocal"));
+		failed = true;
+	}
+	const schemaMethodCase = collectStyleIssues(`
+define("X", ["Y"], function (Y) {
+	return {
+		methods: {
+			OnClick: function() {},
+			_onSave: function() {}
+		}
+	};
+});
+`);
+	if (!schemaMethodCase.some((i) => i.kind === "camelMethod" && i.fix && i.fix.text === "onClick")) {
+		console.error("Expected schema method OnClick → onClick", schemaMethodCase.filter((i) => i.kind === "camelMethod"));
+		failed = true;
+	}
+	if (schemaMethodCase.some((i) => i.kind === "camelMethod" && String(i.message).includes("_onSave"))) {
+		console.error("Private _onSave should be valid camelCase", schemaMethodCase);
+		failed = true;
+	}
+	if (schemaMethodCase.some((i) => i.kind === "camelParam")) {
+		console.error("define factory params should skip camelCase", schemaMethodCase.filter((i) => i.kind === "camelParam"));
+		failed = true;
+	}
+	if (!hasKind("function onSave(UserName) { return UserName; }", "camelParam")) {
+		console.error("Expected JS parameter camelCase warning");
+		failed = true;
+	}
+	if (hasKind("function onSave(userName) { return userName; }", "camelParam")) {
+		console.error("Valid JS parameter camelCase should be clean");
+		failed = true;
+	}
+	if (hasKind("function onSave() { const userName = 1; return userName; }", "camelMethod") ||
+		hasKind("function onSave() { const userName = 1; return userName; }", "camelLocal")) {
+		console.error("Valid JS camelCase should be clean");
+		failed = true;
+	}
 	const schemaSrc = `
 define("GoStylePage", [], function() {
 	return {
@@ -2010,6 +2148,241 @@ define("X", [], function() {
 	} else {
 		console.log("style compiler rules OK");
 	}
+}
+
+{
+	const csKinds = (src) => collectCsharpStyleIssues(src).map((i) => i.kind);
+	const csHas = (src, kind) => collectCsharpStyleIssues(src).some((i) => i.kind === kind);
+	const allmanOk = `
+public class Sample
+{
+	public void Execute()
+	{
+		if (x == 1)
+		{
+			return;
+		}
+	}
+}
+`;
+	if (csHas(allmanOk, "allmanBrace") || csHas(allmanOk, "allmanCuddle")) {
+		console.error("Allman C# should be clean", csKinds(allmanOk));
+		failed = true;
+	}
+	const krCs = collectCsharpStyleIssues("public class Sample { public void Execute() { if (x) { return; } } }");
+	if (!krCs.some((i) => i.kind === "allmanBrace" && i.fix)) {
+		console.error("Expected Allman warning + fix for K&R brace", krCs.map((i) => i.kind));
+		failed = true;
+	}
+	const krIf = `
+public class Sample
+{
+	public void Execute()
+	{
+		if (x) {
+			return;
+		}
+	}
+}
+`;
+	if (!collectCsharpStyleIssues(krIf).some((i) => i.kind === "allmanBrace" && i.fix)) {
+		console.error("Expected Allman warning for if (x) {", collectCsharpStyleIssues(krIf).map((i) => i.kind));
+		failed = true;
+	}
+	const krIfCrlf = krIf.replace(/\n/g, "\r\n");
+	if (!collectCsharpStyleIssues(krIfCrlf).some((i) => i.kind === "allmanBrace")) {
+		console.error("Expected Allman warning for CRLF if (x) {");
+		failed = true;
+	}
+	const threeCs = `
+public class Sample
+{
+	public void Execute()
+	{
+		if (x == 1)
+		{
+			a();
+		}
+		else if (x == 2)
+		{
+			b();
+		}
+		else
+		{
+			c();
+		}
+	}
+}
+`;
+	if (csHas(threeCs, "ifElseChain")) {
+		console.error("3-branch C# if/else should be allowed", csKinds(threeCs));
+		failed = true;
+	}
+	const fourCsSrc = `
+public class Sample
+{
+	public void Execute()
+	{
+		if (x == 1)
+		{
+			a();
+		}
+		else if (x == 2)
+		{
+			b();
+		}
+		else if (x == 3)
+		{
+			c();
+		}
+		else
+		{
+			d();
+		}
+	}
+}
+`;
+	const fourCs = collectCsharpStyleIssues(fourCsSrc);
+	const chainCs = fourCs.find((i) => i.kind === "ifElseChain");
+	if (!chainCs || !chainCs.fix || !chainCs.fix.text.includes("switch (x)")) {
+		console.error("Expected C# if/else → switch quick fix", fourCs.filter((i) => i.kind === "ifElseChain"));
+		failed = true;
+	}
+	if (!csHas("public class Sample\n{\n\tpublic void Execute()\n\t{\n\t\tswitch (x)\n\t\t{\n\t\t\tcase 1:\n\t\t\t\ta();\n\t\t\tcase 2:\n\t\t\t\tb();\n\t\t\t\tbreak;\n\t\t}\n\t}\n}\n", "switchFallthrough")) {
+		console.error("Expected C# switch fallthrough");
+		failed = true;
+	}
+	if (!csHas("public class Sample\n{\n\tpublic void Execute()\n\t{\n\t\tif (x) y();\n\t}\n}\n", "curly")) {
+		console.error("Expected C# curly braces warning");
+		failed = true;
+	}
+	const namingSrc = `
+public class sample
+{
+	public string name { get; set; }
+	private string userName;
+	public void execute(string UserName)
+	{
+		string LocalName = UserName;
+	}
+}
+`;
+	const naming = collectCsharpStyleIssues(namingSrc);
+	const namingKinds = new Set(naming.map((i) => i.kind));
+	for (const kind of ["pascalType", "pascalProperty", "privateField", "pascalMethod", "camelParam", "camelLocal"]) {
+		if (!namingKinds.has(kind)) {
+			console.error("Expected C# naming warning", kind, naming.map((i) => i.kind + ":" + i.message));
+			failed = true;
+			break;
+		}
+	}
+	if (!csHas("public class Sample\n{\n\tpublic void Execute()\n\t{\n\t\tif (x == null)\n\t\t{\n\t\t\treturn;\n\t\t}\n\t}\n}\n", "nullPattern")) {
+		console.error("Expected C# is null warning");
+		failed = true;
+	}
+	if (csHas("public class Sample\n{\n\tpublic void Execute()\n\t{\n\t\ttry\n\t\t{\n\t\t\ta();\n\t\t}\n\t\tcatch\n\t\t{\n\t\t\t// ignore\n\t\t}\n\t}\n}\n", "emptyCatch")) {
+		console.error("catch with comment should not be empty");
+		failed = true;
+	}
+	if (!csHas("public class Sample\n{\n\tpublic void Execute()\n\t{\n\t\ttry\n\t\t{\n\t\t\ta();\n\t\t}\n\t\tcatch\n\t\t{\n\t\t}\n\t}\n}\n", "emptyCatch")) {
+		console.error("Expected C# empty catch warning");
+		failed = true;
+	}
+	const cuddleSrc = `
+public class Sample
+{
+	public void Execute()
+	{
+		if (x)
+		{
+			a();
+		} else
+		{
+			b();
+		}
+	}
+}
+`;
+	if (!csHas(cuddleSrc, "allmanCuddle")) {
+		console.error("Expected C# Allman cuddle warning for } else", csKinds(cuddleSrc));
+		failed = true;
+	}
+	if (
+		!csHas(
+			"public class Sample\n{\n\tpublic void Execute()\n\t{\n\t\tswitch (x)\n\t\t{\n\t\t\tcase 1:\n\t\t\t\ta();\n\t\t\t\tbreak;\n\t\t\tcase 1:\n\t\t\t\tb();\n\t\t\t\tbreak;\n\t\t}\n\t}\n}\n",
+			"switchDuplicateCase"
+		)
+	) {
+		console.error("Expected C# duplicate case");
+		failed = true;
+	}
+	if (!csHas("public interface Foo\n{\n}\n", "interfacePrefix")) {
+		console.error("Expected C# interface IPascalCase warning");
+		failed = true;
+	}
+	if (csHas("public interface IFoo\n{\n}\n", "interfacePrefix")) {
+		console.error("IFoo should be a valid interface name");
+		failed = true;
+	}
+	if (
+		!csHas(
+			"public class Sample\n{\n\tpublic async Task Execute()\n\t{\n\t}\n}\n",
+			"asyncSuffix"
+		)
+	) {
+		console.error("Expected C# async Task Execute → ExecuteAsync");
+		failed = true;
+	}
+	if (
+		csHas(
+			"public class Sample\n{\n\tpublic async Task ExecuteAsync()\n\t{\n\t}\n}\n",
+			"asyncSuffix"
+		)
+	) {
+		console.error("ExecuteAsync should not warn");
+		failed = true;
+	}
+	const autoProp = `
+public class Sample
+{
+	public string Name { get; set; }
+}
+`;
+	if (csHas(autoProp, "allmanBrace")) {
+		console.error("Compact auto-property should skip Allman", csKinds(autoProp));
+		failed = true;
+	}
+	const objInit = `
+public class Sample
+{
+	public void Execute()
+	{
+		var item = new Foo { A = 1 };
+	}
+}
+`;
+	if (csHas(objInit, "allmanBrace")) {
+		console.error("Object initializer should skip Allman", csKinds(objInit));
+		failed = true;
+	}
+	const realCs = path.join(
+		root,
+		"BPMSoft.Configuration/Pkg/GoSurveys/Schemas/GoSurveysAppEventListener/GoSurveysAppEventListener.cs"
+	);
+	if (fs.existsSync(realCs)) {
+		const realIssues = collectCsharpStyleIssues(fs.readFileSync(realCs, "utf8"));
+		if (realIssues.some((i) => i.kind === "allmanBrace" || i.kind === "allmanCuddle")) {
+			console.error(
+				"Real Allman schema should not warn braces",
+				realIssues.filter((i) => i.kind === "allmanBrace" || i.kind === "allmanCuddle")
+			);
+			failed = true;
+		}
+	} else {
+		console.error("Expected real C# schema for Allman smoke", realCs);
+		failed = true;
+	}
+	console.log("C# style diagnostics OK");
 }
 
 if (failed) {

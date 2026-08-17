@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { collectStyleIssues } from "../parse/styleAnalyzer";
+import { collectCsharpStyleIssues } from "../parse/csharpStyleAnalyzer";
 import { DIAG_SOURCE } from "./MissingMemberDiagnostics";
+import { isCsharpFile } from "./jsDocuments";
 
 export class StyleCodeActionProvider implements vscode.CodeActionProvider {
 	provideCodeActions(
@@ -16,7 +18,9 @@ export class StyleCodeActionProvider implements vscode.CodeActionProvider {
 		if (!diags.length) {
 			return [];
 		}
-		const issues = collectStyleIssues(document.getText());
+		const issues = isCsharpFile(document)
+			? collectCsharpStyleIssues(document.getText())
+			: collectStyleIssues(document.getText());
 		const actions: vscode.CodeAction[] = [];
 		for (const diag of diags) {
 			const start = document.offsetAt(diag.range.start);

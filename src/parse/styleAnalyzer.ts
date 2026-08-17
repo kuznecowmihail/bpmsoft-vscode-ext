@@ -21,7 +21,20 @@ type StyleIssueKind =
 	| "duplicateDiff"
 	| "unusedMethod"
 	| "unusedAttribute"
-	| "unusedMessage";
+	| "unusedMessage"
+	| "allmanBrace"
+	| "allmanCuddle"
+	| "pascalMethod"
+	| "pascalProperty"
+	| "privateField"
+	| "camelLocal"
+	| "camelParam"
+	| "camelMethod"
+	| "pascalType"
+	| "interfacePrefix"
+	| "emptyCatch"
+	| "nullPattern"
+	| "asyncSuffix";
 
 export interface StyleFix {
 	title: string;
@@ -196,6 +209,8 @@ function visit(
 				}
 				if (prop.computed) {
 					visit(prop.key, scope, ctx, false);
+				} else {
+					checkMethodPropertyName(prop, ctx);
 				}
 				visit(prop.value, scope, ctx, false);
 			}
@@ -268,6 +283,11 @@ function visitFunction(
 	skipUnusedParams: boolean
 ): void {
 	const fnScope = newScope(parent, true, ctx);
+	if (node.id?.type === "Identifier" && node.id.name) {
+		if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression") {
+			checkCamelName(ctx, node.id, "camelMethod", "Метод");
+		}
+	}
 	if (node.type === "FunctionExpression" && node.id?.name) {
 		bindName(
 			fnScope,
@@ -287,6 +307,10 @@ function visitFunction(
 					binding.skipUnused = true;
 				}
 			});
+		} else {
+			forEachIdent(param, (ident) =>
+				checkCamelName(ctx, ident, "camelParam", "Параметр")
+			);
 		}
 		if (param.type === "AssignmentPattern") {
 			visit(param.right, fnScope, ctx, false);
@@ -366,6 +390,9 @@ function visitCatch(node: AnyNode, parent: Scope, ctx: AnalyzeCtx): void {
 	const catchScope = newScope(parent, false, ctx);
 	if (node.param) {
 		bindPattern(catchScope, node.param, "param", node.start);
+		forEachIdent(node.param, (ident) =>
+			checkCamelName(ctx, ident, "camelLocal", "Переменная")
+		);
 	}
 	checkOpeningBrace(ctx.source, ctx.issues, node.body);
 	visit(node.body, catchScope, ctx, false);
@@ -380,6 +407,8 @@ function visitClass(node: AnyNode, scope: Scope, ctx: AnalyzeCtx): void {
 	for (const item of (body.body as AnyNode[]) || []) {
 		if (item.computed) {
 			visit(item.key, scope, ctx, false);
+		} else {
+			checkMethodPropertyName(item, ctx);
 		}
 		visit(item.value || item, scope, ctx, false);
 	}
@@ -394,6 +423,13 @@ function visitVariableDeclaration(node: AnyNode, scope: Scope, ctx: AnalyzeCtx):
 			bindPattern(functionScope(scope), decl.id, "var", keywordStart);
 		} else if (kind === "const" || kind === "let") {
 			bindPattern(scope, decl.id, kind, keywordStart);
+		}
+		if (decl.id?.type === "Identifier" && isFunctionNode(decl.init)) {
+			checkCamelName(ctx, decl.id, "camelMethod", "Метод");
+		} else {
+			forEachIdent(decl.id, (ident) =>
+				checkCamelName(ctx, ident, "camelLocal", "Переменная")
+			);
 		}
 	}
 	if (kind === "var") {
@@ -1368,6 +1404,82 @@ function isTerminator(stmt: AnyNode): boolean {
 		stmt.type === "BreakStatement" ||
 		stmt.type === "ContinueStatement"
 	);
+}
+
+function isFunctionNode(node: AnyNode | undefined | null): boolean {
+	return (
+		!!node &&
+		(node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression")
+	);
+}
+
+function checkMethodPropertyName(prop: AnyNode, ctx: AnalyzeCtx): void {
+	if (prop.type !== "Property" && prop.type !== "MethodDefinition") {
+		return;
+	}
+	if (prop.kind === "constructor") {
+		return;
+	}
+	const isMethod =
+		prop.kind === "method" ||
+		prop.kind === "get" ||
+		prop.kind === "set" ||
+		isFunctionNode(prop.value);
+	if (!isMethod) {
+		return;
+	}
+	checkCamelName(ctx, prop.key as AnyNode, "camelMethod", "Метод");
+}
+
+function checkCamelName(
+	ctx: AnalyzeCtx,
+	node: AnyNode | undefined,
+	kind: "camelLocal" | "camelParam" | "camelMethod",
+	label: string
+): void {
+	if (!node) {
+		return;
+	}
+	const name =
+		node.type === "Identifier"
+			? (node.name as string)
+			: node.type === "Literal" && typeof node.value === "string"
+				? node.value
+				: "";
+	if (!name || name === "constructor" || name === "_" || isJsCamelCase(name)) {
+		return;
+	}
+	const next = toJsCamel(name);
+	ctx.issues.push({
+		kind,
+		start: node.start as number,
+		end: node.end as number,
+		message: `${label} «${name}»: ожидается camelCase`,
+		severity: "warning",
+		fix:
+			next !== name
+				? {
+						title: `Переименовать в ${next}`,
+						start: node.start as number,
+						end: node.end as number,
+						text: node.type === "Literal" ? JSON.stringify(next) : next
+					}
+				: undefined
+	});
+}
+
+function isJsCamelCase(name: string): boolean {
+	return /^_?[a-z][a-zA-Z0-9]*$/.test(name);
+}
+
+function toJsCamel(name: string): string {
+	const priv = name.startsWith("_");
+	const stripped = name.replace(/^_+/, "");
+	if (!stripped) {
+		return name;
+	}
+	const camel = stripped.charAt(0).toLowerCase() + stripped.slice(1);
+	return priv ? `_${camel}` : camel;
 }
 
 function lineIndent(source: string, offset: number): string {

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "./index/SymbolIndex";
 import { ModuleIndexer } from "./index/ModuleIndexer";
 import { resolveAppLayouts } from "./index/workspaceLayout";
+import { ensureDotnetIntellisense } from "./dotnet/ensureDotnetIntellisense";
 import { BpmsoftCompletionProvider } from "./providers/CompletionProvider";
 import { BpmsoftDefinitionProvider } from "./providers/DefinitionProvider";
 import { BpmsoftHoverProvider } from "./providers/HoverProvider";
@@ -28,7 +29,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	await preferIndexedCompletions();
 
+	const folders = vscode.workspace.workspaceFolders;
+	const layouts = resolveAppLayouts(folders?.map((f) => f.uri.fsPath) || []);
+	await ensureDotnetIntellisense(context, layouts);
+
 	const jsSelector: vscode.DocumentSelector = { language: "javascript", scheme: "file" };
+	const csharpSelector: vscode.DocumentSelector = [
+		{ language: "csharp" },
+		{ pattern: "**/*.cs", scheme: "file" }
+	];
 
 	const completionProvider = new BpmsoftCompletionProvider(index);
 
@@ -67,6 +76,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			new StyleCodeActionProvider(),
 			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 		),
+		vscode.languages.registerCodeActionsProvider(
+			csharpSelector,
+			new StyleCodeActionProvider(),
+			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+		),
 		vscode.commands.registerCommand("bpmsoft.rebuildIndex", async () => {
 			await rebuildWithProgress();
 		}),
@@ -82,6 +96,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			diagnostics.refresh(document);
 			styleDiagnostics.refresh(document);
 		}),
+		vscode.window.onDidChangeActiveTextEditor((editor) => {
+			if (editor) {
+				styleDiagnostics.refresh(editor.document);
+			}
+		}),
 		vscode.workspace.onDidCloseTextDocument((document) => {
 			diagnostics.clear(document.uri);
 			styleDiagnostics.clear(document.uri);
@@ -96,7 +115,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		})
 	);
 
-	const folders = vscode.workspace.workspaceFolders;
 	if (folders?.length) {
 		const watchGlobs = [
 			"**/Pkg/**/Schemas/**/*.js",
@@ -114,7 +132,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				context.subscriptions.push(watcher);
 			}
 		}
-		for (const layout of resolveAppLayouts(folders.map((f) => f.uri.fsPath))) {
+		for (const layout of layouts) {
 			if (!layout.confContent) {
 				continue;
 			}
@@ -129,6 +147,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		}
 	}
 
+	styleDiagnostics.refreshOpenDocuments();
 	await rebuildWithProgress();
 }
 
