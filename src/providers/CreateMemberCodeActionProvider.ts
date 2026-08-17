@@ -22,17 +22,26 @@ export interface CreateMemberArgs {
 	params?: string[];
 }
 
+const MEMBER_FIX_CODES = new Set([
+	DIAG_MISSING_METHOD,
+	DIAG_MISSING_PROPERTY,
+	DIAG_MISSING_ATTRIBUTE
+]);
+
 export class CreateMemberCodeActionProvider implements vscode.CodeActionProvider {
 	provideCodeActions(
 		document: vscode.TextDocument,
 		_range: vscode.Range | vscode.Selection,
 		context: vscode.CodeActionContext
 	): vscode.CodeAction[] {
-		const diags = context.diagnostics.filter((d) => d.source === DIAG_SOURCE);
+		const diags = context.diagnostics.filter(
+			(d) => d.source === DIAG_SOURCE && MEMBER_FIX_CODES.has(String(d.code ?? ""))
+		);
 		if (!diags.length) {
 			return [];
 		}
-		const accesses = collectThisMemberAccesses(document.getText());
+		const needAccesses = diags.some((d) => String(d.code) === DIAG_MISSING_METHOD);
+		const accesses = needAccesses ? collectThisMemberAccesses(document.getText()) : [];
 		const actions: vscode.CodeAction[] = [];
 		for (const diag of diags) {
 			createsForDiagnostic(document, diag, accesses).forEach((req, i) => {

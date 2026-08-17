@@ -68,6 +68,58 @@ export interface IndexedModule {
 	extend?: string;
 	/** Client schema entity, e.g. Account → conf/content/Account.js columns */
 	entitySchemaName?: string;
+	/** messages: { Name: { direction: PUBLISH | SUBSCRIBE | BIDIRECTIONAL } } */
+	messages: Record<string, IndexedSchemaMessage>;
+}
+
+export type SchemaMessageDirection = "publish" | "subscribe" | "bidirectional";
+
+export interface IndexedSchemaMessage {
+	name: string;
+	direction: SchemaMessageDirection;
+	position?: SourcePosition;
+	filePath?: string;
+	documentation?: string;
+}
+
+export type SandboxMessageIssue = "missing" | "wrongDirection";
+
+const MESSAGE_DIRECTION_LABEL: Record<SchemaMessageDirection, string> = {
+	publish: "PUBLISH",
+	subscribe: "SUBSCRIBE",
+	bidirectional: "BIDIRECTIONAL"
+};
+
+export function schemaMessageDirectionLabel(
+	direction: SchemaMessageDirection
+): string {
+	return MESSAGE_DIRECTION_LABEL[direction];
+}
+
+/** PUBLISH/SUBSCRIBE plus BIDIRECTIONAL for the matching sandbox action. */
+export function schemaMessageSupports(
+	msg: IndexedSchemaMessage | undefined,
+	action: "publish" | "subscribe"
+): boolean {
+	if (!msg) {
+		return false;
+	}
+	return msg.direction === action || msg.direction === "bidirectional";
+}
+
+export function sandboxMessageIssue(
+	messages: Record<string, IndexedSchemaMessage>,
+	name: string,
+	action: "publish" | "subscribe"
+): SandboxMessageIssue | undefined {
+	const msg = messages[name];
+	if (!msg) {
+		return "missing";
+	}
+	if (schemaMessageSupports(msg, action)) {
+		return undefined;
+	}
+	return "wrongDirection";
 }
 
 export interface PlatformStubMember {

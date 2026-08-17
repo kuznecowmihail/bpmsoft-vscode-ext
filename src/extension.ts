@@ -6,6 +6,8 @@ import { BpmsoftCompletionProvider } from "./providers/CompletionProvider";
 import { BpmsoftDefinitionProvider } from "./providers/DefinitionProvider";
 import { BpmsoftHoverProvider } from "./providers/HoverProvider";
 import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
+import { StyleDiagnostics } from "./providers/StyleDiagnostics";
+import { StyleCodeActionProvider } from "./providers/StyleCodeActionProvider";
 import {
 	CREATE_MEMBER_COMMAND,
 	CreateMemberArgs,
@@ -16,11 +18,13 @@ import {
 let index: SymbolIndex;
 let indexer: ModuleIndexer;
 let diagnostics: MissingMemberDiagnostics;
+let styleDiagnostics: StyleDiagnostics;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
 	index = new SymbolIndex();
 	indexer = new ModuleIndexer(index);
 	diagnostics = new MissingMemberDiagnostics(index);
+	styleDiagnostics = new StyleDiagnostics(index);
 
 	await preferIndexedCompletions();
 
@@ -30,6 +34,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	context.subscriptions.push(
 		diagnostics,
+		styleDiagnostics,
 		// After "." — members; without trigger — bare "BPMSoft" / "Ext" while typing
 		vscode.languages.registerCompletionItemProvider(
 			jsSelector,
@@ -57,6 +62,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			new CreateMemberCodeActionProvider(),
 			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 		),
+		vscode.languages.registerCodeActionsProvider(
+			jsSelector,
+			new StyleCodeActionProvider(),
+			{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+		),
 		vscode.commands.registerCommand("bpmsoft.rebuildIndex", async () => {
 			await rebuildWithProgress();
 		}),
@@ -66,14 +76,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		),
 		vscode.workspace.onDidChangeTextDocument((e) => {
 			diagnostics.schedule(e.document);
+			styleDiagnostics.schedule(e.document);
 		}),
 		vscode.workspace.onDidOpenTextDocument((document) => {
 			diagnostics.refresh(document);
+			styleDiagnostics.refresh(document);
 		}),
 		vscode.workspace.onDidCloseTextDocument((document) => {
 			diagnostics.clear(document.uri);
+			styleDiagnostics.clear(document.uri);
 			if (document.uri.scheme === "file" && document.languageId === "javascript") {
 				void indexer.indexFile(document.uri.fsPath);
+			}
+		}),
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration("bpmsoft.styleDiagnostics")) {
+				styleDiagnostics.refreshOpenDocuments();
 			}
 		})
 	);
@@ -170,6 +188,7 @@ async function rebuildWithProgress(): Promise<void> {
 				5000
 			);
 			diagnostics.refreshOpenDocuments();
+			styleDiagnostics.refreshOpenDocuments();
 		}
 	);
 }

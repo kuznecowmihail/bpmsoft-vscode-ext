@@ -3,35 +3,15 @@ import * as walk from "acorn-walk";
 import {
 	IndexedMember,
 	IndexedModule,
+	IndexedSchemaMessage,
 	MemberKind,
+	SchemaMessageDirection,
 	SourcePosition,
 	memberDedupeKey
 } from "../index/types";
-
-type AnyNode = acorn.Node & Record<string, any>;
+import { AnyNode, parseJs } from "./jsAst";
 
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
-
-function parseJs(source: string, comments?: acorn.Comment[]): AnyNode | undefined {
-	const options: acorn.Options = {
-		ecmaVersion: "latest",
-		sourceType: "script",
-		locations: true,
-		allowReturnOutsideFunction: true
-	};
-	if (comments) {
-		options.onComment = comments;
-	}
-	try {
-		return acorn.parse(source, options) as AnyNode;
-	} catch {
-		try {
-			return acorn.parse(source, { ...options, ecmaVersion: 2020 }) as AnyNode;
-		} catch {
-			return undefined;
-		}
-	}
-}
 
 function defineFactory(call: AnyNode): AnyNode | undefined {
 	const args = call.arguments as AnyNode[];
@@ -236,6 +216,88 @@ function extractMixins(returnObj: AnyNode): Record<string, string> {
 	return {};
 }
 
+function memberTailName(node: AnyNode | undefined): string | undefined {
+	if (!node) {
+		return undefined;
+	}
+	if (node.type === "Identifier") {
+		return node.name as string;
+	}
+	if (node.type === "MemberExpression" && !node.computed) {
+		const prop = node.property as AnyNode;
+		if (prop?.type === "Identifier") {
+			return prop.name as string;
+		}
+	}
+	return undefined;
+}
+
+function parseMessageDirection(node: AnyNode | undefined): SchemaMessageDirection | undefined {
+	const tail = memberTailName(node);
+	if (tail === "PUBLISH") {
+		return "publish";
+	}
+	if (tail === "SUBSCRIBE") {
+		return "subscribe";
+	}
+	if (tail === "BIDIRECTIONAL") {
+		return "bidirectional";
+	}
+	return undefined;
+}
+
+function extractMessagesFromValue(
+	messagesVal: AnyNode | undefined,
+	filePath: string,
+	comments: acorn.Comment[]
+): Record<string, IndexedSchemaMessage> {
+	const result: Record<string, IndexedSchemaMessage> = {};
+	if (!messagesVal || messagesVal.type !== "ObjectExpression") {
+		return result;
+	}
+	for (const prop of messagesVal.properties as AnyNode[]) {
+		const name = propName(prop);
+		const value = prop.value as AnyNode;
+		if (!name || !value || value.type !== "ObjectExpression") {
+			continue;
+		}
+		let direction: SchemaMessageDirection | undefined;
+		for (const inner of value.properties as AnyNode[]) {
+			if (propName(inner) === "direction") {
+				direction = parseMessageDirection(inner.value as AnyNode);
+				break;
+			}
+		}
+		if (!direction) {
+			continue;
+		}
+		result[name] = {
+			name,
+			direction,
+			position: posFromNode(prop.key ?? prop),
+			filePath,
+			documentation: getLeadingComment(comments, prop)
+		};
+	}
+	return result;
+}
+
+function extractMessages(
+	returnObj: AnyNode,
+	filePath: string,
+	comments: acorn.Comment[]
+): Record<string, IndexedSchemaMessage> {
+	if (!returnObj || returnObj.type !== "ObjectExpression") {
+		return {};
+	}
+	for (const prop of returnObj.properties as AnyNode[]) {
+		if (propName(prop) === "messages") {
+			return extractMessagesFromValue(prop.value as AnyNode, filePath, comments);
+		}
+	}
+	return {};
+}
+
 function stringProp(obj: AnyNode, key: string): string | undefined {
 	if (!obj || obj.type !== "ObjectExpression") {
 		return undefined;
@@ -256,6 +318,7 @@ const EXT_DEFINE_META_KEYS = new Set([
 	"extend",
 	"override",
 	"mixins",
+	"messages",
 	"alternateClassName",
 	"statics",
 	"inheritableStatics",
@@ -296,6 +359,7 @@ function applyExtDefine(
 		module.extend = extend;
 	}
 	Object.assign(module.mixins, extractMixins(classBody));
+	Object.assign(module.messages, extractMessages(classBody, module.filePath, comments));
 
 	for (const prop of classBody.properties as AnyNode[]) {
 		const n = propName(prop);
@@ -601,7 +665,8 @@ function parseDefineCall(
 		dependencies: deps,
 		paramNames,
 		members: [],
-		mixins: {}
+		mixins: {},
+		messages: {}
 	};
 
 	if (!factory || !isFunctionNode(factory)) {
@@ -634,6 +699,7 @@ function parseDefineCall(
 		if (isSchemaReturn(returnArg)) {
 			module.kind = module.kind === "mixin" || module.kind === "class" ? module.kind : "page";
 			Object.assign(module.mixins, extractMixins(returnArg));
+			Object.assign(module.messages, extractMessages(returnArg, module.filePath, comments));
 			const entityName = stringProp(returnArg, "entitySchemaName");
 			if (entityName) {
 				module.entitySchemaName = entityName;
@@ -726,6 +792,7 @@ export function parseAmdModule(
 				paramNames: [],
 				members: [],
 				mixins: {},
+				messages: {},
 				className
 			};
 			applyExtDefine(module, className, classBody, comments);
@@ -749,34 +816,8 @@ function parseScript(
 	source: string
 ): { ast: AnyNode; comments: acorn.Comment[] } | undefined {
 	const comments: acorn.Comment[] = [];
-	const text = source.replace(/^\uFEFF/, "");
-	try {
-		return {
-			ast: acorn.parse(text, {
-				ecmaVersion: "latest",
-				sourceType: "script",
-				locations: true,
-				allowReturnOutsideFunction: true,
-				onComment: comments
-			}) as AnyNode,
-			comments
-		};
-	} catch {
-		try {
-			return {
-				ast: acorn.parse(text, {
-					ecmaVersion: 2020,
-					sourceType: "script",
-					locations: true,
-					allowReturnOutsideFunction: true,
-					onComment: comments
-				}) as AnyNode,
-				comments
-			};
-		} catch {
-			return undefined;
-		}
-	}
+	const ast = parseJs(source.replace(/^\uFEFF/, ""), comments);
+	return ast ? { ast, comments } : undefined;
 }
 
 /**
@@ -898,13 +939,7 @@ export function getThisGetSetContext(
 			nameEnd: offset
 		};
 	}
-	let nameEnd = offset;
-	while (
-		nameEnd < documentText.length &&
-		/[\w$]/.test(documentText[nameEnd])
-	) {
-		nameEnd++;
-	}
+	const nameEnd = identEnd(documentText, offset);
 	return {
 		method,
 		quote,
@@ -912,6 +947,53 @@ export function getThisGetSetContext(
 		nameStart: offset - typed.length,
 		nameEnd
 	};
+}
+
+export interface ThisSandboxMessageContext {
+	method: "publish" | "subscribe";
+	quote: '"' | "'" | undefined;
+	name: string;
+	nameStart: number;
+	nameEnd: number;
+}
+
+/**
+ * Cursor inside this.sandbox.publish("…") / this.sandbox.subscribe("…") first argument.
+ * Also matches unquoted typing: this.sandbox.publish(Set|)
+ */
+export function getThisSandboxMessageContext(
+	documentText: string,
+	offset: number
+): ThisSandboxMessageContext | undefined {
+	const before = documentText.slice(Math.max(0, offset - 300), offset);
+	const m = before.match(
+		/\bthis\s*\.\s*sandbox\s*\.\s*(publish|subscribe)\s*\(\s*(?:(["'])([\w$]*)|([\w$]*))$/
+	);
+	if (!m) {
+		return undefined;
+	}
+	const method = m[1] as "publish" | "subscribe";
+	const quote = (m[2] as '"' | "'" | undefined) || undefined;
+	const typed = (quote ? m[3] : m[4]) || "";
+	const nameEnd = identEnd(documentText, offset);
+	return {
+		method,
+		quote,
+		name: typed + documentText.slice(offset, nameEnd),
+		nameStart: offset - typed.length,
+		nameEnd
+	};
+}
+
+function identEnd(documentText: string, offset: number): number {
+	let nameEnd = offset;
+	while (
+		nameEnd < documentText.length &&
+		/[\w$]/.test(documentText[nameEnd])
+	) {
+		nameEnd++;
+	}
+	return nameEnd;
 }
 
 function skipWsBack(text: string, i: number): number {
@@ -1036,7 +1118,9 @@ export type ThisMemberAccessKind =
 	| "attribute"
 	| "mixin"
 	| "mixinMethod"
-	| "mixinProperty";
+	| "mixinProperty"
+	| "sandboxPublish"
+	| "sandboxSubscribe";
 
 export interface ThisMemberAccess {
 	kind: ThisMemberAccessKind;
@@ -1060,11 +1144,15 @@ const NESTED_THIS_SKIP = new Set(["sandbox", "Ext", "BPMSoft", "mixins"]);
 
 /**
  * All `this.foo` / `this.$Foo` / `this.get("Foo")` / `this.set("Foo"` /
- * `this.mixins.Name` / `this.mixins.Name.foo` accesses.
+ * `this.mixins.Name` / `this.mixins.Name.foo` /
+ * `this.sandbox.publish("Msg")` / `this.sandbox.subscribe("Msg")` accesses.
  * Skips comments/strings (AST) and computed `this[expr]`.
  */
-export function collectThisMemberAccesses(source: string): ThisMemberAccess[] {
-	const ast = parseJs(source);
+export function collectThisMemberAccesses(
+	source: string,
+	parsed?: AnyNode
+): ThisMemberAccess[] {
+	const ast = parsed || parseJs(source);
 	if (!ast) {
 		return [];
 	}
@@ -1102,6 +1190,23 @@ export function collectThisMemberAccesses(source: string): ThisMemberAccess[] {
 					out.push(
 						mixinMemberAccess(name, directMixin, start, end, node, ancestors)
 					);
+					return;
+				}
+				if (
+					directMixin === "sandbox" &&
+					(name === "publish" || name === "subscribe")
+				) {
+					const call = enclosingCall(node, ancestors);
+					const msg = callFirstStringLiteral(call);
+					if (msg) {
+						out.push({
+							kind:
+								name === "publish" ? "sandboxPublish" : "sandboxSubscribe",
+							name: msg.value,
+							start: msg.start,
+							end: msg.end
+						});
+					}
 					return;
 				}
 				if (object?.type !== "ThisExpression") {
@@ -1249,6 +1354,28 @@ function enclosingCall(node: AnyNode, ancestors: AnyNode[]): AnyNode | undefined
 		return undefined;
 	}
 	return undefined;
+}
+
+function callFirstStringLiteral(
+	call: AnyNode | undefined
+): { value: string; start: number; end: number } | undefined {
+	if (!call) {
+		return undefined;
+	}
+	const arg0 = (call.arguments as AnyNode[])?.[0];
+	if (
+		!arg0 ||
+		arg0.type !== "Literal" ||
+		typeof arg0.value !== "string" ||
+		!arg0.value
+	) {
+		return undefined;
+	}
+	return {
+		value: arg0.value,
+		start: arg0.start as number,
+		end: arg0.end as number
+	};
 }
 
 function literalStringArg(call: AnyNode | undefined): ThisMemberAccess | undefined {

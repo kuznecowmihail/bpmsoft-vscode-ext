@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { schemaMessageDirectionLabel } from "../index/types";
 
 export class BpmsoftHoverProvider implements vscode.HoverProvider {
 	constructor(private readonly index: SymbolIndex) {}
@@ -22,6 +23,20 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 					`**this.${getSet.method}("${m.name}")** *(attribute)*`,
 					...(m.detail ? [m.detail] : []),
 					...(m.documentation ? ["", m.documentation] : [])
+				];
+				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
+			}
+		}
+
+		const sandboxMsg = getThisSandboxMessageContext(text, offset);
+		if (sandboxMsg?.name) {
+			const msg = this.index.resolveSchemaMessages(document.uri.fsPath)[
+				sandboxMsg.name
+			];
+			if (msg) {
+				const lines = [
+					`**this.sandbox.${sandboxMsg.method}("${sandboxMsg.name}")** *(${schemaMessageDirectionLabel(msg.direction)})*`,
+					...(msg.documentation ? ["", msg.documentation] : [])
 				];
 				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
 			}

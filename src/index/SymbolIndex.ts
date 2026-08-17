@@ -1,5 +1,5 @@
 import * as fs from "fs";
-import { IndexedMember, IndexedModule, PlatformStubMember, memberDedupeKey } from "./types";
+import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember, memberDedupeKey, schemaMessageSupports } from "./types";
 import { SchemaHierarchyResolver } from "./schemaHierarchy";
 import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
 import { buildSandboxStubs } from "../stubs/sandboxGlobals";
@@ -54,6 +54,7 @@ export class SymbolIndex {
 	private extRoot: PlatformStubMember[] = [];
 	private sandboxMembers: IndexedMember[] = [];
 	private sandboxOrigin?: { filePath: string; position: { line: number; character: number } };
+	private coreMessages: IndexedSchemaMessage[] = [];
 	private workspaceRoots: string[] = [];
 	private entityCache = new Map<string, IndexedModule | null>();
 	readonly hierarchy = new SchemaHierarchyResolver();
@@ -72,6 +73,10 @@ export class SymbolIndex {
 	): void {
 		this.sandboxMembers = members;
 		this.sandboxOrigin = origin;
+	}
+
+	setCoreMessages(messages: IndexedSchemaMessage[]): void {
+		this.coreMessages = messages;
 	}
 
 	setWorkspaceRoots(roots: string[]): void {
@@ -380,6 +385,56 @@ export class SymbolIndex {
 	}
 
 	/**
+	 * Names declared on parents / mixins / entity / core — local overrides of these
+	 * are not "unused" even if this file never references them.
+	 */
+	resolveInheritedSchemaNames(filePath: string): {
+		methods: Set<string>;
+		attributes: Set<string>;
+		messages: Set<string>;
+	} {
+		const methods = new Set<string>();
+		const attributes = new Set<string>();
+		const messages = new Set<string>();
+		const mod = this.getByPath(filePath) || this.ensureModule(filePath);
+		if (!mod) {
+			return { methods, attributes, messages };
+		}
+		const current = filePath.replace(/\\/g, "/");
+		const addOwner = (owner: IndexedModule) => {
+			if (owner.filePath.replace(/\\/g, "/") === current) {
+				return;
+			}
+			for (const member of owner.members) {
+				if (member.kind === "method") {
+					methods.add(member.name);
+				}
+				if (member.kind === "attribute") {
+					attributes.add(member.name);
+				}
+			}
+			for (const name of Object.keys(owner.messages || {})) {
+				messages.add(name);
+			}
+		};
+		const chainMods = this.collectOwnerChain(mod);
+		for (const owner of chainMods) {
+			addOwner(owner);
+		}
+		this.forEachMixinModule(chainMods, addOwner);
+		const entity = this.getEntityModuleForChain(chainMods);
+		if (entity) {
+			for (const member of entity.members) {
+				attributes.add(member.name);
+			}
+		}
+		for (const msg of this.coreMessages) {
+			messages.add(msg.name);
+		}
+		return { methods, attributes, messages };
+	}
+
+	/**
 	 * Members under `this.{path}`, e.g. `mixins`, `mixins.LocalName`, `sandbox`.
 	 */
 	resolveThisPathMembers(filePath: string, pathAfterThis: string): IndexedMember[] {
@@ -393,6 +448,131 @@ export class SymbolIndex {
 			current = node.children;
 		}
 		return current;
+	}
+
+	/**
+	 * messages from the current schema/module, parents, and mixins (child-first).
+	 */
+	resolveSchemaMessages(filePath: string): Record<string, IndexedSchemaMessage> {
+		const mod = this.getByPath(filePath) || this.ensureModule(filePath);
+		if (!mod) {
+			return {};
+		}
+		const result: Record<string, IndexedSchemaMessage> = {};
+		const add = (owner: IndexedModule) => {
+			for (const [name, msg] of Object.entries(owner.messages || {})) {
+				if (!(name in result)) {
+					result[name] = msg;
+				}
+			}
+		};
+		const chainMods = this.collectOwnerChain(mod);
+		for (const owner of chainMods) {
+			add(owner);
+		}
+		this.forEachMixinModule(chainMods, add);
+		this.appendCoreMessages(result);
+		return result;
+	}
+
+	resolveSandboxMessages(
+		filePath: string,
+		action: "publish" | "subscribe"
+	): IndexedSchemaMessage[] {
+		return Object.values(this.resolveSchemaMessages(filePath))
+			.filter((msg) => schemaMessageSupports(msg, action))
+			.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	findSchemaMessageLocations(
+		filePath: string,
+		messageName: string
+	): Array<{
+		filePath: string;
+		position: { line: number; character: number };
+		direction: IndexedSchemaMessage["direction"];
+		documentation?: string;
+	}> {
+		const mod = this.getByPath(filePath) || this.ensureModule(filePath);
+		if (!mod || !messageName) {
+			return [];
+		}
+		const hits: Array<{
+			filePath: string;
+			position: { line: number; character: number };
+			direction: IndexedSchemaMessage["direction"];
+			documentation?: string;
+		}> = [];
+		const seen = new Set<string>();
+		const consider = (owner: IndexedModule) => {
+			if (seen.has(owner.filePath)) {
+				return;
+			}
+			seen.add(owner.filePath);
+			const msg = owner.messages?.[messageName];
+			if (!msg?.position) {
+				return;
+			}
+			hits.push({
+				filePath: owner.filePath,
+				position: msg.position,
+				direction: msg.direction,
+				documentation: msg.documentation
+			});
+		};
+		const chainMods = this.collectOwnerChain(mod);
+		for (const owner of chainMods) {
+			consider(owner);
+		}
+		this.forEachMixinModule(chainMods, consider);
+		this.appendCoreMessageLocations(hits, seen, messageName);
+		return hits;
+	}
+
+	private appendCoreMessages(result: Record<string, IndexedSchemaMessage>): void {
+		for (const core of this.coreMessages) {
+			const existing = result[core.name];
+			if (!existing) {
+				result[core.name] = core;
+				continue;
+			}
+			if (existing.filePath && existing.filePath !== core.filePath) {
+				continue;
+			}
+			if (existing.direction !== core.direction) {
+				existing.direction = "bidirectional";
+			}
+			existing.documentation = existing.documentation || core.documentation;
+			existing.position = existing.position || core.position;
+			existing.filePath = existing.filePath || core.filePath;
+		}
+	}
+
+	private appendCoreMessageLocations(
+		hits: Array<{
+			filePath: string;
+			position: { line: number; character: number };
+			direction: IndexedSchemaMessage["direction"];
+			documentation?: string;
+		}>,
+		seen: Set<string>,
+		messageName: string
+	): void {
+		for (const core of this.coreMessages) {
+			if (core.name !== messageName || !core.filePath || !core.position) {
+				continue;
+			}
+			if (seen.has(core.filePath)) {
+				continue;
+			}
+			seen.add(core.filePath);
+			hits.push({
+				filePath: core.filePath,
+				position: core.position,
+				direction: core.direction,
+				documentation: core.documentation
+			});
+		}
 	}
 
 	findThisPathMember(
@@ -860,6 +1040,7 @@ export class SymbolIndex {
 				paramNames: [],
 				members,
 				mixins: {},
+				messages: {},
 				entitySchemaName: entityName
 			};
 			this.entityCache.set(entityName, mod);

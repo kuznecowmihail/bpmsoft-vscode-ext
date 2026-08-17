@@ -1,12 +1,14 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
+const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
+const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
-const { isPrivateMemberFromOtherFile } = require("../out/index/types");
+const { isPrivateMemberFromOtherFile, sandboxMessageIssue } = require("../out/index/types");
 const { buildPlatformStubs } = require("../out/stubs/platformGlobals");
 const { buildExtStubs } = require("../out/stubs/extGlobals");
 const { buildSandboxStubs } = require("../out/stubs/sandboxGlobals");
+const { buildNavigationMessages } = require("../out/stubs/navigationMessages");
 const { resolveAppLayout } = require("../out/index/workspaceLayout");
 const {
 	parseStructuresLine,
@@ -18,7 +20,7 @@ const {
 
 const root =
 	process.env.BPMSOFT_APP_ROOT ||
-	path.resolve(__dirname, "../../crm-volumes/bpmsoftdevelopment");
+	path.resolve(__dirname, "../../crm-volumes/suppliers2_190_test");
 
 // --- layout detection for different open roots ---
 const layoutCases = [
@@ -109,6 +111,24 @@ if (!sandboxSubscribe.filePath || !/bootstrap\.js$/i.test(sandboxSubscribe.fileP
 }
 console.log("sandbox from package-open:", sandboxMembers.length);
 
+const navFromPackage = buildNavigationMessages([packageRoot]);
+const navGet = navFromPackage.find((m) => m.name === "GetHistoryState");
+const navPush = navFromPackage.find((m) => m.name === "PushHistoryState");
+if (
+	!navGet ||
+	navGet.direction !== "publish" ||
+	!navPush ||
+	navPush.direction !== "publish"
+) {
+	console.error("Expected NavigationModule GetHistoryState/PushHistoryState", navFromPackage);
+	process.exit(1);
+}
+if (!navGet.filePath || !/NavigationModule/i.test(navGet.filePath) || navGet.position == null) {
+	console.error("Expected GetHistoryState definition in NavigationModule", navGet);
+	process.exit(1);
+}
+console.log("navigation messages from package-open:", navFromPackage.length);
+
 const samples = [
 	"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/GoClientConstants/GoClientConstants.js",
 	"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/LeadPageV2/LeadPageV2.js",
@@ -133,6 +153,7 @@ index.setPlatformStubs(buildPlatformStubs([root]));
 index.setExtStubs(buildExtStubs([root]));
 const sandboxBuilt = buildSandboxStubs([root]);
 index.setSandboxStubs(sandboxBuilt.members, sandboxBuilt.origin);
+index.setCoreMessages(buildNavigationMessages([root]));
 let failed = false;
 
 for (const rel of samples) {
@@ -1196,6 +1217,522 @@ define("BasePageV2", [], function() {
 		failed = true;
 	} else {
 		console.log("emptyFn stub method indexed OK");
+	}
+}
+
+{
+	const msgSrc = `
+define("GoMsgPage", [], function() {
+	return {
+		messages: {
+			"SetNewMainAddress": {
+				mode: this.BPMSoft.MessageMode.PTP,
+				direction: this.BPMSoft.MessageDirectionType.PUBLISH
+			},
+			ListenHere: {
+				direction: this.BPMSoft.MessageDirectionType.SUBSCRIBE
+			},
+			BothWays: {
+				direction: BPMSoft.MessageDirectionType.BIDIRECTIONAL
+			},
+			/**
+			 * Сообщение для включения доступности кнопки "Прикрепить клиента или черновик"
+			 */
+			"SaveDataButtonEnabled": {
+				"mode": BPMSoft.MessageMode.PTP,
+				"direction": BPMSoft.MessageDirectionType.SUBSCRIBE
+			}
+		},
+		methods: {
+			foo: function() {
+				this.sandbox.publish("SetNewMainAddress");
+				this.sandbox.subscribe("ListenHere");
+				this.sandbox.publish("BothWays");
+				this.sandbox.subscribe("BothWays");
+				this.sandbox.publish("UnknownMsg");
+				this.sandbox.subscribe("SetNewMainAddress");
+				this.sandbox.publish(dynamicName);
+				this.sandbox.subscribe();
+			}
+		}
+	};
+});
+`;
+	const msgPage = parseAmdModule(msgSrc, path.join(root, "synthetic/GoMsgPage.js"));
+	if (!msgPage) {
+		console.error("Failed to parse sandbox messages schema");
+		failed = true;
+	} else {
+		const msgs = msgPage.messages;
+		if (
+			msgs.SetNewMainAddress?.direction !== "publish" ||
+			msgs.ListenHere?.direction !== "subscribe" ||
+			msgs.BothWays?.direction !== "bidirectional" ||
+			msgs.SaveDataButtonEnabled?.direction !== "subscribe"
+		) {
+			console.error("Expected parsed messages directions", msgs);
+			failed = true;
+		}
+		if (
+			!msgs.SetNewMainAddress?.position ||
+			msgs.SetNewMainAddress.filePath !== msgPage.filePath
+		) {
+			console.error("Expected message definition location", msgs.SetNewMainAddress);
+			failed = true;
+		}
+		if (
+			!msgs.SaveDataButtonEnabled?.documentation ||
+			!msgs.SaveDataButtonEnabled.documentation.includes(
+				"Прикрепить клиента или черновик"
+			)
+		) {
+			console.error(
+				"Expected JSDoc on SaveDataButtonEnabled",
+				msgs.SaveDataButtonEnabled
+			);
+			failed = true;
+		}
+		index.upsertModule(msgPage);
+		const msgHits = index.findSchemaMessageLocations(
+			msgPage.filePath,
+			"SetNewMainAddress"
+		);
+		if (!msgHits.length || msgHits[0].filePath !== msgPage.filePath) {
+			console.error("Expected Go to Definition for sandbox message", msgHits);
+			failed = true;
+		}
+		const resolved = index.resolveSchemaMessages(msgPage.filePath);
+		if (resolved.SetNewMainAddress?.direction !== "publish") {
+			console.error("Expected resolveSchemaMessages to keep local PUBLISH", resolved);
+			failed = true;
+		}
+		const pubNames = index
+			.resolveSandboxMessages(msgPage.filePath, "publish")
+			.map((m) => m.name);
+		const subNames = index
+			.resolveSandboxMessages(msgPage.filePath, "subscribe")
+			.map((m) => m.name);
+		if (
+			!pubNames.includes("SetNewMainAddress") ||
+			!pubNames.includes("BothWays") ||
+			pubNames.includes("ListenHere")
+		) {
+			console.error("Expected publish completions PUBLISH+BIDIRECTIONAL", pubNames);
+			failed = true;
+		}
+		if (
+			!subNames.includes("ListenHere") ||
+			!subNames.includes("BothWays") ||
+			subNames.includes("SetNewMainAddress")
+		) {
+			console.error("Expected subscribe completions SUBSCRIBE+BIDIRECTIONAL", subNames);
+			failed = true;
+		}
+		if (
+			!pubNames.includes("GetHistoryState") ||
+			!pubNames.includes("PushHistoryState") ||
+			!pubNames.includes("ReplaceHistoryState")
+		) {
+			console.error("Expected NavigationModule history publishes", pubNames);
+			failed = true;
+		}
+		if (
+			!subNames.includes("HistoryStateChanged") ||
+			!subNames.includes("NavigationModuleLoaded")
+		) {
+			console.error("Expected NavigationModule history subscriptions", subNames);
+			failed = true;
+		}
+		if (sandboxMessageIssue(resolved, "GetHistoryState", "publish")) {
+			console.error("GetHistoryState publish should pass via NavigationModule");
+			failed = true;
+		}
+		const histHits = index.findSchemaMessageLocations(
+			msgPage.filePath,
+			"GetHistoryState"
+		);
+		if (!histHits.some((hit) => /NavigationModule/i.test(hit.filePath))) {
+			console.error("Expected Go to Definition GetHistoryState → NavigationModule", histHits);
+			failed = true;
+		}
+		const pubOpen = "this.sandbox.publish(";
+		const pubClosed = "this.sandbox.publish()";
+		const pubTyped = "this.sandbox.publish(Set)";
+		const pubQuoted = 'this.sandbox.publish("Set';
+		const subQuoted = "this.sandbox.subscribe('Lis";
+		const pubCtx = getThisSandboxMessageContext(pubOpen, pubOpen.length);
+		const pubInside = getThisSandboxMessageContext(
+			pubClosed,
+			pubClosed.indexOf(")")
+		);
+		const pubTypedCtx = getThisSandboxMessageContext(
+			pubTyped,
+			pubTyped.indexOf("Set") + 3
+		);
+		const pubQCtx = getThisSandboxMessageContext(pubQuoted, pubQuoted.length);
+		const subQCtx = getThisSandboxMessageContext(subQuoted, subQuoted.length);
+		const loadCtx = getThisSandboxMessageContext(
+			"this.sandbox.loadModule(",
+			"this.sandbox.loadModule(".length
+		);
+		if (!pubCtx || pubCtx.method !== "publish" || pubCtx.quote) {
+			console.error("getThisSandboxMessageContext failed for publish(", pubCtx);
+			failed = true;
+		}
+		if (!pubInside || pubInside.method !== "publish" || pubInside.name !== "") {
+			console.error("getThisSandboxMessageContext failed inside publish()", pubInside);
+			failed = true;
+		}
+		if (
+			!pubTypedCtx ||
+			pubTypedCtx.quote ||
+			pubTypedCtx.name !== "Set" ||
+			pubTyped.slice(pubTypedCtx.nameStart, pubTypedCtx.nameEnd) !== "Set"
+		) {
+			console.error("getThisSandboxMessageContext failed for unquoted typing", pubTypedCtx);
+			failed = true;
+		}
+		if (
+			!pubQCtx ||
+			pubQCtx.method !== "publish" ||
+			pubQCtx.quote !== '"' ||
+			pubQCtx.name !== "Set"
+		) {
+			console.error("getThisSandboxMessageContext failed for publish quote", pubQCtx);
+			failed = true;
+		}
+		if (
+			!subQCtx ||
+			subQCtx.method !== "subscribe" ||
+			subQCtx.quote !== "'" ||
+			subQCtx.name !== "Lis"
+		) {
+			console.error("getThisSandboxMessageContext failed for subscribe quote", subQCtx);
+			failed = true;
+		}
+		if (loadCtx) {
+			console.error("getThisSandboxMessageContext must ignore loadModule", loadCtx);
+			failed = true;
+		}
+		const accesses = collectThisMemberAccesses(msgSrc);
+		const pub = accesses.find(
+			(a) => a.kind === "sandboxPublish" && a.name === "SetNewMainAddress"
+		);
+		const sub = accesses.find(
+			(a) => a.kind === "sandboxSubscribe" && a.name === "ListenHere"
+		);
+		if (!pub || msgSrc.slice(pub.start, pub.end) !== '"SetNewMainAddress"') {
+			console.error("collectThisMemberAccesses missing sandboxPublish", accesses);
+			failed = true;
+		}
+		if (!sub || msgSrc.slice(sub.start, sub.end) !== '"ListenHere"') {
+			console.error("collectThisMemberAccesses missing sandboxSubscribe", accesses);
+			failed = true;
+		}
+		if (accesses.some((a) => a.name === "dynamicName")) {
+			console.error("sandbox.publish(dynamicName) must not be collected", accesses);
+			failed = true;
+		}
+		if (
+			sandboxMessageIssue(resolved, "SetNewMainAddress", "publish") ||
+			sandboxMessageIssue(resolved, "ListenHere", "subscribe") ||
+			sandboxMessageIssue(resolved, "BothWays", "publish") ||
+			sandboxMessageIssue(resolved, "BothWays", "subscribe")
+		) {
+			console.error("Expected matching message directions to pass");
+			failed = true;
+		}
+		if (sandboxMessageIssue(resolved, "UnknownMsg", "publish") !== "missing") {
+			console.error("Expected missing sandbox message");
+			failed = true;
+		}
+		if (
+			sandboxMessageIssue(resolved, "SetNewMainAddress", "subscribe") !==
+			"wrongDirection"
+		) {
+			console.error("Expected PUBLISH message to fail subscribe");
+			failed = true;
+		}
+		if (
+			sandboxMessageIssue(resolved, "ListenHere", "publish") !== "wrongDirection"
+		) {
+			console.error("Expected SUBSCRIBE message to fail publish");
+			failed = true;
+		} else {
+			console.log("sandbox messages parse/access OK");
+		}
+	}
+
+	const msgMixin = parseAmdModule(
+		`
+define("GoMsgMixin", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoMsgMixin", {
+		alternateClassName: "BPMSoft.GoMsgMixin",
+		messages: {
+			FromMixin: {
+				direction: this.BPMSoft.MessageDirectionType.PUBLISH
+			}
+		}
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoMsgMixin");
+});
+`,
+		path.join(root, "synthetic/GoMsgMixin.js")
+	);
+	const msgMixinPage = parseAmdModule(
+		`
+define("GoMsgMixinPage", [], function() {
+	return {
+		mixins: {
+			GoMsgMixin: "BPMSoft.GoMsgMixin"
+		},
+		methods: {
+			foo: function() {
+				this.sandbox.publish("FromMixin");
+			}
+		}
+	};
+});
+`,
+		path.join(root, "synthetic/GoMsgMixinPage.js")
+	);
+	const msgParentClass = parseAmdModule(
+		`
+define("GoMsgParentClass", [], function() {
+	Ext.define("BPMSoft.GoMsgParentClass", {
+		messages: {
+			FromParent: {
+				direction: this.BPMSoft.MessageDirectionType.SUBSCRIBE
+			}
+		}
+	});
+});
+`,
+		path.join(root, "synthetic/GoMsgParentClass.js")
+	);
+	const msgChildClass = parseAmdModule(
+		`
+define("GoMsgChildClass", [], function() {
+	Ext.define("BPMSoft.GoMsgChildClass", {
+		extend: "BPMSoft.GoMsgParentClass",
+		init: function() {}
+	});
+});
+`,
+		path.join(root, "synthetic/GoMsgChildClass.js")
+	);
+	if (!msgMixin || !msgMixinPage || !msgParentClass || !msgChildClass) {
+		console.error("Failed to parse sandbox message mixin/extend modules");
+		failed = true;
+	} else {
+		index.upsertModule(msgMixin);
+		index.upsertModule(msgMixinPage);
+		index.upsertModule(msgParentClass);
+		index.upsertModule(msgChildClass);
+		const fromMixin = index.resolveSchemaMessages(msgMixinPage.filePath);
+		if (fromMixin.FromMixin?.direction !== "publish") {
+			console.error("Expected mixin messages in schema hierarchy", fromMixin);
+			failed = true;
+		}
+		const mixinHits = index.findSchemaMessageLocations(
+			msgMixinPage.filePath,
+			"FromMixin"
+		);
+		if (!mixinHits.length || mixinHits[0].filePath !== msgMixin.filePath) {
+			console.error("Expected Go to Definition into mixin messages", mixinHits);
+			failed = true;
+		}
+		const fromParent = index.resolveSchemaMessages(msgChildClass.filePath);
+		if (fromParent.FromParent?.direction !== "subscribe") {
+			console.error("Expected parent Ext.define messages", fromParent);
+			failed = true;
+		}
+		const parentHits = index.findSchemaMessageLocations(
+			msgChildClass.filePath,
+			"FromParent"
+		);
+		if (!parentHits.length || parentHits[0].filePath !== msgParentClass.filePath) {
+			console.error("Expected Go to Definition into parent messages", parentHits);
+			failed = true;
+		} else {
+			console.log("sandbox messages hierarchy OK");
+		}
+	}
+}
+
+{
+	const styleKinds = (src) => collectStyleIssues(src).map((i) => i.kind);
+	const krOk = styleKinds("if (x) {\n\ty();\n} else {\n\tz();\n}");
+	if (krOk.includes("krBrace") || krOk.includes("krCuddle")) {
+		console.error("K&R if/else should be clean", krOk);
+		failed = true;
+	}
+	const allman = collectStyleIssues("if (x)\n{\n\ty();\n}");
+	if (!allman.some((i) => i.kind === "krBrace" && i.fix)) {
+		console.error("Expected K&R warning + fix for Allman brace", allman);
+		failed = true;
+	}
+	const uncuddled = styleKinds("if (x) {\n\ty();\n}\nelse {\n\tz();\n}");
+	if (!uncuddled.includes("krCuddle")) {
+		console.error("Expected cuddle warning for else on next line", uncuddled);
+		failed = true;
+	}
+	const varConst = collectStyleIssues("var a = 1;\nvar b = 1;\nb = 2;\nvar c;");
+	const varFixes = varConst.filter((i) => i.kind === "varDecl").map((i) => i.fix && i.fix.text);
+	if (varFixes.join(",") !== "const,let,let") {
+		console.error("Expected var → const/let/let", varFixes, varConst);
+		failed = true;
+	}
+	const constAssign = collectStyleIssues(
+		"function f() {\n\tconst x = 1;\n\tx = 2;\n\tconst obj = {};\n\tobj.a = 1;\n}"
+	);
+	if (!constAssign.some((i) => i.kind === "constAssign" && i.severity === "error" && i.fix)) {
+		console.error("Expected const reassignment error", constAssign);
+		failed = true;
+	}
+	if (constAssign.some((i) => i.kind === "constAssign" && i.message.includes("obj"))) {
+		console.error("const object field mutation should not be an error", constAssign);
+		failed = true;
+	}
+	const three = styleKinds(
+		"if (x === 1) {\n\ta();\n} else if (x === 2) {\n\tb();\n} else {\n\tc();\n}"
+	);
+	if (three.includes("ifElseChain")) {
+		console.error("3-branch if/else should be allowed", three);
+		failed = true;
+	}
+	const fourSrc =
+		"if (x === 1) {\n\ta();\n} else if (x === 2) {\n\tb();\n} else if (x === 3) {\n\tc();\n} else {\n\td();\n}";
+	const four = collectStyleIssues(fourSrc);
+	const chain = four.find((i) => i.kind === "ifElseChain");
+	if (!chain || !chain.fix || !chain.fix.text.includes("switch (x)")) {
+		console.error("Expected if/else → switch quick fix", four);
+		failed = true;
+	} else {
+		const switched = fourSrc.slice(0, chain.fix.start) + chain.fix.text + fourSrc.slice(chain.fix.end);
+		if (!switched.includes("case 1:") || !switched.includes("default:")) {
+			console.error("switch rewrite lost cases", switched);
+			failed = true;
+		} else {
+			console.log("style diagnostics OK");
+		}
+	}
+	const inconvertible = collectStyleIssues(
+		"if (x > 1) {\n\ta();\n} else if (x > 2) {\n\tb();\n} else if (x > 3) {\n\tc();\n} else {\n\td();\n}"
+	);
+	const inconv = inconvertible.find((i) => i.kind === "ifElseChain");
+	if (!inconv || inconv.fix) {
+		console.error("Non-equality if/else should warn without switch fix", inconvertible);
+		failed = true;
+	}
+	const hasKind = (src, kind) => collectStyleIssues(src).some((i) => i.kind === kind);
+	if (!hasKind("if (a == 1) { b(); }", "eqeqeq") || hasKind("if (a == null) { b(); }", "eqeqeq")) {
+		console.error("eqeqeq should flag == but allow == null");
+		failed = true;
+	}
+	if (!hasKind("function f() { const x = 1; return 2; }", "unusedVar")) {
+		console.error("Expected unused variable");
+		failed = true;
+	}
+	if (!hasKind("function f(a, b) { return a; }", "unusedParam")) {
+		console.error("Expected unused parameter");
+		failed = true;
+	}
+	if (hasKind("define(\"M\", [\"X\"], function (X) { return {}; });", "unusedParam")) {
+		console.error("define factory params should not be unused");
+		failed = true;
+	}
+	if (!hasKind("function f() { return 1; foo(); }", "unreachable")) {
+		console.error("Expected unreachable code");
+		failed = true;
+	}
+	if (
+		!hasKind(
+			"switch (x) { case 1: a(); case 2: b(); break; }",
+			"switchFallthrough"
+		)
+	) {
+		console.error("Expected switch fallthrough");
+		failed = true;
+	}
+	if (
+		!hasKind(
+			"switch (x) { case 1: a(); break; case 1: b(); break; }",
+			"switchDuplicateCase"
+		)
+	) {
+		console.error("Expected duplicate case");
+		failed = true;
+	}
+	if (!hasKind("if (x) y();", "curly")) {
+		console.error("Expected curly braces warning");
+		failed = true;
+	}
+	if (!hasKind("function f() { debugger; }", "debuggerStmt")) {
+		console.error("Expected debugger warning");
+		failed = true;
+	}
+	if (!hasKind("function f() { console.log(1); }", "consoleCall")) {
+		console.error("Expected console.log warning");
+		failed = true;
+	}
+	if (!hasKind("if (x === NaN) { a(); }", "nanCompare")) {
+		console.error("Expected NaN compare warning");
+		failed = true;
+	}
+	if (!hasKind("const o = { a: 1, a: 2 };", "duplicateKey")) {
+		console.error("Expected duplicate object key");
+		failed = true;
+	}
+	const schemaSrc = `
+define("GoStylePage", [], function() {
+	return {
+		messages: {
+			DeadMsg: { direction: BPMSoft.MessageDirectionType.PUBLISH },
+			LiveMsg: { direction: BPMSoft.MessageDirectionType.SUBSCRIBE }
+		},
+		attributes: {
+			DeadAttr: { dataValueType: 1 },
+			LiveAttr: { dataValueType: 1 }
+		},
+		methods: {
+			deadFn: function() {},
+			liveFn: function() {
+				this.set("LiveAttr", 1);
+				this.sandbox.subscribe("LiveMsg");
+			}
+		},
+		diff: [{ values: { click: { bindTo: "liveFn" } } }]
+	};
+});
+`;
+	const schemaIssues = collectStyleIssues(schemaSrc);
+	const unusedNames = schemaIssues
+		.filter((i) =>
+			i.kind === "unusedMethod" ||
+			i.kind === "unusedAttribute" ||
+			i.kind === "unusedMessage"
+		)
+		.map((i) => schemaSrc.slice(i.start, i.end).trim())
+		.sort();
+	if (unusedNames.join(",") !== "DeadAttr,DeadMsg,deadFn") {
+		console.error("Expected unused schema members Dead*", unusedNames);
+		failed = true;
+	}
+	const inheritedSkip = collectStyleIssues(schemaSrc, {
+		methods: new Set(["deadFn"]),
+		attributes: new Set(["DeadAttr"]),
+		messages: new Set(["DeadMsg"])
+	}).filter((i) =>
+		i.kind === "unusedMethod" ||
+		i.kind === "unusedAttribute" ||
+		i.kind === "unusedMessage"
+	);
+	if (inheritedSkip.length) {
+		console.error("Inherited schema members should not be unused", inheritedSkip);
+		failed = true;
+	} else {
+		console.log("style compiler rules OK");
 	}
 }
 

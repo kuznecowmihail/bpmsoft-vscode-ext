@@ -7,7 +7,7 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
-        "${workspaceFolder}/../../crm-infrastructure/crm-volumes/suppliers2_190"
+        "${workspaceFolder}/../../crm-infrastructure/crm-volumes/suppliers2_190_test"
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
@@ -21,7 +21,8 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "package"],
       "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "preLaunchTask": "npm: compile"
     }
   ]
 }

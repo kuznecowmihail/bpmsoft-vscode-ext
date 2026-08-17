@@ -1,8 +1,9 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember, isPrivateMemberFromOtherFile } from "../index/types";
+import { IndexedMember, isPrivateMemberFromOtherFile, IndexedSchemaMessage, sandboxMessageIssue, schemaMessageDirectionLabel } from "../index/types";
 import { collectThisMemberAccesses, parseAmdModule, ThisMemberAccess } from "../parse/amdParser";
+import { clearDebounceTimers, debounceDocument, isJsFile } from "./jsDocuments";
 
 export const DIAG_SOURCE = "BPMSoft";
 export const DIAG_MISSING_METHOD = "bpmsoft.missingMethod";
@@ -12,8 +13,9 @@ export const DIAG_MISSING_MIXIN = "bpmsoft.missingMixin";
 export const DIAG_MISSING_MIXIN_METHOD = "bpmsoft.missingMixinMethod";
 export const DIAG_MISSING_MIXIN_PROPERTY = "bpmsoft.missingMixinProperty";
 export const DIAG_PRIVATE_MEMBER = "bpmsoft.privateMember";
+export const DIAG_UNKNOWN_SANDBOX_MESSAGE = "bpmsoft.unknownSandboxMessage";
+export const DIAG_SANDBOX_MESSAGE_DIRECTION = "bpmsoft.sandboxMessageDirection";
 
-const DEBOUNCE_MS = 300;
 const METHOD_ALLOWLIST = new Set(["callParent"]);
 const BARE_ALLOWLIST = new Set(["callParent", "mixins"]);
 
@@ -26,29 +28,12 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 	}
 
 	dispose(): void {
-		for (const timer of this.timers.values()) {
-			clearTimeout(timer);
-		}
-		this.timers.clear();
+		clearDebounceTimers(this.timers);
 		this.collection.dispose();
 	}
 
 	schedule(document: vscode.TextDocument): void {
-		if (!isJsFile(document)) {
-			return;
-		}
-		const key = document.uri.toString();
-		const prev = this.timers.get(key);
-		if (prev) {
-			clearTimeout(prev);
-		}
-		this.timers.set(
-			key,
-			setTimeout(() => {
-				this.timers.delete(key);
-				this.refresh(document);
-			}, DEBOUNCE_MS)
-		);
+		debounceDocument(this.timers, document, (doc) => this.refresh(doc));
 	}
 
 	refresh(document: vscode.TextDocument): void {
@@ -65,10 +50,18 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 		this.index.upsertModule(parsed);
 
 		const known = indexKnownMembers(this.index.resolveThisMembers(filePath));
+		const messages = this.index.resolveSchemaMessages(filePath);
 		const isPage = parsed.kind === "page";
 		const diags: vscode.Diagnostic[] = [];
 		for (const access of collectThisMemberAccesses(source)) {
-			const diag = diagnosticForAccess(document, access, known, isPage, filePath);
+			const diag = diagnosticForAccess(
+				document,
+				access,
+				known,
+				isPage,
+				filePath,
+				messages
+			);
 			if (diag) {
 				diags.push(diag);
 			}
@@ -85,10 +78,6 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 	clear(uri: vscode.Uri): void {
 		this.collection.delete(uri);
 	}
-}
-
-function isJsFile(document: vscode.TextDocument): boolean {
-	return document.languageId === "javascript" && document.uri.scheme === "file";
 }
 
 interface MemberCatalog {
@@ -165,8 +154,12 @@ function diagnosticForAccess(
 	access: ThisMemberAccess,
 	known: ReturnType<typeof indexKnownMembers>,
 	isPage: boolean,
-	currentFilePath: string
+	currentFilePath: string,
+	messages: Record<string, IndexedSchemaMessage>
 ): vscode.Diagnostic | undefined {
+	if (access.kind === "sandboxPublish" || access.kind === "sandboxSubscribe") {
+		return diagnosticForSandboxMessage(document, access, messages);
+	}
 	if (access.kind === "mixin") {
 		if (known.mixins.has(access.name)) {
 			return undefined;
@@ -227,6 +220,38 @@ function diagnosticForAccess(
 		vscode.DiagnosticSeverity.Warning,
 		DIAG_MISSING_ATTRIBUTE,
 		`Атрибут «${access.name}» не найден в схеме или иерархии`
+	);
+}
+
+function diagnosticForSandboxMessage(
+	document: vscode.TextDocument,
+	access: ThisMemberAccess,
+	messages: Record<string, IndexedSchemaMessage>
+): vscode.Diagnostic | undefined {
+	const action = access.kind === "sandboxPublish" ? "publish" : "subscribe";
+	const issue = sandboxMessageIssue(messages, access.name, action);
+	if (!issue) {
+		return undefined;
+	}
+	if (issue === "missing") {
+		return makeDiag(
+			document,
+			access,
+			vscode.DiagnosticSeverity.Warning,
+			DIAG_UNKNOWN_SANDBOX_MESSAGE,
+			`Сообщение «${access.name}» не объявлено в блоке messages схемы, модуля или иерархии`
+		);
+	}
+	const declared = messages[access.name];
+	const needed =
+		action === "publish" ? "PUBLISH или BIDIRECTIONAL" : "SUBSCRIBE или BIDIRECTIONAL";
+	const verb = action === "publish" ? "публиковать" : "подписывать";
+	return makeDiag(
+		document,
+		access,
+		vscode.DiagnosticSeverity.Warning,
+		DIAG_SANDBOX_MESSAGE_DIRECTION,
+		`Сообщение «${access.name}» нельзя ${verb}: в messages направление ${schemaMessageDirectionLabel(declared.direction)}, нужно ${needed}`
 	);
 }
 

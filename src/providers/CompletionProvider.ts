@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember, MemberKind } from "../index/types";
-import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../index/types";
+import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -20,6 +20,11 @@ const GLOBAL_IDENTIFIERS = [
 		documentation: "define(\"ModuleName\", deps, factory)"
 	}
 ];
+
+const TRIGGER_SUGGEST: vscode.Command = {
+	title: "Suggest",
+	command: "editor.action.triggerSuggest"
+};
 
 function kindToCompletion(
 	kind: MemberKind
@@ -40,7 +45,11 @@ function kindToCompletion(
 	}
 }
 
-function toItems(members: IndexedMember[]): vscode.CompletionItem[] {
+function toItems(
+	members: IndexedMember[],
+	opts?: { thisPath?: string }
+): vscode.CompletionItem[] {
+	const thisPath = opts?.thisPath;
 	return members.map((m, i) => {
 		const isAttr = m.kind === "attribute";
 		const label = isAttr ? `$${m.name}` : m.name;
@@ -52,7 +61,16 @@ function toItems(members: IndexedMember[]): vscode.CompletionItem[] {
 		if (m.documentation) {
 			item.documentation = new vscode.MarkdownString(m.documentation);
 		}
-		if (m.kind === "method") {
+		if (thisPath === "" && m.name === "sandbox") {
+			item.insertText = new vscode.SnippetString("sandbox.");
+			item.command = TRIGGER_SUGGEST;
+		} else if (
+			thisPath === "sandbox" &&
+			(m.name === "publish" || m.name === "subscribe")
+		) {
+			item.insertText = new vscode.SnippetString(`${m.name}($0)`);
+			item.command = TRIGGER_SUGGEST;
+		} else if (m.kind === "method") {
 			item.insertText = new vscode.SnippetString(`${m.name}($0)`);
 		} else if (isAttr) {
 			item.insertText = `$${m.name}`;
@@ -91,6 +109,38 @@ function toGetSetItems(
 					document.positionAt(ctx.nameStart),
 					document.positionAt(ctx.nameEnd)
 				);
+			}
+			return item;
+		});
+}
+
+function toSandboxMessageItems(
+	messages: IndexedSchemaMessage[],
+	ctx: { quote?: string; name: string; nameStart: number; nameEnd: number },
+	document: vscode.TextDocument
+): vscode.CompletionItem[] {
+	const typed = ctx.name.toLowerCase();
+	const range = new vscode.Range(
+		document.positionAt(ctx.nameStart),
+		document.positionAt(ctx.nameEnd)
+	);
+	return messages
+		.filter(
+			(msg) => !typed || msg.name.toLowerCase().startsWith(typed)
+		)
+		.map((msg, i) => {
+			const item = new vscode.CompletionItem(
+				msg.name,
+				vscode.CompletionItemKind.Event
+			);
+			item.detail = `BPMSoft · ${schemaMessageDirectionLabel(msg.direction)}`;
+			item.sortText = `!${String(i).padStart(5, "0")}_${msg.name}`;
+			item.filterText = msg.name;
+			item.preselect = i === 0;
+			item.insertText = ctx.quote ? msg.name : `"${msg.name}"`;
+			item.range = range;
+			if (msg.documentation) {
+				item.documentation = new vscode.MarkdownString(msg.documentation);
 			}
 			return item;
 		});
@@ -163,6 +213,19 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 			);
 		}
 
+		const sandboxMsg = getThisSandboxMessageContext(text, offset);
+		if (sandboxMsg) {
+			const items = toSandboxMessageItems(
+				this.index.resolveSandboxMessages(
+					document.uri.fsPath,
+					sandboxMsg.method
+				),
+				sandboxMsg,
+				document
+			);
+			return new vscode.CompletionList(items, true);
+		}
+
 		const overrideCtx = getOverrideInsertContext(text, offset);
 		if (overrideCtx && !/\.[\w$]*$/.test(linePrefix)) {
 			return asList(
@@ -206,7 +269,9 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 
 		if (rawPrefix === "this") {
 			return asList(
-				toItems(this.index.resolveThisMembers(document.uri.fsPath))
+				toItems(this.index.resolveThisMembers(document.uri.fsPath), {
+					thisPath: ""
+				})
 			);
 		}
 
@@ -218,12 +283,14 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 		}
 
 		if (rawPrefix.startsWith("this.")) {
+			const thisPath = rawPrefix.slice("this.".length);
 			return asList(
 				toItems(
 					this.index.resolveThisPathMembers(
 						document.uri.fsPath,
-						rawPrefix.slice("this.".length)
-					)
+						thisPath
+					),
+					{ thisPath }
 				)
 			);
 		}

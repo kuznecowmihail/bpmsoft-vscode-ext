@@ -6,6 +6,7 @@ import { SymbolIndex } from "./SymbolIndex";
 import { buildPlatformStubs } from "../stubs/platformGlobals";
 import { buildExtStubs } from "../stubs/extGlobals";
 import { buildSandboxStubs } from "../stubs/sandboxGlobals";
+import { buildNavigationMessages } from "../stubs/navigationMessages";
 import {
 	resolveAppLayouts,
 	walkJsFiles,
@@ -34,6 +35,7 @@ export class ModuleIndexer {
 		}
 		const sandbox = buildSandboxStubs(folders);
 		this.index.setSandboxStubs(sandbox.members, sandbox.origin);
+		this.index.setCoreMessages(buildNavigationMessages(folders));
 
 		let files = this.collectIndexFiles(layouts);
 		if (!files.length) {
