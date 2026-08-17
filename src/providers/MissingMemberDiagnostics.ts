@@ -2,11 +2,12 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, isPrivateMemberFromOtherFile, IndexedSchemaMessage, sandboxMessageIssue, schemaMessageDirectionLabel } from "../index/types";
-import { collectThisMemberAccesses, parseAmdModule, ThisMemberAccess } from "../parse/amdParser";
+import { collectThisMemberAccesses, parseAmdAst, ThisMemberAccess } from "../parse/amdParser";
 import { clearDebounceTimers, debounceDocument, isJsFile } from "./jsDocuments";
 
 export const DIAG_SOURCE = "BPMSoft";
 export const DIAG_MISSING_METHOD = "bpmsoft.missingMethod";
+export const DIAG_MISSING_BINDTO = "bpmsoft.missingBindTo";
 export const DIAG_MISSING_PROPERTY = "bpmsoft.missingProperty";
 export const DIAG_MISSING_ATTRIBUTE = "bpmsoft.missingAttribute";
 export const DIAG_MISSING_MIXIN = "bpmsoft.missingMixin";
@@ -42,18 +43,18 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 		}
 		const filePath = document.uri.fsPath;
 		const source = document.getText();
-		const parsed = parseAmdModule(source, filePath);
+		const parsed = parseAmdAst(source, filePath);
 		if (!parsed) {
 			this.collection.delete(document.uri);
 			return;
 		}
-		this.index.upsertModule(parsed);
+		this.index.upsertModule(parsed.module);
 
 		const known = indexKnownMembers(this.index.resolveThisMembers(filePath));
 		const messages = this.index.resolveSchemaMessages(filePath);
-		const isPage = parsed.kind === "page";
+		const isPage = parsed.module.kind === "page";
 		const diags: vscode.Diagnostic[] = [];
-		for (const access of collectThisMemberAccesses(source)) {
+		for (const access of collectThisMemberAccesses(source, parsed.ast)) {
 			const diag = diagnosticForAccess(
 				document,
 				access,
@@ -191,6 +192,21 @@ function diagnosticForAccess(
 			vscode.DiagnosticSeverity.Error,
 			DIAG_MISSING_METHOD,
 			`Метод «${access.name}» не найден в схеме или иерархии`
+		);
+	}
+	if (access.kind === "diffBindTo") {
+		if (
+			known.methods.has(access.name) ||
+			known.attributes.has(access.name)
+		) {
+			return undefined;
+		}
+		return makeDiag(
+			document,
+			access,
+			vscode.DiagnosticSeverity.Error,
+			DIAG_MISSING_BINDTO,
+			`Метод «${access.name}» из bindTo не найден в схеме или иерархии`
 		);
 	}
 	if (access.kind === "bare") {

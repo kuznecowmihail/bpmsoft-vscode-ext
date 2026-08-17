@@ -21,6 +21,7 @@ const CODE_BY_KIND: Record<StyleIssue["kind"], string> = {
 	consoleCall: "bpmsoft.style.console",
 	nanCompare: "bpmsoft.style.nanCompare",
 	duplicateKey: "bpmsoft.style.duplicateKey",
+	duplicateDiff: "bpmsoft.style.duplicateDiff",
 	unusedMethod: "bpmsoft.style.unusedMethod",
 	unusedAttribute: "bpmsoft.style.unusedAttribute",
 	unusedMessage: "bpmsoft.style.unusedMessage"

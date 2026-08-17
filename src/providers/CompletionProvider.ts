@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../index/types";
-import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -146,6 +146,42 @@ function toSandboxMessageItems(
 		});
 }
 
+function toBindToItems(
+	members: IndexedMember[],
+	ctx: { quote?: string; name: string; nameStart: number; nameEnd: number },
+	document: vscode.TextDocument
+): vscode.CompletionItem[] {
+	const typed = ctx.name.toLowerCase();
+	const range = new vscode.Range(
+		document.positionAt(ctx.nameStart),
+		document.positionAt(ctx.nameEnd)
+	);
+	return members
+		.filter(
+			(m) =>
+				(m.kind === "method" || m.kind === "attribute") &&
+				(!typed || m.name.toLowerCase().startsWith(typed))
+		)
+		.map((m, i) => {
+			const item = new vscode.CompletionItem(
+				m.name,
+				m.kind === "method"
+					? vscode.CompletionItemKind.Method
+					: vscode.CompletionItemKind.Field
+			);
+			item.detail = `BPMSoft · ${m.kind === "method" ? "method" : "attribute"}`;
+			item.sortText = `!${m.kind === "method" ? "m" : "a"}${String(i).padStart(5, "0")}_${m.name}`;
+			item.filterText = m.name;
+			item.preselect = i === 0;
+			item.insertText = ctx.quote ? m.name : `"${m.name}"`;
+			item.range = range;
+			if (m.documentation) {
+				item.documentation = new vscode.MarkdownString(m.documentation);
+			}
+			return item;
+		});
+}
+
 function asList(items: vscode.CompletionItem[]): vscode.CompletionList | undefined {
 	if (!items.length) {
 		return undefined;
@@ -221,6 +257,16 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 					sandboxMsg.method
 				),
 				sandboxMsg,
+				document
+			);
+			return new vscode.CompletionList(items, true);
+		}
+
+		const bindTo = getDiffBindToContext(text, offset);
+		if (bindTo) {
+			const items = toBindToItems(
+				this.index.resolveThisMembers(document.uri.fsPath),
+				bindTo,
 				document
 			);
 			return new vscode.CompletionList(items, true);

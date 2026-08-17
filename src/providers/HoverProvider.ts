@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 import { schemaMessageDirectionLabel } from "../index/types";
 
 export class BpmsoftHoverProvider implements vscode.HoverProvider {
@@ -37,6 +37,25 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 				const lines = [
 					`**this.sandbox.${sandboxMsg.method}("${sandboxMsg.name}")** *(${schemaMessageDirectionLabel(msg.direction)})*`,
 					...(msg.documentation ? ["", msg.documentation] : [])
+				];
+				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
+			}
+		}
+
+		const bindTo = getDiffBindToContext(text, offset);
+		if (bindTo?.name) {
+			const members = this.index.resolveThisMembers(document.uri.fsPath);
+			const m = members.find(
+				(x) =>
+					x.name === bindTo.name &&
+					(x.kind === "method" || x.kind === "attribute")
+			);
+			if (m) {
+				const kindLabel = m.kind === "method" ? "method" : "attribute";
+				const lines = [
+					`**bindTo: "${m.name}"** *(${kindLabel})*`,
+					...(m.detail ? [m.detail] : []),
+					...(m.documentation ? ["", m.documentation] : [])
 				];
 				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
 			}

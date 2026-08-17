@@ -7,6 +7,7 @@ import {
 } from "../parse/amdParser";
 import {
 	DIAG_MISSING_ATTRIBUTE,
+	DIAG_MISSING_BINDTO,
 	DIAG_MISSING_METHOD,
 	DIAG_MISSING_PROPERTY,
 	DIAG_SOURCE,
@@ -20,10 +21,12 @@ export interface CreateMemberArgs {
 	kind: CreateMemberKind;
 	name: string;
 	params?: string[];
+	dataValueType?: string;
 }
 
 const MEMBER_FIX_CODES = new Set([
 	DIAG_MISSING_METHOD,
+	DIAG_MISSING_BINDTO,
 	DIAG_MISSING_PROPERTY,
 	DIAG_MISSING_ATTRIBUTE
 ]);
@@ -46,7 +49,7 @@ export class CreateMemberCodeActionProvider implements vscode.CodeActionProvider
 		for (const diag of diags) {
 			createsForDiagnostic(document, diag, accesses).forEach((req, i) => {
 				const action = new vscode.CodeAction(
-					titleFor(req.kind, req.name),
+					titleFor(req.kind, req.name, req.dataValueType),
 					vscode.CodeActionKind.QuickFix
 				);
 				action.diagnostics = [diag];
@@ -76,7 +79,8 @@ export async function executeCreateMember(
 		document.getText(),
 		args.kind,
 		args.name,
-		args.params
+		args.params,
+		args.dataValueType
 	);
 	if (!insert) {
 		void vscode.window.showWarningMessage(
@@ -98,12 +102,19 @@ export async function executeCreateMember(
 	}
 }
 
-function titleFor(kind: CreateMemberKind, name: string): string {
+function titleFor(
+	kind: CreateMemberKind,
+	name: string,
+	dataValueType?: string
+): string {
 	if (kind === "method") {
 		return `Создать метод ${name}`;
 	}
 	if (kind === "property") {
 		return `Создать свойство ${name}`;
+	}
+	if (dataValueType) {
+		return `Создать атрибут ${dataValueType} ${name}`;
 	}
 	return `Создать атрибут ${name}`;
 }
@@ -113,13 +124,19 @@ function createsForDiagnostic(
 	diag: vscode.Diagnostic,
 	accesses: ThisMemberAccess[]
 ): CreateMemberArgs[] {
-	const raw = document.getText(diag.range);
+	const raw = document.getText(diag.range).replace(/^["']|["']$/g, "");
 	const name = raw.startsWith("$") ? raw.slice(1) : raw;
 	if (!name) {
 		return [];
 	}
 	const filePath = document.uri.fsPath;
 	const code = String(diag.code ?? "");
+	if (code === DIAG_MISSING_BINDTO) {
+		return [
+			{ filePath, kind: "method", name },
+			{ filePath, kind: "attribute", name, dataValueType: "BOOLEAN" }
+		];
+	}
 	if (code === DIAG_MISSING_METHOD) {
 		const start = document.offsetAt(diag.range.start);
 		const end = document.offsetAt(diag.range.end);

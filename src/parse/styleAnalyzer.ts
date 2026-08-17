@@ -1,4 +1,4 @@
-import { collectSchemaUnusedIssues, InheritedSchemaNames } from "./schemaUsageAnalyzer";
+import { collectSchemaUnusedIssues, collectDiffDuplicateIssues, InheritedSchemaNames } from "./schemaUsageAnalyzer";
 import { AnyNode, childNodes, parseJs } from "./jsAst";
 
 type StyleIssueKind =
@@ -18,6 +18,7 @@ type StyleIssueKind =
 	| "consoleCall"
 	| "nanCompare"
 	| "duplicateKey"
+	| "duplicateDiff"
 	| "unusedMethod"
 	| "unusedAttribute"
 	| "unusedMessage";
@@ -106,6 +107,7 @@ export function collectStyleIssues(
 	}
 	pushUnusedBindings(ctx);
 	issues.push(...collectSchemaUnusedIssues(source, inherited, ast));
+	issues.push(...collectDiffDuplicateIssues(ast));
 	return issues;
 }
 

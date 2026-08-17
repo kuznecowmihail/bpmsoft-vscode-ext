@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember } from "../index/types";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext } from "../parse/amdParser";
 
 function memberLocation(member: IndexedMember | undefined): vscode.Location | undefined {
 	if (!member?.filePath || !member.position) {
@@ -57,6 +57,15 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 					)
 				);
 			}
+			if (locations.length) {
+				return locations;
+			}
+		}
+
+		const bindTo = getDiffBindToContext(text, offset);
+		if (bindTo?.name) {
+			this.pushThisHits(locations, document.uri.fsPath, bindTo.name, "method");
+			this.pushThisHits(locations, document.uri.fsPath, bindTo.name, "attribute");
 			if (locations.length) {
 				return locations;
 			}

@@ -751,12 +751,29 @@ export function parseAmdModule(
 	source: string,
 	filePath: string
 ): IndexedModule | undefined {
+	const parsed = parseAmdAst(source, filePath);
+	return parsed?.module;
+}
+
+/** Parse once: module index + AST for diagnostics / this-access collection. */
+export function parseAmdAst(
+	source: string,
+	filePath: string
+): { module: IndexedModule; ast: AnyNode } | undefined {
 	const comments: acorn.Comment[] = [];
 	const ast = parseJs(source, comments);
 	if (!ast) {
 		return undefined;
 	}
+	const module = indexAmdAst(ast, comments, filePath);
+	return module ? { module, ast } : undefined;
+}
 
+function indexAmdAst(
+	ast: AnyNode,
+	comments: acorn.Comment[],
+	filePath: string
+): IndexedModule | undefined {
 	let found: IndexedModule | undefined;
 	walk.simple(ast, {
 		CallExpression(node: AnyNode) {
@@ -985,6 +1002,154 @@ export function getThisSandboxMessageContext(
 	};
 }
 
+export interface DiffBindToContext {
+	quote: '"' | "'" | undefined;
+	name: string;
+	nameStart: number;
+	nameEnd: number;
+}
+
+/**
+ * Cursor inside diff values: enabled/visible/click/{…}: { bindTo: "Name" }.
+ * Keys may be quoted or bare: bindTo / "bindTo".
+ */
+export function getDiffBindToContext(
+	documentText: string,
+	offset: number
+): DiffBindToContext | undefined {
+	const before = documentText.slice(Math.max(0, offset - 400), offset);
+	const m = before.match(
+		/(?:["']bindTo["']|\bbindTo\b)\s*:\s*(?:(["'])([\w$]*)|([\w$]*))$/
+	);
+	if (!m || !isInsideDiff(documentText, offset)) {
+		return undefined;
+	}
+	const quote = (m[1] as '"' | "'" | undefined) || undefined;
+	const typed = (quote ? m[2] : m[3]) || "";
+	const nameEnd = identEnd(documentText, offset);
+	return {
+		quote,
+		name: typed + documentText.slice(offset, nameEnd),
+		nameStart: offset - typed.length,
+		nameEnd
+	};
+}
+
+function isInsideDiff(text: string, offset: number): boolean {
+	const lastEnd = lastDiffKeyColonEnd(text, offset);
+	if (lastEnd < 0) {
+		return false;
+	}
+	const i = skipWsAndCommentsForward(text, lastEnd, offset);
+	if (i >= offset || (text[i] !== "[" && text[i] !== "{")) {
+		return false;
+	}
+	return unclosedBrackets(text, i, offset);
+}
+
+/** Last `diff:` / `"diff":` property key before offset, ignoring comments and other strings. */
+function lastDiffKeyColonEnd(text: string, offset: number): number {
+	let i = 0;
+	let last = -1;
+	while (i < offset) {
+		const skipped = skipComment(text, i, offset);
+		if (skipped !== undefined) {
+			i = skipped;
+			continue;
+		}
+		const ch = text[i];
+		if (ch === '"' || ch === "'" || ch === "`") {
+			const start = i;
+			i = skipJsString(text, i, offset);
+			if (i > start + 1 && text[i - 1] === ch) {
+				const content = text.slice(start + 1, i - 1);
+				if (content === "diff") {
+					const colon = skipWsAndCommentsForward(text, i, offset);
+					if (colon < offset && text[colon] === ":") {
+						last = colon + 1;
+					}
+				}
+			}
+			continue;
+		}
+		if (/[A-Za-z_$]/.test(ch)) {
+			const start = i;
+			i++;
+			while (i < offset && /[\w$]/.test(text[i])) {
+				i++;
+			}
+			if (text.slice(start, i) === "diff") {
+				const colon = skipWsAndCommentsForward(text, i, offset);
+				if (colon < offset && text[colon] === ":") {
+					last = colon + 1;
+				}
+			}
+			continue;
+		}
+		i++;
+	}
+	return last;
+}
+
+function skipComment(text: string, i: number, end: number): number | undefined {
+	if (text[i] !== "/") {
+		return undefined;
+	}
+	if (text[i + 1] === "/") {
+		const nl = text.indexOf("\n", i);
+		return nl < 0 ? end : nl + 1;
+	}
+	if (text[i + 1] === "*") {
+		const close = text.indexOf("*/", i + 2);
+		return close < 0 ? end : close + 2;
+	}
+	return undefined;
+}
+
+function skipWsAndCommentsForward(text: string, i: number, end: number): number {
+	while (i < end) {
+		const ch = text[i];
+		if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
+			i++;
+			continue;
+		}
+		const skipped = skipComment(text, i, end);
+		if (skipped !== undefined) {
+			i = skipped;
+			continue;
+		}
+		break;
+	}
+	return i;
+}
+
+function unclosedBrackets(text: string, start: number, offset: number): boolean {
+	let depth = 0;
+	let i = start;
+	while (i < offset) {
+		const skipped = skipComment(text, i, offset);
+		if (skipped !== undefined) {
+			i = skipped;
+			continue;
+		}
+		const ch = text[i];
+		if (ch === '"' || ch === "'" || ch === "`") {
+			i = skipJsString(text, i, offset);
+			continue;
+		}
+		if (ch === "[" || ch === "{") {
+			depth++;
+		} else if (ch === "]" || ch === "}") {
+			depth--;
+			if (depth <= 0) {
+				return false;
+			}
+		}
+		i++;
+	}
+	return depth > 0;
+}
+
 function identEnd(documentText: string, offset: number): number {
 	let nameEnd = offset;
 	while (
@@ -1120,7 +1285,8 @@ export type ThisMemberAccessKind =
 	| "mixinMethod"
 	| "mixinProperty"
 	| "sandboxPublish"
-	| "sandboxSubscribe";
+	| "sandboxSubscribe"
+	| "diffBindTo";
 
 export interface ThisMemberAccess {
 	kind: ThisMemberAccessKind;
@@ -1145,7 +1311,8 @@ const NESTED_THIS_SKIP = new Set(["sandbox", "Ext", "BPMSoft", "mixins"]);
 /**
  * All `this.foo` / `this.$Foo` / `this.get("Foo")` / `this.set("Foo"` /
  * `this.mixins.Name` / `this.mixins.Name.foo` /
- * `this.sandbox.publish("Msg")` / `this.sandbox.subscribe("Msg")` accesses.
+ * `this.sandbox.publish("Msg")` / `this.sandbox.subscribe("Msg")` /
+ * `diff` `bindTo: "Name"` accesses.
  * Skips comments/strings (AST) and computed `this[expr]`.
  */
 export function collectThisMemberAccesses(
@@ -1243,7 +1410,75 @@ export function collectThisMemberAccesses(
 			}
 		} as any
 	);
+	collectDiffBindToAccesses(ast, out);
 	return out;
+}
+
+function collectDiffBindToAccesses(ast: AnyNode, out: ThisMemberAccess[]): void {
+	const schema = findSchemaReturnObject(ast);
+	if (!schema) {
+		return;
+	}
+	for (const prop of (schema.properties as AnyNode[]) || []) {
+		if (propName(prop) === "diff") {
+			walkDiffBindTo(prop.value as AnyNode, out);
+		}
+	}
+}
+
+function walkDiffBindTo(node: AnyNode | undefined, out: ThisMemberAccess[]): void {
+	if (!node) {
+		return;
+	}
+	if (node.type === "ObjectExpression") {
+		for (const prop of (node.properties as AnyNode[]) || []) {
+			if (prop.type === "SpreadElement") {
+				walkDiffBindTo(prop.argument as AnyNode, out);
+				continue;
+			}
+			if (propName(prop) === "bindTo") {
+				pushDiffBindToAccess(prop.value as AnyNode, out);
+			}
+			walkDiffBindTo(prop.value as AnyNode, out);
+		}
+		return;
+	}
+	if (node.type === "ArrayExpression") {
+		for (const el of (node.elements as AnyNode[]) || []) {
+			walkDiffBindTo(el, out);
+		}
+	}
+}
+
+function pushDiffBindToAccess(value: AnyNode | undefined, out: ThisMemberAccess[]): void {
+	if (!value) {
+		return;
+	}
+	if (value.type === "Literal" && typeof value.value === "string") {
+		const name = value.value;
+		if (!IDENT_RE.test(name)) {
+			return;
+		}
+		out.push({
+			kind: "diffBindTo",
+			name,
+			start: (value.start as number) + 1,
+			end: (value.end as number) - 1
+		});
+		return;
+	}
+	if (value.type === "Identifier") {
+		const name = value.name as string;
+		if (!IDENT_RE.test(name)) {
+			return;
+		}
+		out.push({
+			kind: "diffBindTo",
+			name,
+			start: value.start as number,
+			end: value.end as number
+		});
+	}
 }
 
 function isThisMixinsMemberExpression(object: AnyNode | undefined): boolean {
@@ -1310,7 +1545,8 @@ export function planCreateMemberInsert(
 	source: string,
 	kind: CreateMemberKind,
 	name: string,
-	params?: string[]
+	params?: string[],
+	dataValueType?: string
 ): TextInsert | undefined {
 	const ast = parseJs(source);
 	if (!ast) {
@@ -1326,7 +1562,8 @@ export function planCreateMemberInsert(
 			kind,
 			name,
 			params,
-			unit
+			unit,
+			dataValueType
 		);
 	}
 	if (kind === "attribute") {
@@ -1475,7 +1712,8 @@ function formatCreateMemberText(
 	name: string,
 	params: string[] | undefined,
 	indent: string,
-	unit: string
+	unit: string,
+	dataValueType?: string
 ): string {
 	if (kind === "method") {
 		const args = (params || []).join(", ");
@@ -1484,7 +1722,8 @@ function formatCreateMemberText(
 	if (kind === "property") {
 		return `${name}: null`;
 	}
-	return `${name}: {\n${indent}${unit}dataValueType: BPMSoft.DataValueType.TEXT\n${indent}}`;
+	const typeName = dataValueType || "TEXT";
+	return `${name}: {\n${indent}${unit}dataValueType: BPMSoft.DataValueType.${typeName}\n${indent}}`;
 }
 
 function insertIntoObject(
@@ -1532,11 +1771,20 @@ function insertInSchemaSection(
 	kind: CreateMemberKind,
 	name: string,
 	params: string[] | undefined,
-	unit: string
+	unit: string,
+	dataValueType?: string
 ): TextInsert | undefined {
 	const section = findSchemaSection(schema, sectionName);
 	if (section?.type === "ObjectExpression") {
-		return insertMemberIntoObject(source, section, kind, name, params, unit);
+		return insertMemberIntoObject(
+			source,
+			section,
+			kind,
+			name,
+			params,
+			unit,
+			dataValueType
+		);
 	}
 	return insertNewSchemaSection(
 		source,
@@ -1545,7 +1793,8 @@ function insertInSchemaSection(
 		kind,
 		name,
 		params,
-		unit
+		unit,
+		dataValueType
 	);
 }
 
@@ -1555,10 +1804,18 @@ function insertMemberIntoObject(
 	kind: CreateMemberKind,
 	name: string,
 	params: string[] | undefined,
-	unit: string
+	unit: string,
+	dataValueType?: string
 ): TextInsert | undefined {
 	const innerIndent = objectPropIndent(source, obj, unit);
-	const inner = formatCreateMemberText(kind, name, params, innerIndent, unit);
+	const inner = formatCreateMemberText(
+		kind,
+		name,
+		params,
+		innerIndent,
+		unit,
+		dataValueType
+	);
 	return insertIntoObject(source, obj, inner, innerIndent);
 }
 
@@ -1569,11 +1826,19 @@ function insertNewSchemaSection(
 	kind: CreateMemberKind,
 	name: string,
 	params: string[] | undefined,
-	unit: string
+	unit: string,
+	dataValueType?: string
 ): TextInsert | undefined {
 	const sectionIndent = objectPropIndent(source, schema, unit);
 	const innerIndent = sectionIndent + unit;
-	const member = formatCreateMemberText(kind, name, params, innerIndent, unit);
+	const member = formatCreateMemberText(
+		kind,
+		name,
+		params,
+		innerIndent,
+		unit,
+		dataValueType
+	);
 	const section = `${sectionName}: {\n${innerIndent}${member}\n${sectionIndent}}`;
 	return insertIntoObject(source, schema, section, sectionIndent);
 }

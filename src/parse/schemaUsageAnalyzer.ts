@@ -36,10 +36,150 @@ export function collectSchemaUnusedIssues(
 	const issues: StyleIssue[] = [];
 	for (const section of ["methods", "attributes", "messages"] as const) {
 		const meta = SECTION_LABEL[section];
-		pushUnused(issues, sections[section], used, inherited[section], meta.kind, meta.label);
+		pushUnused(
+			issues,
+			sections[section],
+			used,
+			inherited[section],
+			meta.kind,
+			meta.label
+		);
 	}
 	return issues;
 }
+
+const DIFF_OPERATIONS = new Set(["merge", "move", "remove", "insert"]);
+
+export function collectDiffDuplicateIssues(parsed: AnyNode): StyleIssue[] {
+	const items: DiffItem[] = [];
+	collectDiffItems(parsed, items);
+	const groups = new Map<string, DiffItem[]>();
+	for (const item of items) {
+		const key = `${item.operation}\0${item.name}`;
+		const list = groups.get(key);
+		if (list) {
+			list.push(item);
+		} else {
+			groups.set(key, [item]);
+		}
+	}
+	const issues: StyleIssue[] = [];
+	for (const group of groups.values()) {
+		if (group.length < 2) {
+			continue;
+		}
+		for (const item of group) {
+			issues.push({
+				kind: "duplicateDiff",
+				start: item.nameStart,
+				end: item.nameEnd,
+				message: `Повторяющийся элемент diff: operation «${item.operation}», name «${item.name}»`,
+				severity: "error"
+			});
+		}
+	}
+	return issues;
+}
+
+interface DiffItem {
+	operation: string;
+	name: string;
+	nameStart: number;
+	nameEnd: number;
+}
+
+function collectDiffItems(node: AnyNode | undefined, out: DiffItem[]): void {
+	if (!node || typeof node.type !== "string") {
+		return;
+	}
+	if (node.type === "ObjectExpression") {
+		const props = (node.properties as AnyNode[]) || [];
+		const keys = new Set(
+			props.map((p) => propertyKeyName(p)).filter(Boolean) as string[]
+		);
+		if (isSchemaObject(keys)) {
+			for (const prop of props) {
+				if (propertyKeyName(prop) === "diff") {
+					collectDiffArrayItems(prop.value as AnyNode, out);
+				}
+			}
+		}
+		for (const prop of props) {
+			if (prop.type === "SpreadElement") {
+				collectDiffItems(prop.argument, out);
+				continue;
+			}
+			if (prop.computed) {
+				collectDiffItems(prop.key, out);
+			}
+			collectDiffItems(prop.value, out);
+		}
+		return;
+	}
+	for (const child of childNodes(node)) {
+		collectDiffItems(child, out);
+	}
+}
+
+function isSchemaObject(keys: Set<string>): boolean {
+	return (
+		keys.has("methods") ||
+		keys.has("attributes") ||
+		keys.has("messages") ||
+		keys.has("entitySchemaName") ||
+		keys.has("mixins") ||
+		keys.has("properties")
+	);
+}
+
+function collectDiffArrayItems(node: AnyNode | undefined, out: DiffItem[]): void {
+	if (!node || node.type !== "ArrayExpression") {
+		return;
+	}
+	for (const el of (node.elements as AnyNode[]) || []) {
+		if (!el || el.type !== "ObjectExpression") {
+			continue;
+		}
+		const operation = objectStringProp(el, "operation");
+		const name = objectStringProp(el, "name");
+		if (
+			!operation ||
+			!name ||
+			!DIFF_OPERATIONS.has(operation.value)
+		) {
+			continue;
+		}
+		out.push({
+			operation: operation.value,
+			name: name.value,
+			nameStart: name.start,
+			nameEnd: name.end
+		});
+	}
+}
+
+function objectStringProp(
+	obj: AnyNode,
+	key: string
+): { value: string; start: number; end: number } | undefined {
+	for (const prop of (obj.properties as AnyNode[]) || []) {
+		if (prop.type === "SpreadElement" || propertyKeyName(prop) !== key) {
+			continue;
+		}
+		const value = prop.value as AnyNode;
+		if (value?.type === "Literal" && typeof value.value === "string" && value.value) {
+			return {
+				value: value.value,
+				start: value.start as number,
+				end: value.end as number
+			};
+		}
+	}
+	return undefined;
+}
+
+/** Keys that still mean a plain attribute config (usage is worth checking). */
+const SIMPLE_ATTRIBUTE_KEYS = new Set(["dataValueType", "value", "type"]);
 
 interface SectionProp {
 	name: string;
@@ -140,6 +280,23 @@ function collectStringLiterals(node: AnyNode | undefined, used: Set<string>): vo
 	}
 }
 
+function isSimpleAttributeConfig(prop: AnyNode): boolean {
+	const value = prop.value as AnyNode | undefined;
+	if (!value || value.type !== "ObjectExpression") {
+		return false;
+	}
+	for (const inner of (value.properties as AnyNode[]) || []) {
+		if (inner.type === "SpreadElement") {
+			return false;
+		}
+		const name = propertyKeyName(inner);
+		if (!name || !SIMPLE_ATTRIBUTE_KEYS.has(name)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function pushUnused(
 	issues: StyleIssue[],
 	props: SectionProp[],
@@ -150,6 +307,13 @@ function pushUnused(
 ): void {
 	const seen = new Set<string>();
 	for (const prop of props) {
+		if (
+			kind === "unusedAttribute" &&
+			!isSimpleAttributeConfig(prop.prop)
+		) {
+			seen.add(prop.name);
+			continue;
+		}
 		if (seen.has(prop.name) || used.has(prop.name) || inherited?.has(prop.name)) {
 			seen.add(prop.name);
 			continue;

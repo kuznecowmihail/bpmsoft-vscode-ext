@@ -17,6 +17,7 @@
 | `this.$` | Атрибуты схемы и колонки `entitySchemaName` |
 | `this.get("` / `this.set("` | Имена атрибутов |
 | `this.sandbox.publish("` / `this.sandbox.subscribe("` | Сообщения из `messages` схемы/иерархии и ядра `NavigationModule` |
+| `diff` → `bindTo: "` (ключи с кавычками или без) | Методы и атрибуты схемы/иерархии |
 | `this.$Lookup.` / `this.get("Lookup").` | Поля lookup/enum: `value`, `displayValue` |
 | `this.sandbox.` | `publish`, `subscribe`, `loadModule`, …; после `publish`/`subscribe` сразу список сообщений |
 | `this.Ext.` / `this.BPMSoft.` | Тот же API, что у глобальных `Ext` / `BPMSoft` |
@@ -34,6 +35,7 @@
 - `this.foo`, `this.$Foo`, `this.get("Foo")` / `this.set("Foo"` — в схему, родителя, миксин или entity
 - `this.MixinName.foo` / `this.mixins.MixinName.foo` — в миксин
 - `this.sandbox.publish("Msg")` / `this.sandbox.subscribe("Msg")` — в блок `messages` схемы, родителя, миксина или в `NavigationModule`
+- `bindTo: "getVisible"` / `bindTo: "IsEnabled"` в блоке `diff` — в метод или атрибут схемы/иерархии
 - `this.sandbox.publish` — в исходник sandbox
 - Имя AMD-модуля / алиас из `define([...], function(Alias)` — в файл модуля
 
@@ -55,6 +57,7 @@ Hover по тем же конструкциям: вид члена, докуме
 | `this._foo` / `this.mixins.Name._foo` | член с `_` объявлен в **другом** файле | предупреждение | — |
 | `this.sandbox.publish("Msg")` | `Msg` нет в `messages` схемы/модуля/иерархии **или** направление не `PUBLISH` / `BIDIRECTIONAL` | предупреждение | — |
 | `this.sandbox.subscribe("Msg")` | `Msg` нет в `messages` **или** направление не `SUBSCRIBE` / `BIDIRECTIONAL` | предупреждение | — |
+| `diff` → `bindTo: "foo"` | метода/атрибута `foo` нет в схеме и иерархии | ошибка | создать метод **или** атрибут `BOOLEAN` |
 
 «Существует» = текущий файл + `Structures` (stack / `structureParent`) + миксины + колонки entity + `BPMSoft.BaseSchemaViewModel` (скрытый родитель SchemaBuilder) + `extend` платформы + runtime `sandbox` / `Ext` / `BPMSoft`.
 
@@ -85,7 +88,8 @@ Hover по тем же конструкциям: вид члена, докуме
 | `debugger`, `console.log` / `warn` / `error` / … | предупреждение | удалить |
 | `x === NaN` | предупреждение | `Number.isNaN(x)` |
 | Повторяющиеся ключи объекта (`methods` / `attributes` / `messages` и любые литералы) | ошибка | — |
-| Неиспользуемые **methods / attributes / messages** текущей схемы | предупреждение | удалить объявление |
+| В `diff` несколько блоков с одной и той же парой `operation` (`merge` / `move` / `remove` / `insert`) и `name` | ошибка | — |
+| Неиспользуемые **methods / attributes / messages** текущей схемы | предупреждение | удалить объявление. Атрибут проверяется, только если в конфиге есть лишь `dataValueType` / `value` / `type`; `lookupListConfig`, `dependencies`, `isRequired`, `caption` и прочие ключи — не проверяются |
 
 Не помечаются как неиспользуемые: override методов/атрибутов/сообщений родителя, миксина, колонок entity и ядра `NavigationModule`; обращения `this.foo` / `this.$Foo` / `get`/`set` / `sandbox.publish|subscribe`; строковые литералы в том же файле (`bindTo: "onClick"`). Параметры фабрики `define(..., function (A, B)` не считаются неиспользуемыми. Имена с префиксом `_` тоже пропускаются.
 

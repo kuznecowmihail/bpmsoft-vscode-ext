@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
+const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
 const { isPrivateMemberFromOtherFile, sandboxMessageIssue } = require("../out/index/types");
@@ -1143,6 +1143,76 @@ define("FooPage", [], function() {
 		console.error("collectThisMemberAccesses should not flag get/set as methods");
 		failed = true;
 	}
+	const bindSrc = `
+define("FooPage", [], function() {
+	return {
+		methods: {
+			getVisible: function() {},
+			foo: function() {
+				var x = { bindTo: "notInDiff" };
+			}
+		},
+		attributes: { IsEnabled: {} },
+		diff: [{
+			values: {
+				enabled: { bindTo: "missingFn" },
+				"visible": { "bindTo": "getVisible" },
+				click: { bindTo: "IsEnabled" }
+			}
+		}]
+	};
+});
+`;
+	const bindAccesses = collectThisMemberAccesses(bindSrc);
+	const bindByName = (name) =>
+		bindAccesses.find((a) => a.kind === "diffBindTo" && a.name === name);
+	if (
+		!bindByName("missingFn") ||
+		bindSrc.slice(bindByName("missingFn").start, bindByName("missingFn").end) !==
+			"missingFn"
+	) {
+		console.error("collectThisMemberAccesses missing diffBindTo", bindAccesses);
+		failed = true;
+	}
+	if (!bindByName("getVisible") || !bindByName("IsEnabled")) {
+		console.error("collectThisMemberAccesses missing quoted/attribute bindTo", bindAccesses);
+		failed = true;
+	}
+	if (bindByName("notInDiff")) {
+		console.error("collectThisMemberAccesses must ignore bindTo outside diff", bindAccesses);
+		failed = true;
+	}
+	const bindParsed = parseAmdAst(bindSrc, path.join(root, "synthetic/BindToPage.js"));
+	const bindFromAst = bindParsed
+		? collectThisMemberAccesses(bindSrc, bindParsed.ast)
+		: [];
+	if (
+		!bindParsed?.module ||
+		bindFromAst.filter((a) => a.kind === "diffBindTo").length !==
+			bindAccesses.filter((a) => a.kind === "diffBindTo").length
+	) {
+		console.error("parseAmdAst reuse missed diffBindTo", bindFromAst);
+		failed = true;
+	}
+	const bindInsert = planCreateMemberInsert(bindSrc, "method", "missingFn");
+	if (!bindInsert || !bindInsert.text.includes("missingFn: function ()")) {
+		console.error("planCreateMemberInsert bindTo method failed", bindInsert);
+		failed = true;
+	}
+	const bindAttrInsert = planCreateMemberInsert(
+		bindSrc,
+		"attribute",
+		"missingFn",
+		undefined,
+		"BOOLEAN"
+	);
+	if (
+		!bindAttrInsert ||
+		!bindAttrInsert.text.includes("dataValueType: BPMSoft.DataValueType.BOOLEAN")
+	) {
+		console.error("planCreateMemberInsert bindTo BOOLEAN attribute failed", bindAttrInsert);
+		failed = true;
+	}
 	const methodInsert = planCreateMemberInsert(schemaSrc, "method", "newOne", ["a"]);
 	if (!methodInsert || !methodInsert.text.includes("newOne: function (a)")) {
 		console.error("planCreateMemberInsert method failed", methodInsert);
@@ -1152,6 +1222,21 @@ define("FooPage", [], function() {
 	const sectionInsert = planCreateMemberInsert(noMethods, "method", "init");
 	if (!sectionInsert || !sectionInsert.text.includes("methods:")) {
 		console.error("planCreateMemberInsert should create methods section", sectionInsert);
+		failed = true;
+	}
+	const attrSectionInsert = planCreateMemberInsert(
+		noMethods,
+		"attribute",
+		"Flag",
+		undefined,
+		"BOOLEAN"
+	);
+	if (
+		!attrSectionInsert ||
+		!attrSectionInsert.text.includes("attributes:") ||
+		!attrSectionInsert.text.includes("DataValueType.BOOLEAN")
+	) {
+		console.error("planCreateMemberInsert should create BOOLEAN attributes section", attrSectionInsert);
 		failed = true;
 	}
 	const extSrc = `Ext.define("BPMSoft.Foo", { extend: "BPMSoft.Bar", init: function() {} });`;
@@ -1412,6 +1497,135 @@ define("GoMsgPage", [], function() {
 		}
 		if (loadCtx) {
 			console.error("getThisSandboxMessageContext must ignore loadModule", loadCtx);
+			failed = true;
+		}
+		const quotedDiff = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			"		methods: { getVisible: function() {} },",
+			"		diff: /**SCHEMA_DIFF*/[{",
+			"			values: {",
+			'				"enabled": { "bindTo": "getVis'
+		].join("\n");
+		const bareDiff = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			"		attributes: { IsEnabled: {} },",
+			"		diff: [{",
+			"			values: {",
+			'				visible: { bindTo: "IsEn'
+		].join("\n");
+		const unquotedValue = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			"		methods: { onClick: function() {} },",
+			"		diff: [{ values: { click: { bindTo: onClk } } }]",
+			"	};",
+			"});"
+		].join("\n");
+		const methodsBindTo = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			"		methods: {",
+			"			foo: function() {",
+			'				var x = { bindTo: "getVis'
+		].join("\n");
+		const quotedCtx = getDiffBindToContext(quotedDiff, quotedDiff.length);
+		const bareCtx = getDiffBindToContext(bareDiff, bareDiff.length);
+		const unquotedCtx = getDiffBindToContext(
+			unquotedValue,
+			unquotedValue.indexOf("onClk") + 5
+		);
+		const methodsCtx = getDiffBindToContext(methodsBindTo, methodsBindTo.length);
+		if (
+			!quotedCtx ||
+			quotedCtx.quote !== '"' ||
+			quotedCtx.name !== "getVis" ||
+			quotedDiff.slice(quotedCtx.nameStart, quotedCtx.nameEnd) !== "getVis"
+		) {
+			console.error("getDiffBindToContext failed for quoted diff keys", quotedCtx);
+			failed = true;
+		}
+		if (
+			!bareCtx ||
+			bareCtx.quote !== '"' ||
+			bareCtx.name !== "IsEn" ||
+			bareDiff.slice(bareCtx.nameStart, bareCtx.nameEnd) !== "IsEn"
+		) {
+			console.error("getDiffBindToContext failed for bare diff keys", bareCtx);
+			failed = true;
+		}
+		if (
+			!unquotedCtx ||
+			unquotedCtx.quote ||
+			unquotedCtx.name !== "onClk" ||
+			unquotedValue.slice(unquotedCtx.nameStart, unquotedCtx.nameEnd) !== "onClk"
+		) {
+			console.error("getDiffBindToContext failed for unquoted bindTo value", unquotedCtx);
+			failed = true;
+		}
+		if (methodsCtx) {
+			console.error("getDiffBindToContext must ignore bindTo outside diff", methodsCtx);
+			failed = true;
+		}
+		const singleQuoted = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			"		diff: [{ values: { enabled: { 'bindTo': 'getVis"
+		].join("\n");
+		const singleCtx = getDiffBindToContext(singleQuoted, singleQuoted.length);
+		if (
+			!singleCtx ||
+			singleCtx.quote !== "'" ||
+			singleCtx.name !== "getVis"
+		) {
+			console.error("getDiffBindToContext failed for single-quoted bindTo", singleCtx);
+			failed = true;
+		}
+		const emptyQuoted = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			'		diff: [{ values: { enabled: { bindTo: "'
+		].join("\n");
+		const emptyCtx = getDiffBindToContext(emptyQuoted, emptyQuoted.length);
+		if (!emptyCtx || emptyCtx.quote !== '"' || emptyCtx.name !== "") {
+			console.error("getDiffBindToContext failed for empty bindTo value", emptyCtx);
+			failed = true;
+		}
+		const insideName = `
+define("BindToPage", [], function() {
+	return {
+		diff: [{ values: { enabled: { bindTo: "getVisible" } } }]
+	};
+});
+`;
+		const mid = getDiffBindToContext(
+			insideName,
+			insideName.indexOf("getVisible") + 3
+		);
+		const afterClosedDiff = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			'		diff: [{ values: { enabled: { bindTo: "ok" } } }],',
+			"		methods: {",
+			"			foo: function() {",
+			'				var x = { bindTo: "getVis'
+		].join("\n");
+		const afterClosed = getDiffBindToContext(
+			afterClosedDiff,
+			afterClosedDiff.length
+		);
+		if (
+			!mid ||
+			mid.quote !== '"' ||
+			mid.name !== "getVisible" ||
+			insideName.slice(mid.nameStart, mid.nameEnd) !== "getVisible"
+		) {
+			console.error("getDiffBindToContext failed inside bindTo string", mid);
+			failed = true;
+		}
+		if (afterClosed) {
+			console.error("getDiffBindToContext must ignore bindTo after closed diff", afterClosed);
 			failed = true;
 		}
 		const accesses = collectThisMemberAccesses(msgSrc);
@@ -1693,7 +1907,14 @@ define("GoStylePage", [], function() {
 		},
 		attributes: {
 			DeadAttr: { dataValueType: 1 },
-			LiveAttr: { dataValueType: 1 }
+			LiveAttr: { dataValueType: 1, value: false },
+			ConfiguredAttr: {
+				dataValueType: 1,
+				isRequired: true,
+				caption: "X",
+				dependencies: [{ columns: ["A"] }],
+				lookupListConfig: { columns: ["Id"] }
+			}
 		},
 		methods: {
 			deadFn: function() {},
@@ -1717,6 +1938,61 @@ define("GoStylePage", [], function() {
 		.sort();
 	if (unusedNames.join(",") !== "DeadAttr,DeadMsg,deadFn") {
 		console.error("Expected unused schema members Dead*", unusedNames);
+		failed = true;
+	}
+	if (schemaIssues.some((i) =>
+		i.kind === "unusedAttribute" &&
+		schemaSrc.slice(i.start, i.end).includes("ConfiguredAttr")
+	)) {
+		console.error("Configured attribute should skip unused check");
+		failed = true;
+	}
+	const dupDiffSrc = `
+define("DupDiffPage", [], function() {
+	return {
+		methods: {},
+		diff: [
+			{ operation: "merge", name: "Header" },
+			{ "operation": "merge", "name": "Header" },
+			{ operation: "insert", name: "Header" },
+			{ operation: "merge", name: "Other" },
+			{ operation: "remove", name: "Gone" },
+			{ operation: "remove", name: "Gone" },
+			{ operation: "move", name: "Box" }
+		]
+	};
+});
+`;
+	const dupDiff = collectStyleIssues(dupDiffSrc).filter((i) => i.kind === "duplicateDiff");
+	const dupLabels = dupDiff
+		.map((i) => dupDiffSrc.slice(i.start, i.end))
+		.sort();
+	if (
+		dupDiff.length !== 4 ||
+		dupDiff.some((i) => i.severity !== "error") ||
+		dupLabels.filter((s) => s.includes("Header")).length !== 2 ||
+		dupLabels.filter((s) => s.includes("Gone")).length !== 2 ||
+		dupLabels.some((s) => s.includes("Other") || s.includes("Box"))
+	) {
+		console.error("Expected duplicate diff merge Header and remove Gone", dupLabels);
+		failed = true;
+	}
+	const methodsDiff = collectStyleIssues(`
+define("X", [], function() {
+	return {
+		methods: {
+			foo: function() {
+				var x = { diff: [
+					{ operation: "merge", name: "Header" },
+					{ operation: "merge", name: "Header" }
+				] };
+			}
+		}
+	};
+});
+`).filter((i) => i.kind === "duplicateDiff");
+	if (methodsDiff.length) {
+		console.error("duplicateDiff must ignore diff inside methods", methodsDiff);
 		failed = true;
 	}
 	const inheritedSkip = collectStyleIssues(schemaSrc, {
