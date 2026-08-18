@@ -19,7 +19,7 @@
 | `this.$` | Атрибуты схемы и колонки `entitySchemaName` |
 | `this.get("` / `this.set("` | Имена атрибутов |
 | `this.sandbox.publish("` / `this.sandbox.subscribe("` | Сообщения из `messages` схемы/иерархии и ядра `NavigationModule` |
-| `diff` → `bindTo: "` (ключи с кавычками или без) | Методы и атрибуты схемы/иерархии |
+| `diff` / `methods` → `bindTo: "` (ключи с кавычками или без) | Методы и атрибуты схемы/иерархии |
 | `this.$Lookup.` / `this.get("Lookup").` | Поля lookup/enum: `value`, `displayValue` |
 | `this.sandbox.` | `publish`, `subscribe`, `loadModule`, …; после `publish`/`subscribe` сразу список сообщений |
 | `this.Ext.` / `this.BPMSoft.` | Тот же API, что у глобальных `Ext` / `BPMSoft` |
@@ -37,7 +37,7 @@
 - `this.foo`, `this.$Foo`, `this.get("Foo")` / `this.set("Foo"` — в схему, родителя, миксин или entity
 - `this.MixinName.foo` / `this.mixins.MixinName.foo` — в миксин
 - `this.sandbox.publish("Msg")` / `this.sandbox.subscribe("Msg")` — в блок `messages` схемы, родителя, миксина или в `NavigationModule`
-- `bindTo: "getVisible"` / `bindTo: "IsEnabled"` в блоке `diff` — в метод или атрибут схемы/иерархии
+- `bindTo: "getVisible"` / `bindTo: "IsEnabled"` в `diff` и в `methods` (в т.ч. `controlConfig`) — в метод или атрибут схемы/иерархии
 - `this.sandbox.publish` — в исходник sandbox
 - Имя AMD-модуля / алиас из `define([...], function(Alias)` — в файл модуля
 
@@ -59,7 +59,7 @@ Hover по тем же конструкциям: вид члена, докуме
 | `this._foo` / `this.mixins.Name._foo` | член с `_` объявлен в **другом** файле | предупреждение | — |
 | `this.sandbox.publish("Msg")` | `Msg` нет в `messages` схемы/модуля/иерархии **или** направление не `PUBLISH` / `BIDIRECTIONAL` | предупреждение | — |
 | `this.sandbox.subscribe("Msg")` | `Msg` нет в `messages` **или** направление не `SUBSCRIBE` / `BIDIRECTIONAL` | предупреждение | — |
-| `diff` → `bindTo: "foo"` | метода/атрибута `foo` нет в схеме и иерархии | ошибка | создать метод **или** атрибут `BOOLEAN` |
+| `diff` / `methods` → `bindTo: "foo"` | метода/атрибута `foo` нет в схеме и иерархии | ошибка | создать метод **или** атрибут `BOOLEAN` |
 
 «Существует» = текущий файл + `Structures` (stack / `structureParent`) + миксины + колонки entity + `BPMSoft.BaseSchemaViewModel` (скрытый родитель SchemaBuilder) + `extend` платформы + runtime `sandbox` / `Ext` / `BPMSoft`.
 

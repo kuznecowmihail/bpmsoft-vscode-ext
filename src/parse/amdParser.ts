@@ -9,7 +9,7 @@ import {
 	SourcePosition,
 	memberDedupeKey
 } from "../index/types";
-import { AnyNode, parseJs } from "./jsAst";
+import { AnyNode, childNodes, parseJs } from "./jsAst";
 
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 
@@ -1010,7 +1010,7 @@ export interface DiffBindToContext {
 }
 
 /**
- * Cursor inside diff values: enabled/visible/click/{…}: { bindTo: "Name" }.
+ * Cursor inside `bindTo: "Name"` in schema `diff` or `methods`.
  * Keys may be quoted or bare: bindTo / "bindTo".
  */
 export function getDiffBindToContext(
@@ -1021,7 +1021,7 @@ export function getDiffBindToContext(
 	const m = before.match(
 		/(?:["']bindTo["']|\bbindTo\b)\s*:\s*(?:(["'])([\w$]*)|([\w$]*))$/
 	);
-	if (!m || !isInsideDiff(documentText, offset)) {
+	if (!m || !isInsideBindToSection(documentText, offset)) {
 		return undefined;
 	}
 	const quote = (m[1] as '"' | "'" | undefined) || undefined;
@@ -1035,8 +1035,19 @@ export function getDiffBindToContext(
 	};
 }
 
-function isInsideDiff(text: string, offset: number): boolean {
-	const lastEnd = lastDiffKeyColonEnd(text, offset);
+function isInsideBindToSection(text: string, offset: number): boolean {
+	return (
+		isInsideSchemaSection(text, offset, "diff") ||
+		isInsideSchemaSection(text, offset, "methods")
+	);
+}
+
+function isInsideSchemaSection(
+	text: string,
+	offset: number,
+	section: "diff" | "methods"
+): boolean {
+	const lastEnd = lastSectionKeyColonEnd(text, offset, section);
 	if (lastEnd < 0) {
 		return false;
 	}
@@ -1047,8 +1058,12 @@ function isInsideDiff(text: string, offset: number): boolean {
 	return unclosedBrackets(text, i, offset);
 }
 
-/** Last `diff:` / `"diff":` property key before offset, ignoring comments and other strings. */
-function lastDiffKeyColonEnd(text: string, offset: number): number {
+/** Last `section:` / `"section":` property key before offset, ignoring comments and other strings. */
+function lastSectionKeyColonEnd(
+	text: string,
+	offset: number,
+	section: string
+): number {
 	let i = 0;
 	let last = -1;
 	while (i < offset) {
@@ -1063,7 +1078,7 @@ function lastDiffKeyColonEnd(text: string, offset: number): number {
 			i = skipJsString(text, i, offset);
 			if (i > start + 1 && text[i - 1] === ch) {
 				const content = text.slice(start + 1, i - 1);
-				if (content === "diff") {
+				if (content === section) {
 					const colon = skipWsAndCommentsForward(text, i, offset);
 					if (colon < offset && text[colon] === ":") {
 						last = colon + 1;
@@ -1078,7 +1093,7 @@ function lastDiffKeyColonEnd(text: string, offset: number): number {
 			while (i < offset && /[\w$]/.test(text[i])) {
 				i++;
 			}
-			if (text.slice(start, i) === "diff") {
+			if (text.slice(start, i) === section) {
 				const colon = skipWsAndCommentsForward(text, i, offset);
 				if (colon < offset && text[colon] === ":") {
 					last = colon + 1;
@@ -1312,7 +1327,7 @@ const NESTED_THIS_SKIP = new Set(["sandbox", "Ext", "BPMSoft", "mixins"]);
  * All `this.foo` / `this.$Foo` / `this.get("Foo")` / `this.set("Foo"` /
  * `this.mixins.Name` / `this.mixins.Name.foo` /
  * `this.sandbox.publish("Msg")` / `this.sandbox.subscribe("Msg")` /
- * `diff` `bindTo: "Name"` accesses.
+ * `diff` / `methods` `bindTo: "Name"` accesses.
  * Skips comments/strings (AST) and computed `this[expr]`.
  */
 export function collectThisMemberAccesses(
@@ -1410,43 +1425,48 @@ export function collectThisMemberAccesses(
 			}
 		} as any
 	);
-	collectDiffBindToAccesses(ast, out);
+	collectSchemaBindToAccesses(ast, out);
 	return out;
 }
 
-function collectDiffBindToAccesses(ast: AnyNode, out: ThisMemberAccess[]): void {
+function collectSchemaBindToAccesses(ast: AnyNode, out: ThisMemberAccess[]): void {
 	const schema = findSchemaReturnObject(ast);
 	if (!schema) {
 		return;
 	}
 	for (const prop of (schema.properties as AnyNode[]) || []) {
-		if (propName(prop) === "diff") {
-			walkDiffBindTo(prop.value as AnyNode, out);
+		const name = propName(prop);
+		if (name === "diff" || name === "methods") {
+			walkBindTo(prop.value as AnyNode, out);
 		}
 	}
 }
 
-function walkDiffBindTo(node: AnyNode | undefined, out: ThisMemberAccess[]): void {
+function walkBindTo(node: AnyNode | undefined, out: ThisMemberAccess[]): void {
 	if (!node) {
 		return;
 	}
 	if (node.type === "ObjectExpression") {
 		for (const prop of (node.properties as AnyNode[]) || []) {
 			if (prop.type === "SpreadElement") {
-				walkDiffBindTo(prop.argument as AnyNode, out);
+				walkBindTo(prop.argument as AnyNode, out);
 				continue;
 			}
 			if (propName(prop) === "bindTo") {
 				pushDiffBindToAccess(prop.value as AnyNode, out);
 			}
-			walkDiffBindTo(prop.value as AnyNode, out);
+			walkBindTo(prop.value as AnyNode, out);
 		}
 		return;
 	}
 	if (node.type === "ArrayExpression") {
 		for (const el of (node.elements as AnyNode[]) || []) {
-			walkDiffBindTo(el, out);
+			walkBindTo(el, out);
 		}
+		return;
+	}
+	for (const child of childNodes(node)) {
+		walkBindTo(child, out);
 	}
 }
 

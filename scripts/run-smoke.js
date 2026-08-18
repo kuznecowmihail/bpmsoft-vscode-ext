@@ -1267,8 +1267,8 @@ define("FooPage", [], function() {
 		console.error("collectThisMemberAccesses missing quoted/attribute bindTo", bindAccesses);
 		failed = true;
 	}
-	if (bindByName("notInDiff")) {
-		console.error("collectThisMemberAccesses must ignore bindTo outside diff", bindAccesses);
+	if (!bindByName("notInDiff")) {
+		console.error("collectThisMemberAccesses missing bindTo inside methods", bindAccesses);
 		failed = true;
 	}
 	const bindParsed = parseAmdAst(bindSrc, path.join(root, "synthetic/BindToPage.js"));
@@ -1281,6 +1281,66 @@ define("FooPage", [], function() {
 			bindAccesses.filter((a) => a.kind === "diffBindTo").length
 	) {
 		console.error("parseAmdAst reuse missed diffBindTo", bindFromAst);
+		failed = true;
+	}
+	const methodsBindSrc = `
+define("LeadPageV2", [], function() {
+	return {
+		attributes: { GoSLAPauseReason: {} },
+		methods: {
+			beforeGoSlaRulePause: function() {
+				const controlConfig = {
+					GoSLAPauseReason: {
+						value: { bindTo: "GoSLAPauseReason" },
+						customConfig: {
+							list: { bindTo: "GoSLAPauseReasonCollection" },
+							prepareList: { bindTo: "getBeforeGoSlaRulePauseEnumCollectionValues" }
+						}
+					}
+				};
+				return controlConfig;
+			}
+		},
+		messages: { IgnoreMsg: { bindTo: "notABind" } }
+	};
+});
+`;
+	const methodsBind = collectThisMemberAccesses(methodsBindSrc);
+	const methodsBindBy = (name) =>
+		methodsBind.find((a) => a.kind === "diffBindTo" && a.name === name);
+	if (
+		!methodsBindBy("GoSLAPauseReason") ||
+		!methodsBindBy("GoSLAPauseReasonCollection") ||
+		!methodsBindBy("getBeforeGoSlaRulePauseEnumCollectionValues")
+	) {
+		console.error("collectThisMemberAccesses missing bindTo inside methods controlConfig", methodsBind);
+		failed = true;
+	}
+	if (methodsBindBy("notABind")) {
+		console.error("collectThisMemberAccesses must ignore bindTo outside diff/methods", methodsBind);
+		failed = true;
+	}
+	const leadPagePath = path.join(
+		root,
+		"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/LeadPageV2/LeadPageV2.js"
+	);
+	if (fs.existsSync(leadPagePath)) {
+		const leadSrc = fs.readFileSync(leadPagePath, "utf8");
+		const leadBind = collectThisMemberAccesses(leadSrc);
+		const need = [
+			"GoSLAPauseReason",
+			"GoSLAPauseReasonCollection",
+			"getBeforeGoSlaRulePauseEnumCollectionValues"
+		];
+		const missing = need.filter(
+			(name) => !leadBind.some((a) => a.kind === "diffBindTo" && a.name === name)
+		);
+		if (missing.length) {
+			console.error("LeadPageV2 methods bindTo not collected", missing);
+			failed = true;
+		}
+	} else {
+		console.error("Expected LeadPageV2.js for methods bindTo smoke", leadPagePath);
 		failed = true;
 	}
 	const bindInsert = planCreateMemberInsert(bindSrc, "method", "missingFn");
@@ -1653,8 +1713,24 @@ define("GoMsgPage", [], function() {
 			console.error("getDiffBindToContext failed for unquoted bindTo value", unquotedCtx);
 			failed = true;
 		}
-		if (methodsCtx) {
-			console.error("getDiffBindToContext must ignore bindTo outside diff", methodsCtx);
+		if (
+			!methodsCtx ||
+			methodsCtx.quote !== '"' ||
+			methodsCtx.name !== "getVis" ||
+			methodsBindTo.slice(methodsCtx.nameStart, methodsCtx.nameEnd) !== "getVis"
+		) {
+			console.error("getDiffBindToContext failed for bindTo inside methods", methodsCtx);
+			failed = true;
+		}
+		const attrBindTo = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			"		attributes: {",
+			'			Foo: { bindTo: "getVis'
+		].join("\n");
+		const attrCtx = getDiffBindToContext(attrBindTo, attrBindTo.length);
+		if (attrCtx) {
+			console.error("getDiffBindToContext must ignore bindTo in attributes", attrCtx);
 			failed = true;
 		}
 		const singleQuoted = [
@@ -1704,6 +1780,18 @@ define("BindToPage", [], function() {
 			afterClosedDiff,
 			afterClosedDiff.length
 		);
+		const afterClosedSections = [
+			'define("BindToPage", [], function() {',
+			"	return {",
+			"		methods: { foo: function() {} },",
+			"		diff: [{ values: { enabled: { bindTo: \"ok\" } } }],",
+			"		modules: {",
+			'			Foo: { bindTo: "getVis'
+		].join("\n");
+		const outsideSections = getDiffBindToContext(
+			afterClosedSections,
+			afterClosedSections.length
+		);
 		if (
 			!mid ||
 			mid.quote !== '"' ||
@@ -1713,8 +1801,23 @@ define("BindToPage", [], function() {
 			console.error("getDiffBindToContext failed inside bindTo string", mid);
 			failed = true;
 		}
-		if (afterClosed) {
-			console.error("getDiffBindToContext must ignore bindTo after closed diff", afterClosed);
+		if (
+			!afterClosed ||
+			afterClosed.quote !== '"' ||
+			afterClosed.name !== "getVis" ||
+			afterClosedDiff.slice(afterClosed.nameStart, afterClosed.nameEnd) !== "getVis"
+		) {
+			console.error(
+				"getDiffBindToContext failed for bindTo in methods after closed diff",
+				afterClosed
+			);
+			failed = true;
+		}
+		if (outsideSections) {
+			console.error(
+				"getDiffBindToContext must ignore bindTo outside diff/methods",
+				outsideSections
+			);
 			failed = true;
 		}
 		const accesses = collectThisMemberAccesses(msgSrc);

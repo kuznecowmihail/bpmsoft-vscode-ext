@@ -206,7 +206,7 @@ function diagnosticForAccess(
 			access,
 			vscode.DiagnosticSeverity.Error,
 			DIAG_MISSING_BINDTO,
-			`Метод «${access.name}» из bindTo не найден в схеме или иерархии`
+			`«${access.name}» из bindTo не найден как метод или атрибут схемы или иерархии`
 		);
 	}
 	if (access.kind === "bare") {
