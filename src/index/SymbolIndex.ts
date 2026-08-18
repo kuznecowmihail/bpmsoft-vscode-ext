@@ -327,7 +327,9 @@ export class SymbolIndex {
 			name: s.name,
 			kind: s.kind,
 			detail: s.detail,
-			documentation: s.documentation
+			documentation: s.documentation,
+			filePath: s.filePath,
+			position: s.position
 		};
 	}
 

@@ -44,7 +44,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	context.subscriptions.push(
 		diagnostics,
 		styleDiagnostics,
-		// After "." — members; without trigger — bare "BPMSoft" / "Ext" while typing
+		// Trigger chars open the widget; quickSuggestions still Invoke's this provider while typing identifiers.
 		vscode.languages.registerCompletionItemProvider(
 			jsSelector,
 			completionProvider,
@@ -53,10 +53,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			"\"",
 			"'",
 			"("
-		),
-		vscode.languages.registerCompletionItemProvider(
-			jsSelector,
-			completionProvider
 		),
 		vscode.languages.registerDefinitionProvider(
 			jsSelector,

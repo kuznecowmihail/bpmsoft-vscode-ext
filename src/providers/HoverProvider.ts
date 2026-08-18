@@ -125,14 +125,20 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 				lines.push(
 					`**${titleRoot}.${m.name}** *(${m.kind})*`
 				);
+				if (m.detail) {
+					lines.push(m.detail);
+				}
 				if (m.documentation) {
 					lines.push("", m.documentation);
+				}
+				if (m.filePath) {
+					lines.push(`\`${m.filePath}\``);
 				}
 				return new vscode.Hover(new vscode.MarkdownString(lines.join("\n\n")));
 			}
 		}
 
-		if (left === "this" || left?.startsWith("this")) {
+		if (left === "this" || left?.startsWith("this.")) {
 			const members = this.index.resolveThisMembers(document.uri.fsPath);
 			const dollar = ident.name.startsWith("$") && ident.name.length > 1;
 			const lookup = dollar ? ident.name.slice(1) : ident.name;

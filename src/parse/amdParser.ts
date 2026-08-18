@@ -1426,6 +1426,20 @@ export function collectThisMemberAccesses(
 		} as any
 	);
 	collectSchemaBindToAccesses(ast, out);
+	return uniqueAccesses(out);
+}
+
+function uniqueAccesses(items: ThisMemberAccess[]): ThisMemberAccess[] {
+	const seen = new Set<string>();
+	const out: ThisMemberAccess[] = [];
+	for (const item of items) {
+		const key = `${item.kind}:${item.name}:${item.start}:${item.end}:${item.mixinName ?? ""}`;
+		if (seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		out.push(item);
+	}
 	return out;
 }
 

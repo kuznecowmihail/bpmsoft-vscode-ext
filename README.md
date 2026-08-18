@@ -39,6 +39,7 @@
 - `this.sandbox.publish("Msg")` / `this.sandbox.subscribe("Msg")` — в блок `messages` схемы, родителя, миксина или в `NavigationModule`
 - `bindTo: "getVisible"` / `bindTo: "IsEnabled"` в `diff` и в `methods` (в т.ч. `controlConfig`) — в метод или атрибут схемы/иерархии
 - `this.sandbox.publish` — в исходник sandbox
+- `BPMSoft.generateGUID` / `BPMSoft.GUID_EMPTY` / `BPMSoft.SysValue.*` (и другие извлечённые `BPMSoft.*` / `Ext.*`) — в `Resources/ui`
 - Имя AMD-модуля / алиас из `define([...], function(Alias)` — в файл модуля
 
 ### Подсказка при наведении

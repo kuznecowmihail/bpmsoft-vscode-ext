@@ -13,6 +13,20 @@ export function getStaticPlatformStubs(): PlatformStubMember[] {
 			documentation: "Пустая строка BPMSoft"
 		},
 		{
+			name: "GUID_EMPTY",
+			kind: "const",
+			detail: "string",
+			documentation:
+				"Пустой GUID: `00000000-0000-0000-0000-000000000000` (alias BPMSoft.data.constants.GUID_EMPTY)"
+		},
+		{
+			name: "generateGUID",
+			kind: "method",
+			detail: "(format?)",
+			documentation:
+				"Генерирует GUID. format: `N` | `D` | `B` | `P` (по умолчанию `D`). Alias: `BPMSoft.utils.guid.generateGUID`"
+		},
+		{
 			name: "each",
 			kind: "method",
 			detail: "(collection, iterator, scope?)",

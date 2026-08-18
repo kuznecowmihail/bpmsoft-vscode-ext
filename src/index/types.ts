@@ -127,5 +127,7 @@ export interface PlatformStubMember {
 	kind: MemberKind;
 	detail?: string;
 	documentation?: string;
+	filePath?: string;
+	position?: SourcePosition;
 	children?: PlatformStubMember[];
 }

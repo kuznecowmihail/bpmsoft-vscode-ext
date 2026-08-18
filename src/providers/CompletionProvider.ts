@@ -182,11 +182,34 @@ function toBindToItems(
 		});
 }
 
-function asList(items: vscode.CompletionItem[]): vscode.CompletionList | undefined {
-	if (!items.length) {
+function completionKey(item: vscode.CompletionItem): string {
+	const label = typeof item.label === "string" ? item.label : item.label.label;
+	return `${item.kind}:${label}:${item.detail ?? ""}`;
+}
+
+function uniqueItems(items: vscode.CompletionItem[]): vscode.CompletionItem[] {
+	const seen = new Set<string>();
+	const out: vscode.CompletionItem[] = [];
+	for (const item of items) {
+		const key = completionKey(item);
+		if (seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		out.push(item);
+	}
+	return out;
+}
+
+function asList(
+	items: vscode.CompletionItem[],
+	incomplete = false
+): vscode.CompletionList | undefined {
+	const unique = uniqueItems(items);
+	if (!unique.length) {
 		return undefined;
 	}
-	return new vscode.CompletionList(items, false);
+	return new vscode.CompletionList(unique, incomplete);
 }
 
 function globalIdentifierItems(typed: string): vscode.CompletionItem[] {
@@ -251,35 +274,31 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 
 		const sandboxMsg = getThisSandboxMessageContext(text, offset);
 		if (sandboxMsg) {
-			const items = toSandboxMessageItems(
-				this.index.resolveSandboxMessages(
-					document.uri.fsPath,
-					sandboxMsg.method
+			return asList(
+				toSandboxMessageItems(
+					this.index.resolveSandboxMessages(
+						document.uri.fsPath,
+						sandboxMsg.method
+					),
+					sandboxMsg,
+					document
 				),
-				sandboxMsg,
-				document
+				true
 			);
-			return new vscode.CompletionList(items, true);
 		}
 
 		const bindTo = getDiffBindToContext(text, offset);
 		if (bindTo) {
-			const items = toBindToItems(
-				this.index.resolveThisMembers(document.uri.fsPath),
-				bindTo,
-				document
-			);
-			return new vscode.CompletionList(items, true);
-		}
-
-		const overrideCtx = getOverrideInsertContext(text, offset);
-		if (overrideCtx && !/\.[\w$]*$/.test(linePrefix)) {
 			return asList(
-				this.overrideCompletions(document, overrideCtx)
+				toBindToItems(
+					this.index.resolveThisMembers(document.uri.fsPath),
+					bindTo,
+					document
+				),
+				true
 			);
 		}
 
-		// Member access: BPMSoft. / this. / Module. / this.$
 		if (/\.[\w$]*$/.test(linePrefix)) {
 			return this.memberCompletions(
 				document,
@@ -287,6 +306,13 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 				text,
 				linePrefix,
 				enableStubs
+			);
+		}
+
+		const overrideCtx = getOverrideInsertContext(text, offset);
+		if (overrideCtx) {
+			return asList(
+				this.overrideCompletions(document, overrideCtx)
 			);
 		}
 

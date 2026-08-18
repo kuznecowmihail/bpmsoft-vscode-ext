@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember } from "../index/types";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 
 function memberLocation(member: IndexedMember | undefined): vscode.Location | undefined {
 	if (!member?.filePath || !member.position) {
@@ -50,7 +50,8 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 				document.uri.fsPath,
 				sandboxMsg.name
 			)) {
-				locations.push(
+				this.pushUnique(
+					locations,
 					new vscode.Location(
 						vscode.Uri.file(hit.filePath),
 						new vscode.Position(hit.position.line, hit.position.character)
@@ -104,51 +105,68 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 			if (loc) {
 				return loc;
 			}
+			this.pushUnique(
+				locations,
+				this.platformStubLocation(leftExpr, ident.name)
+			);
+			if (locations.length) {
+				return locations;
+			}
 		}
 
-		if (leftExpr === "this" || leftExpr?.startsWith("this")) {
+		if (leftExpr === "this" || leftExpr?.startsWith("this.")) {
 			this.pushThisHits(locations, document.uri.fsPath, ident.name);
 			if (!locations.length && leftExpr === "this") {
-				const loc = memberLocation(
-					this.index
-						.resolveThisMembers(document.uri.fsPath)
-						.find((m) => m.name === ident.name)
+				this.pushUnique(
+					locations,
+					memberLocation(
+						this.index
+							.resolveThisMembers(document.uri.fsPath)
+							.find((m) => m.name === ident.name)
+					)
 				);
-				if (loc) {
-					locations.push(loc);
-				}
 			}
 		} else if (leftExpr && leftExpr !== ident.name) {
-			for (const m of this.resolveModulesFromExpr(
-				document.uri.fsPath,
-				leftExpr
-			)) {
-				const member = m.members.find((x) => x.name === ident.name);
-				if (member?.position) {
-					locations.push(
-						new vscode.Location(
-							vscode.Uri.file(m.filePath),
-							new vscode.Position(
-								member.position.line,
-								member.position.character
+			this.pushUnique(
+				locations,
+				this.platformStubLocation(leftExpr, ident.name)
+			);
+			if (!locations.length) {
+				for (const m of this.resolveModulesFromExpr(
+					document.uri.fsPath,
+					leftExpr
+				)) {
+					const member = m.members.find((x) => x.name === ident.name);
+					if (member?.position) {
+						this.pushUnique(
+							locations,
+							new vscode.Location(
+								vscode.Uri.file(m.filePath),
+								new vscode.Position(
+									member.position.line,
+									member.position.character
+								)
 							)
-						)
-					);
+						);
+					}
 				}
 			}
 		}
 
-		const asModules = this.index.getAllByName(
-			this.index.resolveLocalAlias(document.uri.fsPath, ident.name) ||
-				ident.name
-		);
-		for (const asModule of asModules) {
-			locations.push(
-				new vscode.Location(
-					vscode.Uri.file(asModule.filePath),
-					new vscode.Position(0, 0)
-				)
+		if (!locations.length) {
+			const asModules = this.index.getAllByName(
+				this.index.resolveLocalAlias(document.uri.fsPath, ident.name) ||
+					ident.name
 			);
+			for (const asModule of asModules) {
+				this.pushUnique(
+					locations,
+					new vscode.Location(
+						vscode.Uri.file(asModule.filePath),
+						new vscode.Position(0, 0)
+					)
+				);
+			}
 		}
 
 		if (!locations.length) {
@@ -169,11 +187,50 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 		kind?: IndexedMember["kind"]
 	): void {
 		for (const hit of this.index.findThisMemberLocations(filePath, name, kind)) {
-			const loc = hitLocation(hit);
-			if (loc) {
-				locations.push(loc);
-			}
+			this.pushUnique(locations, hitLocation(hit));
 		}
+	}
+
+	private pushUnique(
+		locations: vscode.Location[],
+		loc: vscode.Location | undefined
+	): void {
+		if (!loc) {
+			return;
+		}
+		const key = `${loc.uri.fsPath}:${loc.range.start.line}:${loc.range.start.character}`;
+		if (
+			locations.some(
+				(item) =>
+					`${item.uri.fsPath}:${item.range.start.line}:${item.range.start.character}` ===
+					key
+			)
+		) {
+			return;
+		}
+		locations.push(loc);
+	}
+
+	private platformStubLocation(
+		leftExpr: string,
+		name: string
+	): vscode.Location | undefined {
+		const enableStubs = vscode.workspace
+			.getConfiguration("bpmsoft")
+			.get<boolean>("enablePlatformStubs", true);
+		const prefix = rewriteThisRuntimePrefix(leftExpr) || leftExpr;
+		if (
+			prefix !== "BPMSoft" &&
+			!prefix.startsWith("BPMSoft.") &&
+			prefix !== "Ext" &&
+			!prefix.startsWith("Ext.")
+		) {
+			return undefined;
+		}
+		const member = this.index
+			.resolveMembers(prefix, enableStubs)
+			.find((item) => item.name === name);
+		return memberLocation(member);
 	}
 
 	private resolveModulesFromExpr(filePath: string, expr: string) {

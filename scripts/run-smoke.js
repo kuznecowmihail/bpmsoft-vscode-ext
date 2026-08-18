@@ -272,7 +272,7 @@ if (consts.length < 5) {
 }
 
 const bpm = index.resolveMembers("BPMSoft", true);
-for (const need of ["DataValueType", "emptyString", "MessageMode", "SysValue", "SysSettings", "configuration"]) {
+for (const need of ["DataValueType", "emptyString", "GUID_EMPTY", "generateGUID", "MessageMode", "SysValue", "SysSettings", "configuration"]) {
 	if (!bpm.some((m) => m.name === need)) {
 		console.error("Missing BPMSoft root member", need);
 		failed = true;
@@ -280,9 +280,64 @@ for (const need of ["DataValueType", "emptyString", "MessageMode", "SysValue", "
 }
 console.log("BPMSoft. root count=", bpm.length);
 
+const dataConstants = index.resolveMembers("BPMSoft.data.constants", true);
+if (!dataConstants.some((m) => m.name === "GUID_EMPTY")) {
+	console.error(
+		"Expected BPMSoft.data.constants.GUID_EMPTY",
+		dataConstants.map((m) => m.name)
+	);
+	failed = true;
+}
+
+const guidUtils = index.resolveMembers("BPMSoft.utils.guid", true);
+if (!guidUtils.some((m) => m.name === "generateGUID")) {
+	console.error(
+		"Expected BPMSoft.utils.guid.generateGUID",
+		guidUtils.map((m) => m.name)
+	);
+	failed = true;
+}
+const guidDef = bpm.find((m) => m.name === "generateGUID");
+if (
+	!guidDef?.filePath ||
+	!/guidutils\.js$/i.test(guidDef.filePath.replace(/\\/g, "/")) ||
+	guidDef.position == null
+) {
+	console.error("Expected Go to Definition for BPMSoft.generateGUID → guidutils.js", guidDef);
+	failed = true;
+}
+const emptyDef = bpm.find((m) => m.name === "GUID_EMPTY");
+if (
+	!emptyDef?.filePath ||
+	!/data-constants\.js$/i.test(emptyDef.filePath.replace(/\\/g, "/")) ||
+	emptyDef.position == null
+) {
+	console.error("Expected Go to Definition for BPMSoft.GUID_EMPTY → data-constants.js", emptyDef);
+	failed = true;
+}
+const nestedGuid = guidUtils.find((m) => m.name === "generateGUID");
+if (
+	!nestedGuid?.filePath ||
+	!/guidutils\.js$/i.test(nestedGuid.filePath.replace(/\\/g, "/"))
+) {
+	console.error(
+		"Expected Go to Definition for BPMSoft.utils.guid.generateGUID → guidutils.js",
+		nestedGuid
+	);
+	failed = true;
+}
+
 const sysValue = index.resolveMembers("BPMSoft.SysValue", true);
-if (!sysValue.some((m) => m.name === "CURRENT_USER")) {
-	console.error("Expected BPMSoft.SysValue.CURRENT_USER");
+const needSysValue = [
+	"CURRENT_USER",
+	"CURRENT_FUNCTIONAL_ROLES",
+	"CURRENT_ORGANIZATIONAL_ROLES"
+];
+const missingSysValue = needSysValue.filter(
+	(name) => !sysValue.some((m) => m.name === name)
+);
+if (missingSysValue.length) {
+	console.error("Expected BPMSoft.SysValue keys", missingSysValue, sysValue.map((m) => m.name));
 	failed = true;
 } else {
 	console.log("BPMSoft.SysValue OK", sysValue.length);
