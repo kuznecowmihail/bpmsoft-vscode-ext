@@ -56,8 +56,13 @@ export class StyleDiagnostics implements vscode.Disposable {
 	}
 
 	dispose(): void {
-		clearDebounceTimers(this.timers);
+		this.clearAll();
 		this.collection.dispose();
+	}
+
+	clearAll(): void {
+		clearDebounceTimers(this.timers);
+		this.collection.clear();
 	}
 
 	schedule(document: vscode.TextDocument): void {

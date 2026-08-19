@@ -6,10 +6,9 @@ import {
 	IndexedSchemaMessage,
 	MemberKind,
 	SchemaMessageDirection,
-	SourcePosition,
 	memberDedupeKey
 } from "../index/types";
-import { AnyNode, childNodes, parseJs } from "./jsAst";
+import { AnyNode, childNodes, parseJs, posFromNode, leadingComment } from "./jsAst";
 
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 
@@ -62,40 +61,6 @@ function factoryReturnArg(factory: AnyNode | undefined): AnyNode | undefined {
 		}
 	}
 	return returnArg;
-}
-
-function posFromNode(node: AnyNode): SourcePosition | undefined {
-	if (typeof node.start !== "number") {
-		return undefined;
-	}
-	// filled after parse with locations
-	const loc = node.loc?.start;
-	if (!loc) {
-		return undefined;
-	}
-	return { line: loc.line - 1, character: loc.column };
-}
-
-function getLeadingComment(
-	comments: acorn.Comment[],
-	node: AnyNode
-): string | undefined {
-	const start = node.start as number;
-	let best: acorn.Comment | undefined;
-	for (const c of comments) {
-		if (c.end <= start && start - c.end < 80) {
-			if (!best || c.end > best.end) {
-				best = c;
-			}
-		}
-	}
-	if (!best) {
-		return undefined;
-	}
-	return best.value
-		.replace(/^\*+/, "")
-		.replace(/\n\s*\*/g, "\n")
-		.trim();
 }
 
 function propName(prop: AnyNode): string | undefined {
@@ -167,7 +132,7 @@ function collectObjectMembers(
 		members.push({
 			name,
 			kind: inferMemberKind(value),
-			documentation: getLeadingComment(comments, prop),
+			documentation: leadingComment(comments, prop, 80),
 			position: posFromNode(prop.key ?? prop),
 			params: functionParamNames(value)
 		});
@@ -276,7 +241,7 @@ function extractMessagesFromValue(
 			direction,
 			position: posFromNode(prop.key ?? prop),
 			filePath,
-			documentation: getLeadingComment(comments, prop)
+			documentation: leadingComment(comments, prop, 80)
 		};
 	}
 	return result;
@@ -372,11 +337,19 @@ function applyExtDefine(
 			name: n,
 			kind: isMethod ? "method" : "property",
 			documentation:
-				getLeadingComment(comments, prop) ||
+				leadingComment(comments, prop, 80) ||
 				(isMethod ? undefined : literalPreview(value)),
 			position: posFromNode(prop.key ?? prop),
 			params: isMethod ? functionParamNames(value) : undefined
 		});
+	}
+
+	const bindings = collectViewModelAssignments(classBody);
+	if (bindings.length) {
+		module.viewModelBindings = uniqueNames(
+			module.viewModelBindings,
+			bindings
+		);
 	}
 
 	if (className && !module.alternateClassName && !module.override) {
@@ -385,6 +358,117 @@ function applyExtDefine(
 			module.alternateClassName = `BPMSoft.${short}`;
 		}
 	}
+}
+
+function uniqueNames(prev: string[] | undefined, extra: string[]): string[] {
+	const out = prev ? [...prev] : [];
+	const seen = new Set(out);
+	for (const name of extra) {
+		if (!seen.has(name)) {
+			seen.add(name);
+			out.push(name);
+		}
+	}
+	return out;
+}
+
+/**
+ * `viewModel.foo = this.foo.bind(this)` / `this.viewModel.foo = this.foo`
+ * inside Ext.define methods — members copied onto the schema view model.
+ */
+function collectViewModelAssignments(classBody: AnyNode): string[] {
+	const names: string[] = [];
+	const seen = new Set<string>();
+	const visit = (node: AnyNode | undefined) => {
+		if (!node) {
+			return;
+		}
+		if (node.type === "AssignmentExpression") {
+			const name = viewModelThisAssignName(node);
+			if (name && IDENT_RE.test(name) && !seen.has(name)) {
+				seen.add(name);
+				names.push(name);
+			}
+		}
+		for (const child of childNodes(node)) {
+			visit(child);
+		}
+	};
+	if (classBody.type !== "ObjectExpression") {
+		return names;
+	}
+	for (const prop of classBody.properties as AnyNode[]) {
+		const value = prop.value as AnyNode;
+		if (isMethodValue(value)) {
+			visit(value);
+		}
+	}
+	return names;
+}
+
+function viewModelThisAssignName(node: AnyNode): string | undefined {
+	const leftName = memberNameIfRoot(node.left as AnyNode, isViewModelRoot);
+	if (!leftName) {
+		return undefined;
+	}
+	const fromThis = memberNameIfRoot(unwrapBindCall(node.right as AnyNode), isThisIdent);
+	if (!fromThis) {
+		return undefined;
+	}
+	return leftName;
+}
+
+function unwrapBindCall(node: AnyNode | undefined): AnyNode | undefined {
+	if (!node || node.type !== "CallExpression") {
+		return node;
+	}
+	const callee = node.callee as AnyNode;
+	if (
+		callee?.type === "MemberExpression" &&
+		!callee.computed &&
+		(callee.property as AnyNode)?.type === "Identifier" &&
+		(callee.property as AnyNode).name === "bind"
+	) {
+		return callee.object as AnyNode;
+	}
+	return node;
+}
+
+function isThisIdent(node: AnyNode | undefined): boolean {
+	return node?.type === "ThisExpression";
+}
+
+function isViewModelRoot(node: AnyNode | undefined): boolean {
+	if (!node) {
+		return false;
+	}
+	if (node.type === "Identifier" && node.name === "viewModel") {
+		return true;
+	}
+	return (
+		node.type === "MemberExpression" &&
+		!node.computed &&
+		isThisIdent(node.object as AnyNode) &&
+		(node.property as AnyNode)?.type === "Identifier" &&
+		(node.property as AnyNode).name === "viewModel"
+	);
+}
+
+function memberNameIfRoot(
+	node: AnyNode | undefined,
+	isRoot: (obj: AnyNode | undefined) => boolean
+): string | undefined {
+	if (!node || node.type !== "MemberExpression" || !isRoot(node.object as AnyNode)) {
+		return undefined;
+	}
+	const prop = node.property as AnyNode;
+	if (!node.computed && prop?.type === "Identifier") {
+		return prop.name as string;
+	}
+	if (node.computed && prop?.type === "Literal" && typeof prop.value === "string") {
+		return prop.value;
+	}
+	return undefined;
 }
 
 function isExtDefineCall(node: AnyNode): boolean {
@@ -462,7 +546,7 @@ function collectSchemaProperties(
 		members.push({
 			name,
 			kind: inferMemberKind(value) === "method" ? "method" : "property",
-			documentation: getLeadingComment(comments, prop) || literalPreview(value),
+			documentation: leadingComment(comments, prop, 80) || literalPreview(value),
 			position: posFromNode(prop.key ?? prop),
 			params: functionParamNames(value)
 		});
@@ -553,7 +637,7 @@ function attributeDocumentation(
 	comments: acorn.Comment[],
 	prop: AnyNode
 ): string | undefined {
-	const comment = getLeadingComment(comments, prop);
+	const comment = leadingComment(comments, prop, 80);
 	const bits: string[] = [];
 	if (value?.type === "ObjectExpression") {
 		for (const key of ["dataValueType", "type", "value", "referenceSchemaName", "isRequired"]) {
@@ -922,6 +1006,65 @@ export function getIdentifierAt(
 	return { name: documentText.slice(start, end), start, end };
 }
 
+/**
+ * Cursor on `this.callParent` — enclosing schema/Ext method name.
+ */
+export function getCallParentContext(
+	documentText: string,
+	offset: number
+): { methodName: string } | undefined {
+	const ident = getIdentifierAt(documentText, offset);
+	if (!ident || ident.name !== "callParent") {
+		return undefined;
+	}
+	if (getMemberAccessPrefix(documentText, ident.start) !== "this") {
+		return undefined;
+	}
+	const methodName = enclosingMethodNameAt(documentText, offset);
+	if (!methodName) {
+		return undefined;
+	}
+	return { methodName };
+}
+
+function enclosingMethodNameAt(
+	source: string,
+	offset: number
+): string | undefined {
+	const ast = parseJs(source);
+	if (!ast) {
+		return undefined;
+	}
+	let name: string | undefined;
+	const visitFn = (node: AnyNode, ancestors: AnyNode[]) => {
+		if (name) {
+			return;
+		}
+		if (typeof node.start !== "number" || typeof node.end !== "number") {
+			return;
+		}
+		if (offset < node.start || offset >= node.end) {
+			return;
+		}
+		const parent = ancestors[ancestors.length - 2];
+		if (!parent || parent.type !== "Property" || parent.value !== node) {
+			return;
+		}
+		const key = propName(parent);
+		if (key) {
+			name = key;
+		}
+	};
+	walk.ancestor(
+		ast,
+		{
+			FunctionExpression: visitFn,
+			ArrowFunctionExpression: visitFn
+		} as any
+	);
+	return name;
+}
+
 export interface ThisGetSetContext {
 	method: "get" | "set";
 	quote: '"' | "'" | undefined;
@@ -956,13 +1099,10 @@ export function getThisGetSetContext(
 			nameEnd: offset
 		};
 	}
-	const nameEnd = identEnd(documentText, offset);
 	return {
 		method,
 		quote,
-		name: typed + documentText.slice(offset, nameEnd),
-		nameStart: offset - typed.length,
-		nameEnd
+		...nameSpanAt(documentText, offset, typed)
 	};
 }
 
@@ -992,13 +1132,10 @@ export function getThisSandboxMessageContext(
 	const method = m[1] as "publish" | "subscribe";
 	const quote = (m[2] as '"' | "'" | undefined) || undefined;
 	const typed = (quote ? m[3] : m[4]) || "";
-	const nameEnd = identEnd(documentText, offset);
 	return {
 		method,
 		quote,
-		name: typed + documentText.slice(offset, nameEnd),
-		nameStart: offset - typed.length,
-		nameEnd
+		...nameSpanAt(documentText, offset, typed)
 	};
 }
 
@@ -1026,12 +1163,9 @@ export function getDiffBindToContext(
 	}
 	const quote = (m[1] as '"' | "'" | undefined) || undefined;
 	const typed = (quote ? m[2] : m[3]) || "";
-	const nameEnd = identEnd(documentText, offset);
 	return {
 		quote,
-		name: typed + documentText.slice(offset, nameEnd),
-		nameStart: offset - typed.length,
-		nameEnd
+		...nameSpanAt(documentText, offset, typed)
 	};
 }
 
@@ -1174,6 +1308,19 @@ function identEnd(documentText: string, offset: number): number {
 		nameEnd++;
 	}
 	return nameEnd;
+}
+
+function nameSpanAt(
+	documentText: string,
+	offset: number,
+	typed: string
+): { name: string; nameStart: number; nameEnd: number } {
+	const nameEnd = identEnd(documentText, offset);
+	return {
+		name: typed + documentText.slice(offset, nameEnd),
+		nameStart: offset - typed.length,
+		nameEnd
+	};
 }
 
 function skipWsBack(text: string, i: number): number {

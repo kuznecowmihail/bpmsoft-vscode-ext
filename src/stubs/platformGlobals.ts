@@ -2,11 +2,17 @@ import * as fs from "fs";
 import * as path from "path";
 import * as acorn from "acorn";
 import * as walk from "acorn-walk";
-import { PlatformStubMember, MemberKind, SourcePosition } from "../index/types";
+import { PlatformStubMember, MemberKind } from "../index/types";
 import { getStaticPlatformStubs } from "./bpmsoftPlatform";
-import { resolveAppLayouts } from "../index/workspaceLayout";
-
-type AnyNode = acorn.Node & Record<string, any>;
+import {
+	resolveAppLayouts,
+	collectResourceRoots,
+	collectLayoutDirs,
+	collectSearchRoots,
+	existingJoinedFiles
+} from "../index/workspaceLayout";
+import { AnyNode, posFromNode } from "../parse/jsAst";
+import { cloneStub, mergeStubDeep } from "./stubTree";
 
 /**
  * Build BPMSoft.* completion tree from platform UI enums + conf Structures.
@@ -38,7 +44,7 @@ export function buildPlatformStubs(workspaceRoots: string[]): PlatformStubMember
 		const target = ensurePath(root, to);
 		if (sourceNode.children?.length) {
 			target.kind = sourceNode.kind || "enum";
-			target.children = mergeChildren(target.children || [], sourceNode.children);
+			target.children = mergeStubDeep(target.children || [], sourceNode.children);
 		} else {
 			target.kind = sourceNode.kind || target.kind || "const";
 			target.detail = target.detail || sourceNode.detail;
@@ -85,15 +91,7 @@ function collectPlatformSourceFiles(
 		"ui/BPMSoft/controls/diagram/diagram-enums.js"
 	];
 
-	const resourceRoots = layouts
-		.map((l) => l.resourcesRoot)
-		.filter((p): p is string => Boolean(p));
-
-	if (!resourceRoots.length) {
-		for (const root of fallbackRoots) {
-			resourceRoots.push(path.join(root, "Resources"));
-		}
-	}
+	const resourceRoots = collectResourceRoots(layouts, fallbackRoots);
 
 	for (const resourcesRoot of resourceRoots) {
 		for (const rel of relCandidates) {
@@ -123,14 +121,12 @@ function listConfSchemaNames(
 	fallbackRoots: string[]
 ): string[] {
 	const names = new Set<string>();
-	const dirs = layouts
-		.map((l) => l.confContent)
-		.filter((p): p is string => Boolean(p));
-	if (!dirs.length) {
-		for (const root of fallbackRoots) {
-			dirs.push(path.join(root, "conf", "content"));
-		}
-	}
+	const dirs = collectLayoutDirs(
+		layouts,
+		(layout) => layout.confContent,
+		fallbackRoots,
+		path.join("conf", "content")
+	);
 	for (const dir of dirs) {
 		if (!fs.existsSync(dir)) {
 			continue;
@@ -189,7 +185,7 @@ function extractAssignments(
 				target.kind = "enum";
 				target.filePath = target.filePath || filePath;
 				target.position = target.position || namePos;
-				target.children = mergeChildren(target.children || [], children);
+				target.children = mergeStubDeep(target.children || [], children);
 				return;
 			}
 
@@ -228,11 +224,11 @@ function extractAssignments(
 				};
 				if (underBpm.length === 1) {
 					const prev = root.get(name);
-					root.set(name, prev ? mergeChildren([prev], [stub])[0] : stub);
+					root.set(name, prev ? mergeStubDeep([prev], [stub])[0] : stub);
 					return;
 				}
 				const parent = ensurePath(root, underBpm.slice(0, -1));
-				parent.children = mergeChildren(parent.children || [], [stub]);
+				parent.children = mergeStubDeep(parent.children || [], [stub]);
 			}
 		}
 	} as any);
@@ -306,14 +302,6 @@ function assignmentNameNode(node: AnyNode | undefined): AnyNode | undefined {
 	return node;
 }
 
-function posFromNode(node: AnyNode | undefined): SourcePosition | undefined {
-	const loc = node?.loc?.start;
-	if (!loc) {
-		return undefined;
-	}
-	return { line: loc.line - 1, character: loc.column };
-}
-
 function functionParamNames(node: AnyNode): string[] {
 	const params = (node.params as AnyNode[]) || [];
 	const names: string[] = [];
@@ -376,32 +364,6 @@ function getNode(
 	return node;
 }
 
-function mergeChildren(
-	existing: PlatformStubMember[],
-	incoming: PlatformStubMember[]
-): PlatformStubMember[] {
-	const map = new Map<string, PlatformStubMember>();
-	for (const c of existing) {
-		map.set(c.name, c);
-	}
-	for (const c of incoming) {
-		const prev = map.get(c.name);
-		if (!prev) {
-			map.set(c.name, c);
-			continue;
-		}
-		if (c.children?.length) {
-			prev.children = mergeChildren(prev.children || [], c.children);
-		}
-		prev.kind = prev.kind || c.kind;
-		prev.detail = prev.detail || c.detail;
-		prev.documentation = prev.documentation || c.documentation;
-		prev.filePath = prev.filePath || c.filePath;
-		prev.position = prev.position || c.position;
-	}
-	return Array.from(map.values());
-}
-
 /**
  * SysValue keys injected at runtime (ViewModule / SysValuesScriptGenerator),
  * not present in the demo object in ui/BPMSoft/core/sys-values.js.
@@ -438,7 +400,7 @@ function mergeRuntimeSysValues(
 	layouts: ReturnType<typeof resolveAppLayouts>,
 	fallbackRoots: string[]
 ): void {
-	const extras = mergeChildren(
+	const extras = mergeStubDeep(
 		RUNTIME_SYSVALUE_FALLBACK,
 		extractSysValueContractKeys(layouts, fallbackRoots)
 	);
@@ -448,7 +410,7 @@ function mergeRuntimeSysValues(
 		node.documentation =
 			node.documentation ||
 			"Системные значения текущего пользователя (JS + runtime ViewModule)";
-		node.children = mergeChildren(node.children || [], extras);
+		node.children = mergeStubDeep(node.children || [], extras);
 	}
 }
 
@@ -495,40 +457,8 @@ function collectSysValueContractFiles(
 	layouts: ReturnType<typeof resolveAppLayouts>,
 	fallbackRoots: string[]
 ): string[] {
-	const rels = [
+	return existingJoinedFiles(collectSearchRoots(layouts, fallbackRoots), [
 		"ResourcesCore/BPMSoft.Web.Common/BPMSoft.Core.ServiceModelContract/SysValues.cs",
 		"BPMSoft.Web.Common/BPMSoft.Core.ServiceModelContract/SysValues.cs"
-	];
-	const roots = new Set<string>();
-	for (const layout of layouts) {
-		if (layout.appRoot) {
-			roots.add(layout.appRoot);
-		}
-		roots.add(layout.workspaceRoot);
-	}
-	for (const root of fallbackRoots) {
-		roots.add(root);
-	}
-	const files: string[] = [];
-	for (const root of roots) {
-		for (const rel of rels) {
-			const full = path.join(root, rel);
-			if (fs.existsSync(full)) {
-				files.push(full);
-			}
-		}
-	}
-	return Array.from(new Set(files));
-}
-
-function cloneStub(s: PlatformStubMember): PlatformStubMember {
-	return {
-		name: s.name,
-		kind: s.kind,
-		detail: s.detail,
-		documentation: s.documentation,
-		filePath: s.filePath,
-		position: s.position,
-		children: s.children?.map(cloneStub)
-	};
+	]);
 }

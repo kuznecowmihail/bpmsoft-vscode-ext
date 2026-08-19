@@ -348,3 +348,66 @@ export function walkJsFiles(
 	}
 	return out;
 }
+
+export function uniquePaths(paths: string[]): string[] {
+	return Array.from(new Set(paths.map((p) => path.normalize(p))));
+}
+
+export function collectLayoutDirs(
+	layouts: BpmsoftAppLayout[],
+	pick: (layout: BpmsoftAppLayout) => string | undefined,
+	fallbackRoots: string[],
+	fallbackRel: string
+): string[] {
+	const dirs = layouts
+		.map(pick)
+		.filter((p): p is string => Boolean(p));
+	if (!dirs.length) {
+		for (const root of fallbackRoots) {
+			dirs.push(path.join(root, fallbackRel));
+		}
+	}
+	return dirs;
+}
+
+export function collectResourceRoots(
+	layouts: BpmsoftAppLayout[],
+	fallbackRoots: string[]
+): string[] {
+	return collectLayoutDirs(
+		layouts,
+		(layout) => layout.resourcesRoot,
+		fallbackRoots,
+		"Resources"
+	);
+}
+
+export function collectSearchRoots(
+	layouts: BpmsoftAppLayout[],
+	extraRoots: string[]
+): string[] {
+	const roots = new Set<string>();
+	for (const layout of layouts) {
+		if (layout.appRoot) {
+			roots.add(layout.appRoot);
+		}
+		roots.add(layout.workspaceRoot);
+	}
+	for (const root of extraRoots) {
+		roots.add(root);
+	}
+	return Array.from(roots);
+}
+
+export function existingJoinedFiles(roots: string[], rels: string[]): string[] {
+	const files: string[] = [];
+	for (const root of roots) {
+		for (const rel of rels) {
+			const full = path.join(root, rel);
+			if (fs.existsSync(full)) {
+				files.push(full);
+			}
+		}
+	}
+	return Array.from(new Set(files));
+}

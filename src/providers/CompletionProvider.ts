@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../index/types";
 import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { enablePlatformStubs } from "./platformLookup";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -56,7 +57,11 @@ function toItems(
 		const item = new vscode.CompletionItem(label, kindToCompletion(m.kind));
 		item.detail = `BPMSoft · ${m.detail || m.kind}`;
 		item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
-		item.filterText = isAttr ? `$${m.name} ${m.name}` : m.name;
+		item.filterText = isAttr
+			? `$${m.name} ${m.name}`
+			: m.name.startsWith("_") && m.name.length > 1
+				? `${m.name} ${m.name.slice(1)}`
+				: m.name;
 		item.preselect = i === 0;
 		if (m.documentation) {
 			item.documentation = new vscode.MarkdownString(m.documentation);
@@ -242,13 +247,6 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 	): vscode.CompletionList | undefined {
 		const offset = document.offsetAt(position);
 		const text = document.getText();
-		const enableStubs = vscode.workspace
-			.getConfiguration("bpmsoft")
-			.get<boolean>("enablePlatformStubs", true);
-
-		const linePrefix = document
-			.lineAt(position.line)
-			.text.slice(0, position.character);
 
 		const lookupAccess = getThisLookupAccessContext(text, offset);
 		if (lookupAccess) {
@@ -299,14 +297,11 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 			);
 		}
 
+		const linePrefix = document
+			.lineAt(position.line)
+			.text.slice(0, position.character);
 		if (/\.[\w$]*$/.test(linePrefix)) {
-			return this.memberCompletions(
-				document,
-				offset,
-				text,
-				linePrefix,
-				enableStubs
-			);
+			return this.memberCompletions(document, offset, text, linePrefix);
 		}
 
 		const overrideCtx = getOverrideInsertContext(text, offset);
@@ -329,8 +324,7 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 		document: vscode.TextDocument,
 		offset: number,
 		text: string,
-		linePrefix: string,
-		enableStubs: boolean
+		linePrefix: string
 	): vscode.CompletionList | undefined {
 		const dotMatch = linePrefix.match(/([A-Za-z_$][\w.$]*)\.[\w$]*$/);
 		const rawPrefix =
@@ -347,6 +341,7 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 			);
 		}
 
+		const enableStubs = enablePlatformStubs();
 		const runtimePrefix = rewriteThisRuntimePrefix(rawPrefix);
 		if (runtimePrefix) {
 			return asList(

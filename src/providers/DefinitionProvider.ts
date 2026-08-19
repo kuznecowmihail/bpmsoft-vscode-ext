@@ -1,28 +1,56 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember } from "../index/types";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { enablePlatformStubs, isPlatformPrefix, modulesFromExpr } from "./platformLookup";
+
+function filePosLocation(
+	filePath: string,
+	position: { line: number; character: number }
+): vscode.Location {
+	return new vscode.Location(
+		vscode.Uri.file(filePath),
+		new vscode.Position(position.line, position.character)
+	);
+}
 
 function memberLocation(member: IndexedMember | undefined): vscode.Location | undefined {
 	if (!member?.filePath || !member.position) {
 		return undefined;
 	}
-	return new vscode.Location(
-		vscode.Uri.file(member.filePath),
-		new vscode.Position(member.position.line, member.position.character)
-	);
+	return filePosLocation(member.filePath, member.position);
 }
 
 function hitLocation(hit: {
 	module: { filePath: string };
 	member: IndexedMember;
-}): vscode.Location | undefined {
-	if (!hit.member.position) {
+} | undefined): vscode.Location | undefined {
+	if (!hit?.member.position) {
 		return undefined;
 	}
-	return new vscode.Location(
-		vscode.Uri.file(hit.module.filePath),
-		new vscode.Position(hit.member.position.line, hit.member.position.character)
+	return filePosLocation(hit.module.filePath, hit.member.position);
+}
+
+function locationKey(loc: vscode.Location): string {
+	return `${loc.uri.fsPath}:${loc.range.start.line}:${loc.range.start.character}`;
+}
+
+function sameFile(a: string, b: string): boolean {
+	return a.replace(/\\/g, "/") === b.replace(/\\/g, "/");
+}
+
+/** Schema `methods: {}` — JS already maps this.foo. Ext.define class config does not. */
+function skipLocalMethod(
+	kind: IndexedMember["kind"],
+	filePath: string | undefined,
+	current: string,
+	schemaKind: string | undefined
+): boolean {
+	return (
+		schemaKind === "page" &&
+		kind === "method" &&
+		!!filePath &&
+		sameFile(filePath, current)
 	);
 }
 
@@ -36,9 +64,31 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 		const text = document.getText();
 		const offset = document.offsetAt(position);
 		const locations: vscode.Location[] = [];
+		const seen = new Set<string>();
+		const pushUnique = (loc: vscode.Location | undefined) => {
+			if (!loc) {
+				return;
+			}
+			const key = locationKey(loc);
+			if (seen.has(key)) {
+				return;
+			}
+			seen.add(key);
+			locations.push(loc);
+		};
+		const pushThisHits = (name: string, kind?: IndexedMember["kind"]) => {
+			for (const hit of this.index.findThisMemberLocations(
+				document.uri.fsPath,
+				name,
+				kind
+			)) {
+				pushUnique(hitLocation(hit));
+			}
+		};
+
 		const getSet = getThisGetSetContext(text, offset);
 		if (getSet?.name) {
-			this.pushThisHits(locations, document.uri.fsPath, getSet.name, "attribute");
+			pushThisHits(getSet.name, "attribute");
 			if (locations.length) {
 				return locations;
 			}
@@ -50,13 +100,7 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 				document.uri.fsPath,
 				sandboxMsg.name
 			)) {
-				this.pushUnique(
-					locations,
-					new vscode.Location(
-						vscode.Uri.file(hit.filePath),
-						new vscode.Position(hit.position.line, hit.position.character)
-					)
-				);
+				pushUnique(filePosLocation(hit.filePath, hit.position));
 			}
 			if (locations.length) {
 				return locations;
@@ -65,8 +109,8 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 
 		const bindTo = getDiffBindToContext(text, offset);
 		if (bindTo?.name) {
-			this.pushThisHits(locations, document.uri.fsPath, bindTo.name, "method");
-			this.pushThisHits(locations, document.uri.fsPath, bindTo.name, "attribute");
+			pushThisHits(bindTo.name, "method");
+			pushThisHits(bindTo.name, "attribute");
 			if (locations.length) {
 				return locations;
 			}
@@ -76,23 +120,34 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 		if (!ident) {
 			return undefined;
 		}
+
+		if (ident.name === "callParent") {
+			const callParent = getCallParentContext(text, offset);
+			if (callParent) {
+				const loc = hitLocation(
+					this.index.findNearestParentMethod(
+						document.uri.fsPath,
+						callParent.methodName
+					)
+				);
+				if (loc) {
+					return loc;
+				}
+			}
+		}
 		const lookupAccess = getThisLookupAccessContext(text, offset);
 		if (
 			lookupAccess &&
 			(ident.name === "value" || ident.name === "displayValue")
 		) {
-			this.pushThisHits(
-				locations,
-				document.uri.fsPath,
-				lookupAccess.attrName,
-				"attribute"
-			);
+			pushThisHits(lookupAccess.attrName, "attribute");
 			if (locations.length) {
 				return locations;
 			}
 		}
 
 		const leftExpr = getMemberAccessPrefix(text, ident.start);
+		let handledThisMember = false;
 
 		if (leftExpr?.startsWith("this.")) {
 			const loc = memberLocation(
@@ -105,49 +160,59 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 			if (loc) {
 				return loc;
 			}
-			this.pushUnique(
-				locations,
-				this.platformStubLocation(leftExpr, ident.name)
-			);
+			pushUnique(this.platformStubLocation(leftExpr, ident.name));
 			if (locations.length) {
 				return locations;
 			}
 		}
 
 		if (leftExpr === "this" || leftExpr?.startsWith("this.")) {
-			this.pushThisHits(locations, document.uri.fsPath, ident.name);
-			if (!locations.length && leftExpr === "this") {
-				this.pushUnique(
-					locations,
-					memberLocation(
-						this.index
-							.resolveThisMembers(document.uri.fsPath)
-							.find((m) => m.name === ident.name)
+			handledThisMember = true;
+			const current = document.uri.fsPath;
+			const schemaKind = this.index.ensureModule(current)?.kind;
+			for (const hit of this.index.findThisMemberLocations(
+				current,
+				ident.name
+			)) {
+				if (
+					skipLocalMethod(
+						hit.member.kind,
+						hit.module.filePath,
+						current,
+						schemaKind
 					)
-				);
+				) {
+					continue;
+				}
+				pushUnique(hitLocation(hit));
+			}
+			if (!locations.length && leftExpr === "this") {
+				const member = this.index
+					.resolveThisMembers(current)
+					.find((item) => item.name === ident.name);
+				if (
+					member &&
+					!skipLocalMethod(
+						member.kind,
+						member.filePath,
+						current,
+						schemaKind
+					)
+				) {
+					pushUnique(memberLocation(member));
+				}
 			}
 		} else if (leftExpr && leftExpr !== ident.name) {
-			this.pushUnique(
-				locations,
-				this.platformStubLocation(leftExpr, ident.name)
-			);
+			pushUnique(this.platformStubLocation(leftExpr, ident.name));
 			if (!locations.length) {
-				for (const m of this.resolveModulesFromExpr(
+				for (const m of modulesFromExpr(
+					this.index,
 					document.uri.fsPath,
 					leftExpr
 				)) {
 					const member = m.members.find((x) => x.name === ident.name);
 					if (member?.position) {
-						this.pushUnique(
-							locations,
-							new vscode.Location(
-								vscode.Uri.file(m.filePath),
-								new vscode.Position(
-									member.position.line,
-									member.position.character
-								)
-							)
-						);
+						pushUnique(filePosLocation(m.filePath, member.position));
 					}
 				}
 			}
@@ -159,88 +224,32 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 					ident.name
 			);
 			for (const asModule of asModules) {
-				this.pushUnique(
-					locations,
-					new vscode.Location(
-						vscode.Uri.file(asModule.filePath),
-						new vscode.Position(0, 0)
-					)
-				);
+				pushUnique(filePosLocation(asModule.filePath, { line: 0, character: 0 }));
 			}
 		}
 
-		if (!locations.length) {
+		if (!locations.length && !handledThisMember) {
 			const line = document.lineAt(position.line).text;
 			const before = line.slice(0, position.character);
 			if (/\bthis\.[\w$]*$/.test(before)) {
-				this.pushThisHits(locations, document.uri.fsPath, ident.name);
+				pushThisHits(ident.name);
 			}
 		}
 
 		return locations.length ? locations : undefined;
 	}
 
-	private pushThisHits(
-		locations: vscode.Location[],
-		filePath: string,
-		name: string,
-		kind?: IndexedMember["kind"]
-	): void {
-		for (const hit of this.index.findThisMemberLocations(filePath, name, kind)) {
-			this.pushUnique(locations, hitLocation(hit));
-		}
-	}
-
-	private pushUnique(
-		locations: vscode.Location[],
-		loc: vscode.Location | undefined
-	): void {
-		if (!loc) {
-			return;
-		}
-		const key = `${loc.uri.fsPath}:${loc.range.start.line}:${loc.range.start.character}`;
-		if (
-			locations.some(
-				(item) =>
-					`${item.uri.fsPath}:${item.range.start.line}:${item.range.start.character}` ===
-					key
-			)
-		) {
-			return;
-		}
-		locations.push(loc);
-	}
-
 	private platformStubLocation(
 		leftExpr: string,
 		name: string
 	): vscode.Location | undefined {
-		const enableStubs = vscode.workspace
-			.getConfiguration("bpmsoft")
-			.get<boolean>("enablePlatformStubs", true);
 		const prefix = rewriteThisRuntimePrefix(leftExpr) || leftExpr;
-		if (
-			prefix !== "BPMSoft" &&
-			!prefix.startsWith("BPMSoft.") &&
-			prefix !== "Ext" &&
-			!prefix.startsWith("Ext.")
-		) {
+		if (!isPlatformPrefix(prefix)) {
 			return undefined;
 		}
 		const member = this.index
-			.resolveMembers(prefix, enableStubs)
+			.resolveMembers(prefix, enablePlatformStubs())
 			.find((item) => item.name === name);
 		return memberLocation(member);
-	}
-
-	private resolveModulesFromExpr(filePath: string, expr: string) {
-		const root = expr.split(".")[0];
-		const resolved =
-			this.index.resolveLocalAlias(filePath, root) || root;
-		const mods = this.index
-			.getAllByName(resolved)
-			.concat(this.index.getAllByName(expr));
-		const unique = new Map(mods.map((m) => [m.filePath, m]));
-		return Array.from(unique.values());
 	}
 }

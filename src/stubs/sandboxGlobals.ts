@@ -3,9 +3,8 @@ import * as path from "path";
 import * as acorn from "acorn";
 import * as walk from "acorn-walk";
 import { IndexedMember, MemberKind, SourcePosition } from "../index/types";
-import { resolveAppLayouts } from "../index/workspaceLayout";
-
-type AnyNode = acorn.Node & Record<string, any>;
+import { resolveAppLayouts, collectResourceRoots, uniquePaths } from "../index/workspaceLayout";
+import { AnyNode, posFromNode, leadingComment } from "../parse/jsAst";
 
 /**
  * this.sandbox API from the app: define("sandbox") in amd/bootstrap.js
@@ -49,14 +48,7 @@ function findSandboxSourceFiles(roots: string[]): {
 	coreBase: string[];
 } {
 	const layouts = resolveAppLayouts(roots);
-	const resourceRoots = layouts
-		.map((l) => l.resourcesRoot)
-		.filter((p): p is string => Boolean(p));
-	if (!resourceRoots.length) {
-		for (const root of roots) {
-			resourceRoots.push(path.join(root, "Resources"));
-		}
-	}
+	const resourceRoots = collectResourceRoots(layouts, roots);
 
 	const bootstrap: string[] = [];
 	const coreBase: string[] = [];
@@ -76,8 +68,8 @@ function findSandboxSourceFiles(roots: string[]): {
 		}
 	}
 	return {
-		bootstrap: unique(bootstrap),
-		coreBase: unique(coreBase)
+		bootstrap: uniquePaths(bootstrap),
+		coreBase: uniquePaths(coreBase)
 	};
 }
 
@@ -207,7 +199,7 @@ function collectCreateSandboxFields(
 				name,
 				kind: inferSandboxKind(node.right as AnyNode, false),
 				detail: `sandbox · ${path.basename(filePath)}`,
-				documentation: leadingComment(comments, left),
+				documentation: leadingComment(comments, left, 120),
 				filePath,
 				position: posFromNode(prop)
 			});
@@ -312,7 +304,7 @@ function objectMembers(
 			name,
 			kind: inferSandboxKind(value, true),
 			detail: `sandbox · ${path.basename(filePath)}`,
-			documentation: memberDocumentation(name, value, leadingComment(comments, prop)),
+			documentation: memberDocumentation(name, value, leadingComment(comments, prop, 120)),
 			filePath,
 			position: posFromNode(key)
 		});
@@ -371,33 +363,6 @@ function functionSignature(name: string, value: AnyNode): string | undefined {
 	return `${name}(${params.join(", ")})`;
 }
 
-function posFromNode(node: AnyNode | undefined): SourcePosition | undefined {
-	const loc = node?.loc?.start;
-	if (!loc) {
-		return undefined;
-	}
-	return { line: loc.line - 1, character: loc.column };
-}
-
-function leadingComment(comments: acorn.Comment[], node: AnyNode): string | undefined {
-	const start = node.start as number;
-	let best: acorn.Comment | undefined;
-	for (const c of comments) {
-		if (c.end <= start && start - c.end < 120) {
-			if (!best || c.end > best.end) {
-				best = c;
-			}
-		}
-	}
-	if (!best) {
-		return undefined;
-	}
-	return best.value
-		.replace(/^\*+/, "")
-		.replace(/\n\s*\*/g, "\n")
-		.trim();
-}
-
 function parseWithComments(
 	filePath: string
 ): { ast: AnyNode; comments: acorn.Comment[] } | undefined {
@@ -415,10 +380,6 @@ function parseWithComments(
 	} catch {
 		return undefined;
 	}
-}
-
-function unique(items: string[]): string[] {
-	return Array.from(new Set(items.map((p) => path.normalize(p))));
 }
 
 function getFallbackSandboxStubs(): IndexedMember[] {

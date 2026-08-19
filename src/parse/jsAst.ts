@@ -1,4 +1,5 @@
 import * as acorn from "acorn";
+import { SourcePosition } from "../index/types";
 
 export type AnyNode = acorn.Node & Record<string, any>;
 
@@ -51,4 +52,40 @@ export function childNodes(node: AnyNode): AnyNode[] {
 		}
 	}
 	return out;
+}
+
+export function posFromNode(node: AnyNode | undefined): SourcePosition | undefined {
+	if (typeof node?.start !== "number") {
+		return undefined;
+	}
+	const loc = node.loc?.start;
+	if (!loc) {
+		return undefined;
+	}
+	return { line: loc.line - 1, character: loc.column };
+}
+
+export function leadingComment(
+	comments: acorn.Comment[],
+	node: AnyNode,
+	maxGap: number
+): string | undefined {
+	if (typeof node.start !== "number") {
+		return undefined;
+	}
+	let best: acorn.Comment | undefined;
+	for (const comment of comments) {
+		if (comment.end <= node.start && node.start - comment.end < maxGap) {
+			if (!best || comment.end > best.end) {
+				best = comment;
+			}
+		}
+	}
+	if (!best) {
+		return undefined;
+	}
+	return best.value
+		.replace(/^\*+/, "")
+		.replace(/\n\s*\*/g, "\n")
+		.trim();
 }

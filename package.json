@@ -2,7 +2,7 @@
   "name": "bpmsoft-intellisense",
   "displayName": "BPMSoft IntelliSense",
   "description": "Autocomplete and navigation for BPMSoft AMD modules in Pkg",
-  "version": "0.9.7",
+  "version": "1.0.4",
   "publisher": "kuzecowmihail",
   "engines": {
     "vscode": "^1.85.0"
@@ -11,6 +11,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
+    "onStartupFinished",
+    "onCommand:bpmsoft.rebuildIndex",
     "onLanguage:javascript",
     "onLanguage:csharp",
     "workspaceContains:**/BPMSoft.Configuration.Dev.csproj",
@@ -35,7 +37,8 @@
     "commands": [
       {
         "command": "bpmsoft.rebuildIndex",
-        "title": "BPMSoft: Rebuild Index"
+        "title": "Rebuild Index",
+        "category": "BPMSoft"
       }
     ],
     "configuration": {
@@ -78,7 +81,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package",
+    "package": "vsce package --allow-missing-repository --skip-license",
     "smoke": "npm run compile && node out/../scripts/run-smoke.js"
   },
   "devDependencies": {

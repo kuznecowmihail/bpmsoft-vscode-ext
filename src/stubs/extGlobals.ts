@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { PlatformStubMember, MemberKind } from "../index/types";
-import { resolveAppLayouts } from "../index/workspaceLayout";
+import { resolveAppLayouts, collectResourceRoots } from "../index/workspaceLayout";
+import { cloneStub, mergeStubFirstWins } from "./stubTree";
 
 /**
  * Ext.* completions for Creatio/BPMSoft (ExtJS utilities).
@@ -27,7 +28,7 @@ export function buildExtStubs(workspaceRoots: string[]): PlatformStubMember[] {
 				if (!prev) {
 					root.set(member.name, member);
 				} else if (member.children?.length) {
-					prev.children = mergeChildren(prev.children || [], member.children);
+					prev.children = mergeStubFirstWins(prev.children || [], member.children);
 				}
 			}
 		} catch {
@@ -205,14 +206,7 @@ function findExtBaseFiles(roots: string[]): string[] {
 		"ui/ExtJs/extjs5-base-debug.js"
 	];
 	const out: string[] = [];
-	const resourceRoots = layouts
-		.map((l) => l.resourcesRoot)
-		.filter((p): p is string => Boolean(p));
-	if (!resourceRoots.length) {
-		for (const root of roots) {
-			resourceRoots.push(path.join(root, "Resources"));
-		}
-	}
+	const resourceRoots = collectResourceRoots(layouts, roots);
 	for (const resourcesRoot of resourceRoots) {
 		for (const rel of rels) {
 			const full = path.join(resourcesRoot, rel);
@@ -296,30 +290,4 @@ function extractObjectKeys(objectLiteral: string): string[] {
 		keys.push(m[1]);
 	}
 	return Array.from(new Set(keys));
-}
-
-function mergeChildren(
-	existing: PlatformStubMember[],
-	incoming: PlatformStubMember[]
-): PlatformStubMember[] {
-	const map = new Map<string, PlatformStubMember>();
-	for (const c of existing) {
-		map.set(c.name, c);
-	}
-	for (const c of incoming) {
-		if (!map.has(c.name)) {
-			map.set(c.name, c);
-		}
-	}
-	return Array.from(map.values());
-}
-
-function cloneStub(s: PlatformStubMember): PlatformStubMember {
-	return {
-		name: s.name,
-		kind: s.kind,
-		detail: s.detail,
-		documentation: s.documentation,
-		children: s.children?.map(cloneStub)
-	};
 }

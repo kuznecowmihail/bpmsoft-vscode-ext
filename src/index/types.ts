@@ -70,6 +70,11 @@ export interface IndexedModule {
 	entitySchemaName?: string;
 	/** messages: { Name: { direction: PUBLISH | SUBSCRIBE | BIDIRECTIONAL } } */
 	messages: Record<string, IndexedSchemaMessage>;
+	/**
+	 * Names assigned in the module as `viewModel.foo = this.foo` /
+	 * `this.foo.bind(this)` (e.g. ModalBoxSchemaModule.createViewModel).
+	 */
+	viewModelBindings?: string[];
 }
 
 export type SchemaMessageDirection = "publish" | "subscribe" | "bidirectional";

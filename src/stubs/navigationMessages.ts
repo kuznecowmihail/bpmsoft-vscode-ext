@@ -4,8 +4,7 @@ import * as acorn from "acorn";
 import * as walk from "acorn-walk";
 import { IndexedSchemaMessage, SchemaMessageDirection } from "../index/types";
 import { resolveAppLayouts } from "../index/workspaceLayout";
-
-type AnyNode = acorn.Node & Record<string, any>;
+import { AnyNode, leadingComment, posFromNode } from "../parse/jsAst";
 type CoreAction = "publish" | "subscribe";
 
 const FALLBACK: Array<{ name: string; coreAction: CoreAction }> = [
@@ -136,14 +135,13 @@ function extractNavigationMessages(filePath: string): IndexedSchemaMessage[] {
 			if (!name) {
 				return;
 			}
-			const loc = arg0.loc?.start;
 			out.push(
 				toSchemaMessage(
 					name,
 					action,
 					filePath,
-					loc ? { line: loc.line - 1, character: loc.column } : undefined,
-					leadingComment(comments, node)
+					posFromNode(arg0),
+					leadingComment(comments, node, 80)
 				)
 			);
 		}
@@ -186,28 +184,4 @@ function isSandboxObject(node: AnyNode | undefined): boolean {
 		prop?.type === "Identifier" &&
 		prop.name === "sandbox"
 	);
-}
-
-function leadingComment(
-	comments: acorn.Comment[],
-	node: AnyNode
-): string | undefined {
-	if (typeof node.start !== "number") {
-		return undefined;
-	}
-	let best: acorn.Comment | undefined;
-	for (const comment of comments) {
-		if (comment.end <= node.start && node.start - comment.end < 80) {
-			if (!best || comment.end > best.end) {
-				best = comment;
-			}
-		}
-	}
-	if (!best) {
-		return undefined;
-	}
-	return best.value
-		.replace(/^\*+/, "")
-		.replace(/\n\s*\*/g, "\n")
-		.trim();
 }

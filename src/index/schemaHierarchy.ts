@@ -36,11 +36,7 @@ export class SchemaHierarchyResolver {
 	private descriptorParentCache = new Map<string, string | null>();
 
 	setWorkspaceRoots(roots: string[]): void {
-		this.confContentDirs = [];
-		this.configurationRoots = [];
-		this.structureCache.clear();
-		this.platformExtendCache.clear();
-		this.descriptorParentCache.clear();
+		this.clear();
 		const layouts = resolveAppLayouts(roots);
 
 		for (const layout of layouts) {
@@ -71,6 +67,14 @@ export class SchemaHierarchyResolver {
 				}
 			}
 		}
+	}
+
+	clear(): void {
+		this.confContentDirs = [];
+		this.configurationRoots = [];
+		this.structureCache.clear();
+		this.platformExtendCache.clear();
+		this.descriptorParentCache.clear();
 	}
 
 	hasRoots(): boolean {
