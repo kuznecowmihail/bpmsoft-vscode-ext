@@ -16,7 +16,7 @@
 | --- | --- |
 | `this.` | Методы, properties, атрибуты (`$Name`), **миксины** схемы/иерархии, колонки entity, `entitySchemaName` / `entitySchema`, `sandbox` / `Ext` / `BPMSoft` |
 | `this.MixinName.` / `this.mixins.MixinName.` | Методы и свойства этого миксина |
-| `this.$` | Атрибуты схемы и колонки `entitySchemaName` (`conf/content` + `Pkg/**/Schemas/{Entity}/metadata.json`) |
+| `this.$` | Атрибуты схемы; колонки `entitySchemaName` только у карточки (`EDIT_VIEW_MODEL_SCHEMA`, `conf/content` + `Pkg/**/Schemas/{Entity}/metadata.json`). У секции (`MODULE_VIEW_MODEL_SCHEMA`) колонок объекта в `this.$` / `get` / `set` нет |
 | `this.get("` / `this.set("` | Имена атрибутов |
 | `this.sandbox.publish("` / `this.sandbox.subscribe("` | Сообщения из `messages` схемы/иерархии и ядра `NavigationModule` |
 | `diff` / `methods` → `bindTo: "` (ключи с кавычками или без) | Методы и атрибуты схемы/иерархии |
@@ -146,7 +146,7 @@ BPMSoft.configuration.Structures["LeadPageV2"] = {
 - Если схемы нет в `conf/content`, родитель берётся из `descriptor.json` (`Parent.Name`) — дальше тот же алгоритм (стек / `structureParent` уже существующей в conf схемы)
 - Миксины всех слоёв сливаются
 - После схем добавляется `BPMSoft.BaseSchemaViewModel` (как в `ViewModelGeneratorV2`), затем `extend` из Structures (`BPMSoft.model.BaseViewModel`, …)
-- Колонки `entitySchemaName` → `conf/content/{Entity}.js`
+- Колонки `entitySchemaName` → `conf/content/{Entity}.js` и `Pkg/**/metadata.json` — только у карточки (`EDIT_VIEW_MODEL_SCHEMA`), не у секции (`MODULE_VIEW_MODEL_SCHEMA`). `this.entitySchemaName` / `this.entitySchema` есть и там, и там.
 
 Если для схемы нет `conf/content/{Schema}.js`, родитель читается из `Pkg/.../Schemas/{Schema}/descriptor.json` (`Parent.Name`). Если `Parent.Name` совпадает с текущей схемой (замена из другого пакета / `ExtendParent`), этот шаг не обходится — копий той же схемы из других пакетов и так попадают в слои, зацикливания нет. Ищется дескриптор с **другим** `Parent.Name`. Уже посещённые имена и глубина > 50 тоже отсекаются.
 

@@ -6,7 +6,24 @@ export interface SchemaStructure {
 	schemaName: string;
 	innerHierarchyStack: string[];
 	structureParent?: string;
+	/** `BPMSoft.SchemaType.EDIT_VIEW_MODEL_SCHEMA` → `EDIT_VIEW_MODEL_SCHEMA`. */
+	schemaType?: string;
 }
+
+/** Schema types that bind the entity object as `this.$` / `this.get` attributes. */
+export const ENTITY_COLUMN_SCHEMA_TYPES = new Set([
+	"EDIT_VIEW_MODEL_SCHEMA",
+	"EDIT_CONTROLS_DETAIL_VIEW_MODEL_SCHEMA",
+	"GRID_EDIT_DETAIL_VIEW_MODEL_SCHEMA"
+]);
+
+/** Schema types that have `entitySchemaName` but are not the entity card VM. */
+export const NO_ENTITY_COLUMN_SCHEMA_TYPES = new Set([
+	"MODULE_VIEW_MODEL_SCHEMA",
+	"GRID_DETAIL_VIEW_MODEL_SCHEMA",
+	"DETAIL_VIEW_MODEL_SCHEMA",
+	"MODULE"
+]);
 
 export interface HierarchyLayer {
 	/** File with schema AMD source */
@@ -150,6 +167,19 @@ export class SchemaHierarchyResolver {
 		return out;
 	}
 
+	/**
+	 * Client schema type for `{schemaName}` (`EDIT_VIEW_MODEL_SCHEMA`,
+	 * `MODULE_VIEW_MODEL_SCHEMA`, …). Conf/content first, then Pkg
+	 * `properties.json`.
+	 */
+	resolveSchemaType(schemaName: string): string | undefined {
+		const structure = this.parseStructure(schemaName);
+		if (structure?.schemaType) {
+			return structure.schemaType;
+		}
+		return this.readPkgSchemaType(schemaName);
+	}
+
 	private parseStructure(schemaName: string): SchemaStructure | null {
 		const cached = this.structureCache.get(schemaName);
 		if (cached !== undefined) {
@@ -164,6 +194,9 @@ export class SchemaHierarchyResolver {
 				const head = fs.readFileSync(filePath, "utf8").slice(0, 4000);
 				const parsed = parseStructuresLine(head, schemaName);
 				if (parsed) {
+					if (!parsed.schemaType) {
+						parsed.schemaType = parseClientSchemaType(head);
+					}
 					this.structureCache.set(schemaName, parsed);
 					return parsed;
 				}
@@ -173,6 +206,27 @@ export class SchemaHierarchyResolver {
 		}
 		this.structureCache.set(schemaName, null);
 		return null;
+	}
+
+	private readPkgSchemaType(schemaName: string): string | undefined {
+		for (const pkg of this.pkgPackageDirs()) {
+			const filePath = path.join(pkg, "Schemas", schemaName, "properties.json");
+			if (!fs.existsSync(filePath)) {
+				continue;
+			}
+			try {
+				const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as {
+					SchemaType?: string;
+				};
+				const raw = parsed.SchemaType?.trim();
+				if (raw) {
+					return pascalSchemaTypeToEnum(raw);
+				}
+			} catch {
+				// ignore
+			}
+		}
+		return undefined;
 	}
 
 	/**
@@ -601,8 +655,24 @@ export function parseStructuresLine(
 	return {
 		schemaName,
 		innerHierarchyStack,
-		structureParent: parentMatch?.[1] || undefined
+		structureParent: parentMatch?.[1] || undefined,
+		schemaType: parseClientSchemaType(text)
 	};
+}
+
+/** `type:BPMSoft.SchemaType.EDIT_VIEW_MODEL_SCHEMA` in conf/content `{Schema}.js`. */
+export function parseClientSchemaType(source: string): string | undefined {
+	const match = source.match(/type:\s*BPMSoft\.SchemaType\.([A-Z0-9_]+)/);
+	return match?.[1];
+}
+
+/** `EditViewModelSchema` from Pkg `properties.json` → `EDIT_VIEW_MODEL_SCHEMA`. */
+export function pascalSchemaTypeToEnum(value: string): string {
+	const trimmed = value.trim();
+	if (/^[A-Z0-9_]+$/.test(trimmed)) {
+		return trimmed;
+	}
+	return trimmed.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
 }
 
 /**

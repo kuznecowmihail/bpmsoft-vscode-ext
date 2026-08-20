@@ -1,6 +1,9 @@
 import * as fs from "fs";
 import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember, memberDedupeKey, schemaMessageSupports } from "./types";
-import { SchemaHierarchyResolver } from "./schemaHierarchy";
+import {
+	NO_ENTITY_COLUMN_SCHEMA_TYPES,
+	SchemaHierarchyResolver
+} from "./schemaHierarchy";
 import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
 import {
 	entityColumnDocumentation,
@@ -435,7 +438,9 @@ export class SymbolIndex {
 		const seen = new Set(result.map((m) => memberDedupeKey(m)));
 		this.appendMixinMembers(chainMods, result, seen);
 		this.appendMixinAccessors(chainMods, result, seen);
-		this.appendEntityColumns(chainMods, result, seen);
+		if (this.schemaBindsEntityColumns(chainMods)) {
+			this.appendEntityColumns(chainMods, result, seen);
+		}
 		this.appendEntitySchemaObject(chainMods, result, seen);
 		for (const member of this.modalBoxViewModelMembers(chainMods)) {
 			this.pushUnseen(result, seen, member);
@@ -482,10 +487,12 @@ export class SymbolIndex {
 			addOwner(owner);
 		}
 		this.forEachMixinModule(chainMods, addOwner);
-		const entity = this.getEntityModuleForChain(chainMods);
-		if (entity) {
-			for (const member of entity.members) {
-				attributes.add(member.name);
+		if (this.schemaBindsEntityColumns(chainMods)) {
+			const entity = this.getEntityModuleForChain(chainMods);
+			if (entity) {
+				for (const member of entity.members) {
+					attributes.add(member.name);
+				}
 			}
 		}
 		for (const msg of this.coreMessages) {
@@ -732,9 +739,11 @@ export class SymbolIndex {
 			consider(m);
 		}
 		this.forEachMixinModule(chainMods, consider);
-		const entityMod = this.getEntityModuleForChain(chainMods);
-		if (entityMod) {
-			consider(entityMod);
+		if (this.schemaBindsEntityColumns(chainMods)) {
+			const entityMod = this.getEntityModuleForChain(chainMods);
+			if (entityMod) {
+				consider(entityMod);
+			}
 		}
 		const modalBox = this.getModalBoxSchemaModule(chainMods);
 		if (modalBox) {
@@ -1289,6 +1298,24 @@ export class SymbolIndex {
 			members.push(columnsMember);
 		}
 		return members;
+	}
+
+	/**
+	 * Entity object columns as `this.$` / `this.get` / `this.set` only on
+	 * card schemas (`EDIT_VIEW_MODEL_SCHEMA`, details). Sections
+	 * (`MODULE_VIEW_MODEL_SCHEMA`) keep `entitySchemaName` / `entitySchema`
+	 * but do not bind columns onto the view model.
+	 */
+	private schemaBindsEntityColumns(owners: IndexedModule[]): boolean {
+		const page = owners.find((m) => m.kind === "page");
+		if (!page) {
+			return false;
+		}
+		const schemaType = this.hierarchy.resolveSchemaType(page.name);
+		if (schemaType && NO_ENTITY_COLUMN_SCHEMA_TYPES.has(schemaType)) {
+			return false;
+		}
+		return true;
 	}
 
 	private getEntityModuleForChain(
