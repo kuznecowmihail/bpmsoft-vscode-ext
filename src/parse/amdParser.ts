@@ -489,6 +489,26 @@ function isExtDefineCall(node: AnyNode): boolean {
 	);
 }
 
+function isSandboxRegisterMessagesCall(node: AnyNode): boolean {
+	const callee = node.callee as AnyNode;
+	if (callee?.type !== "MemberExpression") {
+		return false;
+	}
+	const prop = callee.property as AnyNode;
+	if (prop?.type !== "Identifier" || prop.name !== "registerMessages") {
+		return false;
+	}
+	const obj = callee.object as AnyNode;
+	if (obj?.type !== "MemberExpression") {
+		return false;
+	}
+	const sandboxProp = obj.property as AnyNode;
+	if (sandboxProp?.type !== "Identifier" || sandboxProp.name !== "sandbox") {
+		return false;
+	}
+	return (obj.object as AnyNode)?.type === "ThisExpression";
+}
+
 function extDefineParts(node: AnyNode): {
 	className?: string;
 	classBody?: AnyNode;
@@ -770,6 +790,14 @@ function parseDefineCall(
 	// Ext.define inside factory (mixins / overrides / controls)
 	walk.simple(body, {
 		CallExpression(node: AnyNode) {
+			if (isSandboxRegisterMessagesCall(node)) {
+				const args = node.arguments as AnyNode[];
+				Object.assign(
+					module.messages,
+					extractMessagesFromValue(args[0], filePath, comments)
+				);
+				return;
+			}
 			if (!isExtDefineCall(node)) {
 				return;
 			}

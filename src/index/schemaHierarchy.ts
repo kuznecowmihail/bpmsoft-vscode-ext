@@ -10,13 +10,6 @@ export interface SchemaStructure {
 	schemaType?: string;
 }
 
-/** Schema types that bind the entity object as `this.$` / `this.get` attributes. */
-export const ENTITY_COLUMN_SCHEMA_TYPES = new Set([
-	"EDIT_VIEW_MODEL_SCHEMA",
-	"EDIT_CONTROLS_DETAIL_VIEW_MODEL_SCHEMA",
-	"GRID_EDIT_DETAIL_VIEW_MODEL_SCHEMA"
-]);
-
 /** Schema types that have `entitySchemaName` but are not the entity card VM. */
 export const NO_ENTITY_COLUMN_SCHEMA_TYPES = new Set([
 	"MODULE_VIEW_MODEL_SCHEMA",

@@ -11,7 +11,7 @@ const { buildPlatformStubs } = require("../out/stubs/platformGlobals");
 const { buildExtStubs } = require("../out/stubs/extGlobals");
 const { buildSandboxStubs } = require("../out/stubs/sandboxGlobals");
 const { buildNavigationMessages } = require("../out/stubs/navigationMessages");
-const { resolveAppLayout, findDevDotnetProject, devDotnetLoadFile, pathRelativePosix } = require("../out/index/workspaceLayout");
+const { resolveAppLayout, findDevDotnetProject, devDotnetLoadFile, pathRelativePosix, walkJsFiles } = require("../out/index/workspaceLayout");
 const { formatDevDotnetSln, ensureDevDotnetSln } = require("../out/dotnet/devSln");
 const {
 	parseStructuresLine,
@@ -1406,6 +1406,389 @@ if (!syntheticMixinPage || !syntheticMixin) {
 		failed = true;
 	}
 	console.log("synthetic schema mixin accessors OK");
+}
+
+{
+	const hostBoundMixinPath = path.join(root, "synthetic/GoHostBoundMixin.js");
+	const hostBoundCardPath = path.join(root, "synthetic/GoHostBoundCard.js");
+	const hostBoundMixin = parseAmdModule(
+		`
+define("GoHostBoundMixin", [], function() {
+	return {
+		methods: {
+			fromMixin: function() {
+				this.get("Id");
+				this.$Title;
+			}
+		}
+	};
+});
+`,
+		hostBoundMixinPath
+	);
+	const hostBoundCard = parseAmdModule(
+		`
+define("GoHostBoundCard", [], function() {
+	return {
+		entitySchemaName: "Lead",
+		mixins: { GoHostBoundMixin: "GoHostBoundMixin" },
+		methods: {
+			hostOnlyMethod: function() {}
+		}
+	};
+});
+`,
+		hostBoundCardPath
+	);
+	if (!hostBoundMixin || !hostBoundCard) {
+		console.error("Failed to parse GoHostBoundMixin fixtures");
+		failed = true;
+	} else {
+		index.upsertModule(hostBoundMixin);
+		index.upsertModule(hostBoundCard);
+		const mixinThis = index.resolveThisMembers(hostBoundMixinPath);
+		if (!mixinThis.some((m) => m.name === "Id" && m.kind === "attribute")) {
+			console.error("Expected Id attribute on card-hosted AMD mixin", mixinThis.filter((m) => m.kind === "attribute").map((m) => m.name));
+			failed = true;
+		}
+		if (!mixinThis.some((m) => m.name === "Title" && m.kind === "attribute")) {
+			console.error("Expected Title attribute on card-hosted AMD mixin", mixinThis.filter((m) => m.kind === "attribute").map((m) => m.name));
+			failed = true;
+		}
+		const titleHits = index.findThisMemberLocations(hostBoundMixinPath, "Title", "attribute");
+		if (!titleHits.length) {
+			console.error("Expected F12 this.$Title on card-hosted AMD mixin");
+			failed = true;
+		}
+		if (mixinThis.some((m) => m.name === "hostOnlyMethod")) {
+			console.error("Mixin this must not include host-only methods", mixinThis.map((m) => m.name));
+			failed = true;
+		} else {
+			console.log("mixin host card columns OK (AMD)");
+		}
+	}
+}
+
+{
+	const extHostMixinPath = path.join(root, "synthetic/GoExtHostMixin.js");
+	const extHostCardPath = path.join(root, "synthetic/GoExtHostCard.js");
+	const extHostMixin = parseAmdModule(
+		`
+define("GoExtHostMixin", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoExtHostMixin", {
+		alternateClassName: "BPMSoft.GoExtHostMixin",
+		useId: function() {
+			this.get("Id");
+		}
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoExtHostMixin");
+});
+`,
+		extHostMixinPath
+	);
+	const extHostCard = parseAmdModule(
+		`
+define("GoExtHostCard", [], function() {
+	return {
+		entitySchemaName: "Lead",
+		mixins: { GoExtHostMixin: "BPMSoft.GoExtHostMixin" }
+	};
+});
+`,
+		extHostCardPath
+	);
+	if (!extHostMixin || !extHostCard) {
+		console.error("Failed to parse GoExtHostMixin fixtures");
+		failed = true;
+	} else {
+		index.upsertModule(extHostMixin);
+		index.upsertModule(extHostCard);
+		const extMixinThis = index.resolveThisMembers(extHostMixinPath);
+		if (!extMixinThis.some((m) => m.name === "Id" && m.kind === "attribute")) {
+			console.error("Expected Id attribute on card-hosted Ext.define mixin", extMixinThis.filter((m) => m.kind === "attribute").map((m) => m.name));
+			failed = true;
+		} else {
+			console.log("mixin host card columns OK (Ext.define)");
+		}
+		if (
+			!extMixinThis.some(
+				(m) => m.name === "getButtonMenuItem" && m.kind === "method"
+			)
+		) {
+			console.error(
+				"Expected getButtonMenuItem on mixin from host schema VM chain",
+				extMixinThis.map((m) => m.name)
+			);
+			failed = true;
+		} else {
+			console.log("mixin host schema VM methods OK");
+		}
+		const leadThis = index.resolveThisMembers(leadPath);
+		const leadHasConfirm = leadThis.some(
+			(m) => m.name === "showConfirmationDialog" && m.kind === "method"
+		);
+		if (leadHasConfirm) {
+			if (
+				!extMixinThis.some(
+					(m) => m.name === "showConfirmationDialog" && m.kind === "method"
+				)
+			) {
+				console.error(
+					"Expected showConfirmationDialog on mixin from host Structure extend",
+					extMixinThis.map((m) => m.name)
+				);
+				failed = true;
+			}
+		} else {
+			console.log("showConfirmationDialog not in volume, skip mixin assert");
+		}
+	}
+}
+
+{
+	const goRegMsgMixinPath = path.join(root, "synthetic/GoRegMsgMixin.js");
+	const goRegMsgMixin = parseAmdModule(
+		`
+define("GoRegMsgMixin", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoRegMsgMixin", {
+		alternateClassName: "BPMSoft.GoRegMsgMixin",
+		init: function() {
+			this.sandbox.registerMessages({
+				SelectCommunicationPanelItem: {
+					mode: this.BPMSoft.MessageMode.PTP,
+					direction: this.BPMSoft.MessageDirectionType.PUBLISH
+				}
+			});
+		}
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoRegMsgMixin");
+});
+`,
+		goRegMsgMixinPath
+	);
+	if (!goRegMsgMixin) {
+		console.error("Failed to parse GoRegMsgMixin");
+		failed = true;
+	} else if (
+		goRegMsgMixin.messages.SelectCommunicationPanelItem?.direction !== "publish"
+	) {
+		console.error("Expected registerMessages parse", goRegMsgMixin.messages);
+		failed = true;
+	} else {
+		index.upsertModule(goRegMsgMixin);
+		const resolved = index.resolveSchemaMessages(goRegMsgMixinPath);
+		if (resolved.SelectCommunicationPanelItem?.direction !== "publish") {
+			console.error(
+				"Expected resolveSchemaMessages for registerMessages",
+				resolved
+			);
+			failed = true;
+		} else if (
+			sandboxMessageIssue(resolved, "SelectCommunicationPanelItem", "publish")
+		) {
+			console.error("Expected sandboxMessageIssue pass for registerMessages");
+			failed = true;
+		} else {
+			console.log("registerMessages parsed OK");
+		}
+	}
+}
+
+{
+	const hostMsgMixinPath = path.join(root, "synthetic/GoHostMsgMixin.js");
+	const hostMsgCardPath = path.join(root, "synthetic/GoHostMsgCard.js");
+	const hostMsgMixin = parseAmdModule(
+		`
+define("GoHostMsgMixin", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoHostMsgMixin", {
+		alternateClassName: "BPMSoft.GoHostMsgMixin",
+		publishHostMsg: function() {
+			this.sandbox.publish("HostOnlyMsg");
+		}
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoHostMsgMixin");
+});
+`,
+		hostMsgMixinPath
+	);
+	const hostMsgCard = parseAmdModule(
+		`
+define("GoHostMsgCard", [], function() {
+	return {
+		mixins: { GoHostMsgMixin: "BPMSoft.GoHostMsgMixin" },
+		messages: {
+			HostOnlyMsg: {
+				direction: this.BPMSoft.MessageDirectionType.PUBLISH
+			}
+		}
+	};
+});
+`,
+		hostMsgCardPath
+	);
+	if (!hostMsgMixin || !hostMsgCard) {
+		console.error("Failed to parse GoHostMsgMixin fixtures");
+		failed = true;
+	} else {
+		index.upsertModule(hostMsgMixin);
+		index.upsertModule(hostMsgCard);
+		const resolved = index.resolveSchemaMessages(hostMsgMixinPath);
+		if (resolved.HostOnlyMsg?.direction !== "publish") {
+			console.error("Expected host-declared message on mixin", resolved);
+			failed = true;
+		} else {
+			console.log("mixin host schema messages OK");
+		}
+	}
+}
+
+{
+	const sectionOnlyMixinPath = path.join(root, "synthetic/GoSectionOnlyMixin.js");
+	const sectionOnlyMixin = parseAmdModule(
+		`
+define("GoSectionOnlyMixin", [], function() {
+	return {
+		methods: {
+			sectionMixinMethod: function() {
+				this.get("Title");
+			}
+		}
+	};
+});
+`,
+		sectionOnlyMixinPath
+	);
+	if (!sectionOnlyMixin) {
+		console.error("Failed to parse GoSectionOnlyMixin");
+		failed = true;
+	} else {
+		const leadSectionPath = path.join(
+			root,
+			"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/LeadSectionV2/LeadSectionV2.js"
+		);
+		if (fs.existsSync(leadSectionPath)) {
+			index.upsertModule(sectionOnlyMixin);
+			const section = index.ensureModule(leadSectionPath);
+			if (!section) {
+				console.error("Failed to ensure LeadSectionV2 for section-only mixin test");
+				failed = true;
+			} else {
+				const savedMixins = { ...section.mixins };
+				try {
+					section.mixins = {
+						...savedMixins,
+						GoSectionOnlyMixin: "GoSectionOnlyMixin"
+					};
+					index.upsertModule(section);
+					const sectionMixinThis = index.resolveThisMembers(sectionOnlyMixinPath);
+					const badCol = sectionMixinThis.find(
+						(m) =>
+							(m.name === "Title" || m.name === "GoWeightedPenetration") &&
+							m.kind === "attribute"
+					);
+					if (badCol) {
+						console.error(
+							"Section-only mixin must not bind entity columns",
+							badCol
+						);
+						failed = true;
+					} else {
+						console.log("section-only mixin skips entity columns OK");
+					}
+				} finally {
+					section.mixins = savedMixins;
+					index.upsertModule(section);
+				}
+				const sectionThisAfter = index.resolveThisMembers(leadSectionPath);
+				if (
+					sectionThisAfter.some(
+						(m) =>
+							(m.name === "Title" || m.name === "GoWeightedPenetration") &&
+							m.kind === "attribute"
+					)
+				) {
+					console.error("LeadSectionV2 regression: entity columns after restore");
+					failed = true;
+				}
+			}
+		}
+	}
+}
+
+{
+	const intersectMixinPath = path.join(root, "synthetic/GoIntersectMixin.js");
+	const intersectLeadCardPath = path.join(root, "synthetic/GoIntersectLeadCard.js");
+	const intersectAccountCardPath = path.join(
+		root,
+		"synthetic/GoIntersectAccountCard.js"
+	);
+	const intersectMixin = parseAmdModule(
+		`
+define("GoIntersectMixin", [], function() {
+	return {
+		methods: {
+			useColumns: function() {
+				this.get("Id");
+				this.get("GoWeightedPenetration");
+			}
+		}
+	};
+});
+`,
+		intersectMixinPath
+	);
+	const intersectLeadCard = parseAmdModule(
+		`
+define("GoIntersectLeadCard", [], function() {
+	return {
+		entitySchemaName: "Lead",
+		mixins: { GoIntersectMixin: "GoIntersectMixin" }
+	};
+});
+`,
+		intersectLeadCardPath
+	);
+	const intersectAccountCard = parseAmdModule(
+		`
+define("GoIntersectAccountCard", [], function() {
+	return {
+		entitySchemaName: "Account",
+		mixins: { GoIntersectMixin: "GoIntersectMixin" }
+	};
+});
+`,
+		intersectAccountCardPath
+	);
+	if (!intersectMixin || !intersectLeadCard || !intersectAccountCard) {
+		console.error("Failed to parse GoIntersectMixin fixtures");
+		failed = true;
+	} else {
+		index.upsertModule(intersectMixin);
+		index.upsertModule(intersectLeadCard);
+		index.upsertModule(intersectAccountCard);
+		const accountProbe = index.resolveThisMembers(intersectAccountCardPath);
+		const accountHasCols = accountProbe.some(
+			(m) => m.name === "Id" && m.kind === "attribute"
+		);
+		if (!accountHasCols) {
+			console.log("skip intersection test: Account entity columns unavailable");
+		} else {
+			const intersectThis = index.resolveThisMembers(intersectMixinPath);
+			if (!intersectThis.some((m) => m.name === "Id" && m.kind === "attribute")) {
+				console.error(
+					"Expected Id in Lead∩Account intersection mixin",
+					intersectThis.filter((m) => m.kind === "attribute").map((m) => m.name)
+				);
+				failed = true;
+			}
+			if (intersectThis.some((m) => m.name === "GoWeightedPenetration" && m.kind === "attribute")) {
+				console.error("GoWeightedPenetration must be dropped in Lead∩Account intersection");
+				failed = true;
+			} else {
+				console.log("mixin host intersection columns OK");
+			}
+		}
+	}
 }
 
 const syntheticMixinParentClass = parseAmdModule(
@@ -3090,6 +3473,765 @@ public class Sample
 		failed = true;
 	}
 	console.log("C# style diagnostics OK");
+}
+
+// --- GoRestaurantsMain package feature battery ---
+{
+	function walkExtFiles(dir, ext) {
+		const out = [];
+		if (!dir || !fs.existsSync(dir)) {
+			return out;
+		}
+		const stack = [dir];
+		while (stack.length) {
+			const d = stack.pop();
+			let entries;
+			try {
+				entries = fs.readdirSync(d, { withFileTypes: true });
+			} catch {
+				continue;
+			}
+			for (const ent of entries) {
+				if (ent.name === "node_modules" || ent.name === ".git") {
+					continue;
+				}
+				const full = path.join(d, ent.name);
+				if (ent.isDirectory()) {
+					stack.push(full);
+					continue;
+				}
+				if (ent.isFile() && ent.name.endsWith(ext)) {
+					out.push(full);
+				}
+			}
+		}
+		return out;
+	}
+
+	const pkgSchemas = path.join(root, "BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas");
+	const pkgSchemaPath = (rel) => path.join(pkgSchemas, rel);
+	const hasMember = (members, name, kind) =>
+		members.some((m) => m.name === name && (!kind || m.kind === kind));
+
+	function requirePkgFile(rel) {
+		const fp = pkgSchemaPath(rel);
+		if (!fs.existsSync(fp)) {
+			console.error("GoRestaurantsMain battery: missing file", fp);
+			failed = true;
+			return null;
+		}
+		return fp;
+	}
+
+	const pkgJs = walkJsFiles(pkgSchemas, () => true);
+	if (pkgJs.length < 200) {
+		console.error(
+			"GoRestaurantsMain: expected >= 200 JS files, got",
+			pkgJs.length
+		);
+		failed = true;
+	}
+
+	let parsedCount = 0;
+	let skippedCount = 0;
+	const parsedFiles = [];
+
+	for (const filePath of pkgJs) {
+		const source = fs.readFileSync(filePath, "utf8");
+		if (!/\bdefine\s*\(/.test(source)) {
+			skippedCount++;
+			continue;
+		}
+		const mod = parseAmdModule(source, filePath);
+		if (!mod) {
+			console.error("GoRestaurantsMain: parse failed", filePath);
+			failed = true;
+			continue;
+		}
+		index.upsertModule(mod);
+		parsedCount++;
+		parsedFiles.push({ filePath, source });
+	}
+	console.log(
+		`GoRestaurantsMain JS parsed=${parsedCount} skipped=${skippedCount} total=${pkgJs.length}`
+	);
+
+	for (const { filePath, source } of parsedFiles) {
+		try {
+			index.resolveThisMembers(filePath);
+			index.resolveSchemaMessages(filePath);
+			const inherited = index.resolveInheritedSchemaNames(filePath);
+			collectThisMemberAccesses(source);
+			collectStyleIssues(source, inherited);
+		} catch (err) {
+			console.error("GoRestaurantsMain: resolution threw", filePath, err);
+			failed = true;
+		}
+	}
+
+	let leadPageCount = 0;
+	let leadSectionCount = 0;
+	let deliveryMixinCount = 0;
+	let crossSellMixinCount = 0;
+	let goPlacePageCount = 0;
+	let goPlaceDetailCount = 0;
+	let encryptedUtilsCount = 0;
+	let csScanned = 0;
+
+	// LeadPageV2 (card)
+	const leadPagePath = requirePkgFile("LeadPageV2/LeadPageV2.js");
+	if (leadPagePath) {
+		const leadMod = index.ensureModule(leadPagePath);
+		if (!leadMod) {
+			console.error("GoRestaurantsMain: ensureModule LeadPageV2 failed");
+			failed = true;
+		} else {
+			const leadThis = index.resolveThisMembers(leadPagePath);
+			leadPageCount = leadThis.length;
+			const hasCardMethod =
+				hasMember(leadThis, "onCountryChanged", "method") ||
+				hasMember(leadThis, "getSecondCloseReasonFilter", "method");
+			if (!hasCardMethod) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: expected onCountryChanged or getSecondCloseReasonFilter"
+				);
+				failed = true;
+			}
+			if (!hasMember(leadThis, "Country", "attribute")) {
+				console.error("GoRestaurantsMain LeadPageV2: missing Country attribute");
+				failed = true;
+			}
+			if (!hasMember(leadThis, "IsPossibleSaveRecord", "attribute")) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: missing IsPossibleSaveRecord attribute"
+				);
+				failed = true;
+			}
+			if (
+				!hasMember(leadThis, "GoCrossSellCommunicationModalBoxMixin", "namespace")
+			) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: missing GoCrossSellCommunicationModalBoxMixin namespace"
+				);
+				failed = true;
+			}
+			if (
+				!hasMember(leadThis, "onSendCrossSellMessageButtonClick", "method") &&
+				!hasMember(leadThis, "showCrossSellCommunicationInputBox", "method")
+			) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: missing cross-sell mixin method on this"
+				);
+				failed = true;
+			}
+			if (!leadThis.some((m) => m.name === "Id" && m.kind === "attribute")) {
+				console.error("GoRestaurantsMain LeadPageV2: missing Id entity column");
+				failed = true;
+			}
+			if (
+				!index.findThisMemberLocations(leadPagePath, "Country", "attribute").length
+			) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: findThisMemberLocations Country empty"
+				);
+				failed = true;
+			}
+			if (
+				!index
+					.findThisMemberLocations(leadPagePath, "IsPossibleSaveRecord", "attribute")
+					.length
+			) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: findThisMemberLocations IsPossibleSaveRecord empty"
+				);
+				failed = true;
+			}
+			const crossSellPathMembers = index.resolveThisPathMembers(
+				leadPagePath,
+				"mixins.GoCrossSellCommunicationModalBoxMixin"
+			);
+			if (
+				!crossSellPathMembers.some(
+					(m) =>
+						m.name === "showCrossSellCommunicationInputBox" ||
+						m.name === "onSendCrossSellMessageButtonClick"
+				)
+			) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: cross-sell mixin path members missing"
+				);
+				failed = true;
+			}
+			const leadMsgs = index.resolveSchemaMessages(leadPagePath);
+			if (leadMsgs.CallCustomer?.direction !== "publish") {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: CallCustomer should be publish",
+					leadMsgs.CallCustomer
+				);
+				failed = true;
+			}
+			if (!index.findSchemaMessageLocations(leadPagePath, "CallCustomer").length) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: findSchemaMessageLocations CallCustomer empty"
+				);
+				failed = true;
+			}
+			const leadSrc = fs.readFileSync(leadPagePath, "utf8");
+			const leadAccesses = collectThisMemberAccesses(leadSrc);
+			if (
+				!leadAccesses.some(
+					(a) => a.kind === "diffBindTo" && a.name === "GoSLAPauseReason"
+				)
+			) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: missing diffBindTo GoSLAPauseReason"
+				);
+				failed = true;
+			}
+			if (
+				!leadAccesses.some(
+					(a) =>
+						a.kind === "diffBindTo" &&
+						a.name === "getBeforeGoSlaRulePauseEnumCollectionValues"
+				)
+			) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: missing diffBindTo getBeforeGoSlaRulePauseEnumCollectionValues"
+				);
+				failed = true;
+			}
+			const countrySnippet = 'this.get("Country")';
+			const countryIdx = leadSrc.indexOf(countrySnippet);
+			if (countryIdx < 0) {
+				console.error(
+					"GoRestaurantsMain LeadPageV2: missing this.get(\"Country\") snippet"
+				);
+				failed = true;
+			} else {
+				const countryPos =
+					countryIdx + countrySnippet.indexOf("Country") + 2;
+				if (!getThisGetSetContext(leadSrc, countryPos)) {
+					console.error(
+						"GoRestaurantsMain LeadPageV2: getThisGetSetContext Country failed"
+					);
+					failed = true;
+				}
+				const lookupDot = leadSrc.indexOf(".", countryIdx + countrySnippet.length - 1);
+				if (lookupDot < 0) {
+					console.error(
+						"GoRestaurantsMain LeadPageV2: missing lookup dot after Country"
+					);
+					failed = true;
+				} else {
+					const lookupCtx = getThisLookupAccessContext(leadSrc, lookupDot + 1);
+					if (!lookupCtx || lookupCtx.attrName !== "Country") {
+						console.error(
+							"GoRestaurantsMain LeadPageV2: getThisLookupAccessContext Country failed",
+							lookupCtx
+						);
+						failed = true;
+					}
+				}
+			}
+			if (!index.resolveOverridableMethods(leadPagePath).length) {
+				console.error("GoRestaurantsMain LeadPageV2: resolveOverridableMethods empty");
+				failed = true;
+			}
+			const callAt = leadSrc.indexOf("callParent");
+			if (callAt >= 0) {
+				const cpCtx = getCallParentContext(leadSrc, callAt + 2);
+				if (!cpCtx?.methodName) {
+					console.error(
+						"GoRestaurantsMain LeadPageV2: getCallParentContext missing methodName",
+						cpCtx
+					);
+					failed = true;
+				}
+			}
+		}
+	}
+
+	// LeadSectionV2 (section)
+	const leadSectionBatteryPath = requirePkgFile("LeadSectionV2/LeadSectionV2.js");
+	if (leadSectionBatteryPath) {
+		const sectionThis = index.resolveThisMembers(leadSectionBatteryPath);
+		leadSectionCount = sectionThis.length;
+		if (hasMember(sectionThis, "Title", "attribute")) {
+			console.error("GoRestaurantsMain LeadSectionV2: must not include Title attribute");
+			failed = true;
+		}
+		if (hasMember(sectionThis, "GoWeightedPenetration", "attribute")) {
+			console.error(
+				"GoRestaurantsMain LeadSectionV2: must not include GoWeightedPenetration attribute"
+			);
+			failed = true;
+		}
+		if (!hasMember(sectionThis, "GoCurrentTimeCaption", "attribute")) {
+			console.error(
+				"GoRestaurantsMain LeadSectionV2: missing GoCurrentTimeCaption attribute"
+			);
+			failed = true;
+		}
+		if (!hasMember(sectionThis, "GoDeliveryAreaValidationMixin", "namespace")) {
+			console.error(
+				"GoRestaurantsMain LeadSectionV2: missing GoDeliveryAreaValidationMixin namespace"
+			);
+			failed = true;
+		}
+		const deliveryPathMembers = index.resolveThisPathMembers(
+			leadSectionBatteryPath,
+			"mixins.GoDeliveryAreaValidationMixin"
+		);
+		if (
+			!deliveryPathMembers.some(
+				(m) =>
+					m.name === "restartGoDeliveryAreaValidation" ||
+					m.name === "updateGoDeliveryAreaValidationState"
+			)
+		) {
+			console.error(
+				"GoRestaurantsMain LeadSectionV2: delivery mixin path members missing"
+			);
+			failed = true;
+		}
+		const sectionSrc = fs.readFileSync(leadSectionBatteryPath, "utf8");
+		const initCallParent = sectionSrc.match(/init\s*:\s*function[\s\S]*?callParent/);
+		if (initCallParent) {
+			const cpAt = sectionSrc.indexOf("callParent", initCallParent.index);
+			const cpCtx = getCallParentContext(sectionSrc, cpAt);
+			if (!cpCtx?.methodName) {
+				console.error(
+					"GoRestaurantsMain LeadSectionV2: init callParent context failed",
+					cpCtx
+				);
+				failed = true;
+			}
+		}
+	}
+
+	// GoDeliveryAreaValidationMixin
+	const deliveryMixinPath = requirePkgFile(
+		"GoDeliveryAreaValidationMixin/GoDeliveryAreaValidationMixin.js"
+	);
+	if (deliveryMixinPath) {
+		const deliveryMixinThis = index.resolveThisMembers(deliveryMixinPath);
+		deliveryMixinCount = deliveryMixinThis.length;
+		if (
+			!hasMember(deliveryMixinThis, "getGoDeliveryAreaValidationConfig", "method") &&
+			!hasMember(deliveryMixinThis, "isGoDeliveryAreaValidationApplicable", "method")
+		) {
+			console.error(
+				"GoRestaurantsMain GoDeliveryAreaValidationMixin: missing own validation method"
+			);
+			failed = true;
+		}
+		if (!hasMember(deliveryMixinThis, "Id", "attribute")) {
+			console.error("GoRestaurantsMain GoDeliveryAreaValidationMixin: missing Id attribute");
+			failed = true;
+		}
+		if (!hasMember(deliveryMixinThis, "getButtonMenuItem", "method")) {
+			console.error(
+				"GoRestaurantsMain GoDeliveryAreaValidationMixin: missing getButtonMenuItem from host VM chain"
+			);
+			failed = true;
+		}
+		if (hasMember(deliveryMixinThis, "getSecondCloseReasonFilter", "method")) {
+			console.error(
+				"GoRestaurantsMain GoDeliveryAreaValidationMixin: must not include LeadPageV2-only getSecondCloseReasonFilter"
+			);
+			failed = true;
+		}
+		const deliveryMixinSrc = fs.readFileSync(deliveryMixinPath, "utf8");
+		if (
+			!collectThisMemberAccesses(deliveryMixinSrc).some(
+				(a) => a.kind === "attribute" && a.name === "Id"
+			)
+		) {
+			console.error(
+				"GoRestaurantsMain GoDeliveryAreaValidationMixin: missing this.get(\"Id\") access"
+			);
+			failed = true;
+		}
+	}
+
+	// GoCrossSellCommunicationModalBoxMixin
+	const crossSellMixinPath = requirePkgFile(
+		"GoCrossSellCommunicationModalBoxMixin/GoCrossSellCommunicationModalBoxMixin.js"
+	);
+	if (crossSellMixinPath) {
+		const crossSellMixinThis = index.resolveThisMembers(crossSellMixinPath);
+		crossSellMixinCount = crossSellMixinThis.length;
+		if (
+			!hasMember(crossSellMixinThis, "showCrossSellCommunicationInputBox", "method") &&
+			!hasMember(crossSellMixinThis, "onSendCrossSellMessageButtonClick", "method")
+		) {
+			console.error(
+				"GoRestaurantsMain GoCrossSellCommunicationModalBoxMixin: missing mixin methods"
+			);
+			failed = true;
+		}
+		if (
+			!hasMember(crossSellMixinThis, "getButtonMenuItem", "method")
+		) {
+			console.error(
+				"GoRestaurantsMain GoCrossSellCommunicationModalBoxMixin: missing getButtonMenuItem from host VM chain"
+			);
+			failed = true;
+		}
+	}
+
+	// GoClientConstants
+	const clientConstantsPath = requirePkgFile("GoClientConstants/GoClientConstants.js");
+	if (clientConstantsPath) {
+		const constantsMod = index.ensureModule(clientConstantsPath);
+		if (!constantsMod || constantsMod.members.length < 5) {
+			console.error(
+				"GoRestaurantsMain GoClientConstants: expected >= 5 parse members",
+				constantsMod?.members.length
+			);
+			failed = true;
+		}
+		const clientConsts = index.resolveMembers("GoClientConstants", true);
+		const leadType = clientConsts.find((m) => m.name === "LeadType");
+		if (!leadType) {
+			console.error("GoRestaurantsMain GoClientConstants: missing LeadType");
+			failed = true;
+		} else {
+			const leadTypeChildren = leadType.children || [];
+			const nestedLeadType = index.resolveMembers("GoClientConstants.LeadType", true);
+			const hasRestaurants =
+				leadTypeChildren.some((c) => c.name === "Restaurants") ||
+				nestedLeadType.some((c) => c.name === "Restaurants");
+			if (leadTypeChildren.length && !hasRestaurants) {
+				console.error(
+					"GoRestaurantsMain GoClientConstants: LeadType missing Restaurants",
+					leadTypeChildren.map((c) => c.name),
+					nestedLeadType.map((c) => c.name)
+				);
+				failed = true;
+			}
+		}
+	}
+
+	// GoPlacePage
+	const goPlacePagePath = requirePkgFile("GoPlacePage/GoPlacePage.js");
+	if (goPlacePagePath) {
+		const placeMod = index.ensureModule(goPlacePagePath);
+		if (placeMod?.entitySchemaName !== "GoPlace") {
+			console.error(
+				"GoRestaurantsMain GoPlacePage: expected entitySchemaName GoPlace",
+				placeMod?.entitySchemaName
+			);
+			failed = true;
+		}
+		const placeThis = index.resolveThisMembers(goPlacePagePath);
+		goPlacePageCount = placeThis.length;
+		if (
+			!hasMember(placeThis, "GoClient", "attribute") &&
+			!hasMember(placeThis, "GoPathModuleContainerVisible", "attribute")
+		) {
+			console.error(
+				"GoRestaurantsMain GoPlacePage: missing GoClient or GoPathModuleContainerVisible"
+			);
+			failed = true;
+		}
+		const placeMsgs = index.resolveSchemaMessages(goPlacePagePath);
+		if (placeMsgs.GetPlaceInfo?.direction !== "subscribe") {
+			console.error(
+				"GoRestaurantsMain GoPlacePage: GetPlaceInfo should be subscribe",
+				placeMsgs.GetPlaceInfo
+			);
+			failed = true;
+		}
+		if (!index.findSchemaMessageLocations(goPlacePagePath, "GetPlaceInfo").length) {
+			console.error(
+				"GoRestaurantsMain GoPlacePage: findSchemaMessageLocations GetPlaceInfo empty"
+			);
+			failed = true;
+		}
+		if (
+			!hasMember(placeThis, "GoAdminkaId", "attribute") &&
+			!hasMember(placeThis, "GoDeliveryType", "attribute")
+		) {
+			console.error(
+				"GoRestaurantsMain GoPlacePage: missing GoAdminkaId or GoDeliveryType entity column"
+			);
+			failed = true;
+		}
+	}
+
+	// GoPlaceDetailV2
+	const goPlaceDetailPath = requirePkgFile("GoPlaceDetailV2/GoPlaceDetailV2.js");
+	if (goPlaceDetailPath) {
+		const detailThis = index.resolveThisMembers(goPlaceDetailPath);
+		goPlaceDetailCount = detailThis.length;
+		if (!hasMember(detailThis, "init", "method")) {
+			console.error("GoRestaurantsMain GoPlaceDetailV2: missing init method");
+			failed = true;
+		}
+		const detailMsgs = index.resolveSchemaMessages(goPlaceDetailPath);
+		if (detailMsgs.GetSelectedPlaces?.direction !== "subscribe") {
+			console.error(
+				"GoRestaurantsMain GoPlaceDetailV2: GetSelectedPlaces should be subscribe",
+				detailMsgs.GetSelectedPlaces
+			);
+			failed = true;
+		}
+		if (hasMember(detailThis, "Title", "attribute")) {
+			console.error("GoRestaurantsMain GoPlaceDetailV2: must not include Title attribute");
+			failed = true;
+		}
+		const detailSchemaType = index.hierarchy.resolveSchemaType("GoPlaceDetailV2");
+		const detailCardTypes = new Set([
+			"MODULE_VIEW_MODEL_SCHEMA",
+			"GRID_DETAIL_VIEW_MODEL_SCHEMA",
+			"DETAIL_VIEW_MODEL_SCHEMA",
+			"MODULE"
+		]);
+		if (
+			hasMember(detailThis, "Id", "attribute") &&
+			detailSchemaType &&
+			detailCardTypes.has(detailSchemaType)
+		) {
+			console.error(
+				"GoRestaurantsMain GoPlaceDetailV2: Id attribute on detail schema type",
+				detailSchemaType
+			);
+			failed = true;
+		}
+	}
+
+	// OpportunityPageV2
+	const opportunityPagePath = requirePkgFile("OpportunityPageV2/OpportunityPageV2.js");
+	if (opportunityPagePath) {
+		const oppSrc = fs.readFileSync(opportunityPagePath, "utf8");
+		const oppAccesses = collectThisMemberAccesses(oppSrc);
+		if (
+			!oppAccesses.some(
+				(a) => a.kind === "sandboxPublish" && a.name === "GetHistoryState"
+			)
+		) {
+			console.error(
+				"GoRestaurantsMain OpportunityPageV2: missing sandboxPublish GetHistoryState"
+			);
+			failed = true;
+		}
+		const histHits = index.findSchemaMessageLocations(
+			opportunityPagePath,
+			"GetHistoryState"
+		);
+		if (!histHits.some((hit) => /NavigationModule/i.test(hit.filePath))) {
+			console.error(
+				"GoRestaurantsMain OpportunityPageV2: GetHistoryState should resolve to NavigationModule",
+				histHits
+			);
+			failed = true;
+		}
+		const oppPub = index
+			.resolveSandboxMessages(opportunityPagePath, "publish")
+			.map((m) => m.name);
+		if (!oppPub.includes("GetHistoryState") || !oppPub.includes("PushHistoryState")) {
+			console.error(
+				"GoRestaurantsMain OpportunityPageV2: publish messages missing history",
+				oppPub
+			);
+			failed = true;
+		}
+		const oppThis = index.resolveThisMembers(opportunityPagePath);
+		if (!hasMember(oppThis, "GoCrossSellCommunicationModalBoxMixin", "namespace")) {
+			console.error(
+				"GoRestaurantsMain OpportunityPageV2: missing GoCrossSellCommunicationModalBoxMixin namespace"
+			);
+			failed = true;
+		}
+	}
+
+	// MainHeaderSchema
+	const mainHeaderBatteryPath = requirePkgFile("MainHeaderSchema/MainHeaderSchema.js");
+	if (mainHeaderBatteryPath) {
+		const headerThis = index.resolveThisMembers(mainHeaderBatteryPath);
+		if (!hasMember(headerThis, "CanAbilityToCopyALinkToAPost", "attribute")) {
+			console.error(
+				"GoRestaurantsMain MainHeaderSchema: missing CanAbilityToCopyALinkToAPost"
+			);
+			failed = true;
+		}
+		const headerMsgs = index.resolveSchemaMessages(mainHeaderBatteryPath);
+		if (headerMsgs.GoPassCardUrl?.direction !== "publish") {
+			console.error(
+				"GoRestaurantsMain MainHeaderSchema: GoPassCardUrl should be publish",
+				headerMsgs.GoPassCardUrl
+			);
+			failed = true;
+		}
+		if (!hasMember(headerThis, "GoShowModalBoxUserTaskMixin", "namespace")) {
+			console.error(
+				"GoRestaurantsMain MainHeaderSchema: missing GoShowModalBoxUserTaskMixin namespace"
+			);
+			failed = true;
+		}
+	}
+
+	// GoEncryptedDataUtils
+	const encryptedUtilsPath = requirePkgFile(
+		"GoEncryptedDataUtils/GoEncryptedDataUtils.js"
+	);
+	if (encryptedUtilsPath) {
+		const utilsThis = index.resolveThisMembers(encryptedUtilsPath);
+		encryptedUtilsCount = utilsThis.length;
+		if (
+			!hasMember(utilsThis, "decryptValues", "method") &&
+			!hasMember(utilsThis, "getLookupWithEncryptionId", "method")
+		) {
+			console.error(
+				"GoRestaurantsMain GoEncryptedDataUtils: missing decryptValues or getLookupWithEncryptionId"
+			);
+			failed = true;
+		}
+		if (hasMember(utilsThis, "Title", "attribute")) {
+			console.error("GoRestaurantsMain GoEncryptedDataUtils: must not include Title attribute");
+			failed = true;
+		}
+	}
+
+	// GoOpportunityPrimaryConnectionPageV2
+	const oppConnPath = requirePkgFile(
+		"GoOpportunityPrimaryConnectionPageV2/GoOpportunityPrimaryConnectionPageV2.js"
+	);
+	if (oppConnPath) {
+		const oppConnSrc = fs.readFileSync(oppConnPath, "utf8");
+		const oppConnAccesses = collectThisMemberAccesses(oppConnSrc);
+		if (
+			!oppConnAccesses.some(
+				(a) => a.kind === "sandboxSubscribe" && a.name === "OpenNewTab"
+			)
+		) {
+			console.error(
+				"GoRestaurantsMain GoOpportunityPrimaryConnectionPageV2: missing sandboxSubscribe OpenNewTab"
+			);
+			failed = true;
+		}
+		let oppConnMsgs;
+		try {
+			oppConnMsgs = index.resolveSchemaMessages(oppConnPath);
+			index.findSchemaMessageLocations(oppConnPath, "OpenNewTab");
+		} catch (err) {
+			console.error(
+				"GoRestaurantsMain GoOpportunityPrimaryConnectionPageV2: message resolution threw",
+				err
+			);
+			failed = true;
+		}
+		if (oppConnMsgs?.OpenNewTab && oppConnMsgs.OpenNewTab.direction !== "subscribe") {
+			console.error(
+				"GoRestaurantsMain GoOpportunityPrimaryConnectionPageV2: OpenNewTab should be subscribe",
+				oppConnMsgs.OpenNewTab
+			);
+			failed = true;
+		}
+		const oppConnThis = index.resolveThisMembers(oppConnPath);
+		if (!hasMember(oppConnThis, "GoDeliveryAreaValidationMixin", "namespace")) {
+			console.error(
+				"GoRestaurantsMain GoOpportunityPrimaryConnectionPageV2: missing GoDeliveryAreaValidationMixin"
+			);
+			failed = true;
+		}
+		if (
+			!hasMember(oppConnThis, "GoCrossSellCommunicationModalBoxMixin", "namespace")
+		) {
+			console.error(
+				"GoRestaurantsMain GoOpportunityPrimaryConnectionPageV2: missing GoCrossSellCommunicationModalBoxMixin"
+			);
+			failed = true;
+		}
+	}
+
+	// Lead entity metadata
+	const leadMetaPath = path.join(pkgSchemas, "Lead/metadata.json");
+	if (!fs.existsSync(leadMetaPath)) {
+		console.error("GoRestaurantsMain: missing Lead/metadata.json", leadMetaPath);
+		failed = true;
+	} else {
+		const leadPkgCols = parsePkgEntityColumns(fs.readFileSync(leadMetaPath, "utf8"));
+		if (!leadPkgCols.length) {
+			console.error("GoRestaurantsMain: parsePkgEntityColumns Lead empty");
+			failed = true;
+		}
+	}
+	const leadResDir = path.join(
+		root,
+		"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Resources/Lead.Entity"
+	);
+	if (fs.existsSync(leadResDir)) {
+		const leadResXml = fs
+			.readdirSync(leadResDir)
+			.find((name) => name.endsWith(".xml"));
+		if (leadResXml) {
+			parseEntityResourceCaptions(
+				fs.readFileSync(path.join(leadResDir, leadResXml), "utf8")
+			);
+		}
+	}
+
+	// C# battery
+	const csFiles = walkExtFiles(pkgSchemas, ".cs");
+	if (csFiles.length < 50) {
+		console.error(
+			"GoRestaurantsMain: expected >= 50 C# files, got",
+			csFiles.length
+		);
+		failed = true;
+	}
+	const specificCsFiles = [
+		"GoRestaurantsAppEventListener/GoRestaurantsAppEventListener.cs",
+		"GoServerConstants/GoServerConstants.cs",
+		"GoLeadEventListener/GoLeadEventListener.cs"
+	];
+	for (const rel of specificCsFiles) {
+		const csPath = requirePkgFile(rel);
+		if (!csPath) {
+			continue;
+		}
+		const csSrc = fs.readFileSync(csPath, "utf8");
+		try {
+			const issues = collectCsharpStyleIssues(csSrc);
+			if (
+				rel.startsWith("GoRestaurantsAppEventListener") &&
+				issues.some((i) => i.kind === "allmanBrace" || i.kind === "allmanCuddle")
+			) {
+				console.error(
+					"GoRestaurantsMain GoRestaurantsAppEventListener: unexpected Allman issues",
+					issues.filter((i) => i.kind === "allmanBrace" || i.kind === "allmanCuddle")
+				);
+				failed = true;
+			}
+		} catch (err) {
+			console.error("GoRestaurantsMain: C# style threw on", csPath, err);
+			failed = true;
+		}
+	}
+	for (const csPath of csFiles.slice(0, 40)) {
+		try {
+			collectCsharpStyleIssues(fs.readFileSync(csPath, "utf8"));
+			csScanned++;
+		} catch (err) {
+			console.error("GoRestaurantsMain: C# style threw on", csPath, err);
+			failed = true;
+		}
+	}
+
+	console.log(
+		"GoRestaurantsMain battery summary:",
+		`parsed=${parsedCount}`,
+		`LeadPageV2=${leadPageCount}`,
+		`LeadSectionV2=${leadSectionCount}`,
+		`deliveryMixin=${deliveryMixinCount}`,
+		`crossSellMixin=${crossSellMixinCount}`,
+		`GoPlacePage=${goPlacePageCount}`,
+		`GoPlaceDetailV2=${goPlaceDetailCount}`,
+		`GoEncryptedDataUtils=${encryptedUtilsCount}`,
+		`csScanned=${csScanned}/${csFiles.length}`
+	);
 }
 
 if (failed) {

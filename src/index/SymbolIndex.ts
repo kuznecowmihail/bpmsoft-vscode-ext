@@ -80,6 +80,15 @@ function isPageSchema(mod: IndexedModule): boolean {
 	return mod.kind === "page";
 }
 
+function mixinIndexKeys(className: string): string[] {
+	const keys = [className];
+	const short = className.replace(/^BPMSoft\./, "");
+	if (short !== className) {
+		keys.push(short);
+	}
+	return keys;
+}
+
 /**
  * In-memory symbol index for AMD modules and platform stubs.
  */
@@ -94,6 +103,7 @@ export class SymbolIndex {
 	private coreMessages: IndexedSchemaMessage[] = [];
 	private workspaceRoots: string[] = [];
 	private entityCache = new Map<string, IndexedModule | null>();
+	private mixinKeyToHostPaths = new Map<string, Set<string>>();
 	readonly hierarchy = new SchemaHierarchyResolver();
 
 	setPlatformStubs(members: PlatformStubMember[]): void {
@@ -127,6 +137,7 @@ export class SymbolIndex {
 		this.modulesByPath.clear();
 		this.alternateToModules.clear();
 		this.entityCache.clear();
+		this.mixinKeyToHostPaths.clear();
 	}
 
 	/** Drop every in-memory index (modules, stubs, hierarchy). */
@@ -176,6 +187,7 @@ export class SymbolIndex {
 		if (mod.className) {
 			this.pushNamed(this.alternateToModules, mod.className, mod);
 		}
+		this.indexMixinHost(mod);
 	}
 
 	removeByPath(filePath: string): void {
@@ -183,6 +195,7 @@ export class SymbolIndex {
 		if (!prev) {
 			return;
 		}
+		this.unindexMixinHost(prev);
 		this.modulesByPath.delete(filePath);
 		this.pullNamed(this.modulesByName, prev.name, filePath);
 		if (prev.className && prev.className !== prev.name) {
@@ -538,6 +551,7 @@ export class SymbolIndex {
 			add(owner);
 		}
 		this.forEachMixinModule(chainMods, add);
+		this.forEachMixinHostSchemaOwner(mod, add);
 		this.appendCoreMessages(result);
 		return result;
 	}
@@ -592,6 +606,7 @@ export class SymbolIndex {
 			consider(owner);
 		}
 		this.forEachMixinModule(chainMods, consider);
+		this.forEachMixinHostSchemaOwner(mod, consider);
 		this.appendCoreMessageLocations(hits, seen, messageName);
 		return hits;
 	}
@@ -839,9 +854,36 @@ export class SymbolIndex {
 	}
 
 	private collectOwnerChain(mod: IndexedModule): IndexedModule[] {
-		return isPageSchema(mod)
-			? this.collectSchemaHierarchyModules(mod)
-			: [mod, ...this.collectInheritanceChain(mod)];
+		if (isPageSchema(mod)) {
+			return this.collectSchemaHierarchyModules(mod);
+		}
+		const { ordered, push } = this.newModuleList();
+		push(mod);
+		for (const parent of this.collectInheritanceChain(mod)) {
+			push(parent);
+		}
+		this.appendMixinHostSchemaVmLayers(mod, push);
+		return ordered;
+	}
+
+	private appendMixinHostSchemaVmLayers(
+		mod: IndexedModule,
+		push: (m: IndexedModule | undefined) => void
+	): void {
+		const hosts = this.findMixinHostModules(mod).filter((h) => isPageSchema(h));
+		if (!hosts.length) {
+			return;
+		}
+		this.appendExtClassChain(this.schemaViewModelClassName(), push);
+		const seenExtend = new Set<string>();
+		for (const host of hosts) {
+			const ext = this.hierarchy.resolvePlatformExtendClass(host.name);
+			if (!ext || seenExtend.has(ext)) {
+				continue;
+			}
+			seenExtend.add(ext);
+			this.appendExtClassChain(ext, push);
+		}
 	}
 
 	private newModuleList(): {
@@ -976,6 +1018,171 @@ export class SymbolIndex {
 			unique.set(m.filePath, m);
 		}
 		return Array.from(unique.values());
+	}
+
+	private forEachMixinHostKey(
+		mod: IndexedModule,
+		visit: (key: string) => void
+	): void {
+		for (const className of Object.values(mod.mixins || {})) {
+			if (!className) {
+				continue;
+			}
+			for (const key of mixinIndexKeys(className)) {
+				visit(key);
+			}
+		}
+	}
+
+	private indexMixinHost(mod: IndexedModule): void {
+		this.forEachMixinHostKey(mod, (key) => {
+			let set = this.mixinKeyToHostPaths.get(key);
+			if (!set) {
+				set = new Set();
+				this.mixinKeyToHostPaths.set(key, set);
+			}
+			set.add(mod.filePath);
+		});
+	}
+
+	private unindexMixinHost(mod: IndexedModule): void {
+		this.forEachMixinHostKey(mod, (key) => {
+			const set = this.mixinKeyToHostPaths.get(key);
+			if (!set) {
+				return;
+			}
+			set.delete(mod.filePath);
+			if (!set.size) {
+				this.mixinKeyToHostPaths.delete(key);
+			}
+		});
+	}
+
+	private moduleAsMixinKeys(mod: IndexedModule): string[] {
+		const keys = new Set<string>();
+		for (const raw of [mod.name, mod.className, mod.alternateClassName]) {
+			if (!raw) {
+				continue;
+			}
+			for (const k of mixinIndexKeys(raw)) {
+				keys.add(k);
+			}
+		}
+		return Array.from(keys);
+	}
+
+	private forEachMixinHostSchemaOwner(
+		mod: IndexedModule,
+		visit: (owner: IndexedModule) => void
+	): void {
+		const seen = new Set<string>();
+		const consider = (owner: IndexedModule) => {
+			if (seen.has(owner.filePath)) {
+				return;
+			}
+			seen.add(owner.filePath);
+			visit(owner);
+		};
+		for (const host of this.findMixinHostModules(mod).filter((h) =>
+			isPageSchema(h)
+		)) {
+			const chainMods = this.collectOwnerChain(host);
+			for (const owner of chainMods) {
+				consider(owner);
+			}
+			this.forEachMixinModule(chainMods, consider);
+		}
+	}
+
+	private findMixinHostModules(mod: IndexedModule): IndexedModule[] {
+		const paths = new Set<string>();
+		for (const key of this.moduleAsMixinKeys(mod)) {
+			const set = this.mixinKeyToHostPaths.get(key);
+			if (!set) {
+				continue;
+			}
+			for (const p of set) {
+				if (p !== mod.filePath) {
+					paths.add(p);
+				}
+			}
+		}
+		const out: IndexedModule[] = [];
+		for (const p of paths) {
+			const host = this.modulesByPath.get(p);
+			if (host) {
+				out.push(host);
+			}
+		}
+		return out;
+	}
+
+	private entityNameFromChain(owners: IndexedModule[]): string | undefined {
+		return owners
+			.map((m) => m.entitySchemaName)
+			.find((name): name is string => Boolean(name));
+	}
+
+	private collectMixinCardHosts(mod: IndexedModule): IndexedModule[] {
+		return this.findMixinHostModules(mod).filter((host) =>
+			this.pageChainBindsEntityColumns(this.collectOwnerChain(host))
+		);
+	}
+
+	private collectCardHostEntityNames(mod: IndexedModule): string[] {
+		const seen = new Set<string>();
+		const names: string[] = [];
+		for (const host of this.collectMixinCardHosts(mod)) {
+			const name = this.entityNameFromChain(this.collectOwnerChain(host));
+			if (name && !seen.has(name)) {
+				seen.add(name);
+				names.push(name);
+			}
+		}
+		return names;
+	}
+
+	private intersectEntityModules(names: string[]): IndexedModule | undefined {
+		const mods = names
+			.map((n) => this.getEntityModule(n))
+			.filter((m): m is IndexedModule => Boolean(m));
+		if (!mods.length) {
+			return undefined;
+		}
+		if (mods.length === 1) {
+			return mods[0];
+		}
+		const sets = mods.map((m) => new Set(m.members.map((x) => x.name)));
+		const members = mods[0].members.filter((mem) =>
+			sets.every((s) => s.has(mem.name))
+		);
+		if (!members.length) {
+			return undefined;
+		}
+		return {
+			name: names.join("+"),
+			filePath: mods[0].filePath,
+			kind: "unknown",
+			dependencies: [],
+			paramNames: [],
+			members: members.map((m) => ({ ...m })),
+			mixins: {},
+			messages: {},
+			entitySchemaName: names[0]
+		};
+	}
+
+	private getEntityModuleFromMixinHosts(
+		mod: IndexedModule
+	): IndexedModule | undefined {
+		const names = this.collectCardHostEntityNames(mod);
+		if (!names.length) {
+			return undefined;
+		}
+		if (names.length === 1) {
+			return this.getEntityModule(names[0]);
+		}
+		return this.intersectEntityModules(names);
 	}
 
 	private forEachMixinModule(
@@ -1306,7 +1513,7 @@ export class SymbolIndex {
 	 * (`MODULE_VIEW_MODEL_SCHEMA`) keep `entitySchemaName` / `entitySchema`
 	 * but do not bind columns onto the view model.
 	 */
-	private schemaBindsEntityColumns(owners: IndexedModule[]): boolean {
+	private pageChainBindsEntityColumns(owners: IndexedModule[]): boolean {
 		const page = owners.find((m) => m.kind === "page");
 		if (!page) {
 			return false;
@@ -1318,16 +1525,29 @@ export class SymbolIndex {
 		return true;
 	}
 
+	private schemaBindsEntityColumns(owners: IndexedModule[]): boolean {
+		if (this.pageChainBindsEntityColumns(owners)) {
+			return true;
+		}
+		const current = owners[0];
+		if (!current) {
+			return false;
+		}
+		return this.collectMixinCardHosts(current).length > 0;
+	}
+
 	private getEntityModuleForChain(
 		owners: IndexedModule[]
 	): IndexedModule | undefined {
-		const entityName = owners
-			.map((m) => m.entitySchemaName)
-			.find((name): name is string => Boolean(name));
-		if (!entityName) {
+		const ownName = this.entityNameFromChain(owners);
+		if (ownName) {
+			return this.getEntityModule(ownName);
+		}
+		const current = owners[0];
+		if (!current) {
 			return undefined;
 		}
-		return this.getEntityModule(entityName);
+		return this.getEntityModuleFromMixinHosts(current);
 	}
 
 	private getEntityModule(entityName: string): IndexedModule | undefined {
