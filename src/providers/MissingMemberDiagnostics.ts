@@ -209,7 +209,7 @@ function diagnosticForAccess(
 		return makeDiag(
 			document,
 			access,
-			vscode.DiagnosticSeverity.Error,
+			vscode.DiagnosticSeverity.Warning,
 			DIAG_MISSING_BINDTO,
 			`«${access.name}» из bindTo не найден как метод или атрибут схемы или иерархии`
 		);

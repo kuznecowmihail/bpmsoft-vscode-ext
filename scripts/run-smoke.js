@@ -2,6 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
+const { parsePkgEntityColumns, parseEntityResourceCaptions } = require("../out/parse/entityMetadata");
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
@@ -566,9 +567,65 @@ if (!leadTitleCol) {
 if (!leadIndustryCol?.children?.some((c) => c.name === "displayValue")) {
 	console.error("Expected Lead.Industry lookup fields value/displayValue");
 	failed = true;
-	} else {
-		console.log("Lead entity columns OK", "Title", !!leadTitleCol, "Industry.lookup", true);
+} else {
+	console.log("Lead entity columns OK", "Title", !!leadTitleCol, "Industry.lookup", true);
+}
+const pkgWeighted = thisMembers.find(
+	(m) => m.name === "GoWeightedPenetration" && m.kind === "attribute"
+);
+const pkgPos = thisMembers.find(
+	(m) => m.name === "GoPosSystem" && m.kind === "attribute"
+);
+if (!pkgWeighted) {
+	console.error(
+		"Expected Lead Pkg column this.$GoWeightedPenetration from Schemas/Lead/metadata.json"
+	);
+	failed = true;
+} else if (!/Взвешенное проникновение/.test(pkgWeighted.documentation || "")) {
+	console.error(
+		"Expected GoWeightedPenetration caption from Lead.Entity resource.ru-RU.xml",
+		pkgWeighted.documentation
+	);
+	failed = true;
+}
+if (
+	!pkgPos?.children?.some((c) => c.name === "value") ||
+	!pkgPos?.children?.some((c) => c.name === "displayValue")
+) {
+	console.error(
+		"Expected Lead Pkg lookup this.$GoPosSystem.value/displayValue from metadata D2 S4/E17/E18"
+	);
+	failed = true;
+} else {
+	console.log(
+		"Lead Pkg entity columns OK",
+		"GoWeightedPenetration",
+		!!pkgWeighted,
+		"GoPosSystem.lookup",
+		true
+	);
+}
+{
+	const weightedHits = index.findThisMemberLocations(
+		leadPath,
+		"GoWeightedPenetration",
+		"attribute"
+	);
+	const weightedLoc = weightedHits[0];
+	const weightedFile = (
+		weightedLoc?.member.filePath ||
+		weightedLoc?.module.filePath ||
+		""
+	).replace(/\\/g, "/");
+	if (!/\/Schemas\/Lead\/metadata\.json$/i.test(weightedFile)) {
+		console.error(
+			"F12 GoWeightedPenetration should open Pkg metadata.json, not conf",
+			weightedFile,
+			weightedLoc?.module.filePath
+		);
+		failed = true;
 	}
+}
 	{
 		const modalPath = path.join(
 			root,
@@ -1535,6 +1592,50 @@ if (!syntheticEntityCols.some((m) => m.name === "Owner" && m.children?.some((c) 
 	failed = true;
 } else {
 	console.log("synthetic entity columns OK", syntheticEntityCols.map((m) => m.name).join(","));
+}
+
+{
+	const pkgCols = parsePkgEntityColumns(
+		`
++ MetaData.Schema.D2 {
+  "UId": "8e4b74fb-9638-cb3a-4ab8-b5553f702122",
+  "A2": "GoWeightedPenetration",
+  "S2": "325a73b8-0f47-44a0-8412-7606f78003ac",
+  "E16": true
+}
++ MetaData.Schema.D2 {
+  "UId": "f46d3e53-a1a5-f7c4-b834-09e27301bf26",
+  "A2": "GoPosSystem",
+  "S4": "b37ed1d8-c533-4c72-8849-d1451d57f78a",
+  "E17": "GoPosSystemId",
+  "E18": "GoPosSystemName"
+}
+`,
+		"/tmp/Pkg/Go/Schemas/Lead/metadata.json"
+	);
+	const weighted = pkgCols.find((m) => m.name === "GoWeightedPenetration");
+	const pos = pkgCols.find((m) => m.name === "GoPosSystem");
+	if (!weighted || weighted.children?.length) {
+		console.error("Expected plain Pkg column GoWeightedPenetration without lookup children");
+		failed = true;
+	} else if (
+		!pos?.children?.some((c) => c.name === "value") ||
+		!pos?.children?.some((c) => c.name === "displayValue")
+	) {
+		console.error("Expected Pkg lookup GoPosSystem value/displayValue");
+		failed = true;
+	} else {
+		const captions = parseEntityResourceCaptions(`
+			<Item Name="Columns.GoWeightedPenetration.Caption" Value="Взвешенное проникновение" />
+			<Item Name="Columns.GoPosSystem.Caption" Value="POS Система" />
+		`);
+		if (captions.get("GoWeightedPenetration")?.caption !== "Взвешенное проникновение") {
+			console.error("Expected parseEntityResourceCaptions Caption", captions);
+			failed = true;
+		} else {
+			console.log("Pkg entity metadata parse OK", pkgCols.map((m) => m.name).join(","));
+		}
+	}
 }
 
 {

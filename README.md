@@ -16,7 +16,7 @@
 | --- | --- |
 | `this.` | Методы, properties, атрибуты (`$Name`), **миксины** схемы/иерархии, колонки entity, `sandbox` / `Ext` / `BPMSoft` |
 | `this.MixinName.` / `this.mixins.MixinName.` | Методы и свойства этого миксина |
-| `this.$` | Атрибуты схемы и колонки `entitySchemaName` |
+| `this.$` | Атрибуты схемы и колонки `entitySchemaName` (`conf/content` + `Pkg/**/Schemas/{Entity}/metadata.json`) |
 | `this.get("` / `this.set("` | Имена атрибутов |
 | `this.sandbox.publish("` / `this.sandbox.subscribe("` | Сообщения из `messages` схемы/иерархии и ядра `NavigationModule` |
 | `diff` / `methods` → `bindTo: "` (ключи с кавычками или без) | Методы и атрибуты схемы/иерархии |
@@ -60,9 +60,9 @@ Hover по тем же конструкциям: вид члена, докуме
 | `this._foo` / `this.mixins.Name._foo` | член с `_` объявлен в **другом** файле | предупреждение | — |
 | `this.sandbox.publish("Msg")` | `Msg` нет в `messages` схемы/модуля/иерархии **или** направление не `PUBLISH` / `BIDIRECTIONAL` | предупреждение | — |
 | `this.sandbox.subscribe("Msg")` | `Msg` нет в `messages` **или** направление не `SUBSCRIBE` / `BIDIRECTIONAL` | предупреждение | — |
-| `diff` / `methods` → `bindTo: "foo"` | метода/атрибута `foo` нет в схеме и иерархии | ошибка | создать метод **или** атрибут `BOOLEAN` |
+| `diff` / `methods` → `bindTo: "foo"` | метода/атрибута `foo` нет в схеме и иерархии | предупреждение | создать метод **или** атрибут `BOOLEAN` |
 
-«Существует» = текущий файл + `Structures` (stack / `structureParent`) + миксины + колонки entity + `BPMSoft.BaseSchemaViewModel` (скрытый родитель SchemaBuilder) + `extend` платформы + runtime `sandbox` / `Ext` / `BPMSoft`.
+«Существует» = текущий файл + `Structures` (stack / `structureParent`) + миксины + колонки entity (`conf/content/{Entity}.js`, плюс колонки из `Pkg/**/Schemas/{Entity}/metadata.json`, подписи из `Pkg/**/Resources/{Entity}.Entity/resource.ru-RU.xml`) + `BPMSoft.BaseSchemaViewModel` (скрытый родитель SchemaBuilder) + `extend` платформы + runtime `sandbox` / `Ext` / `BPMSoft`. Если колонка есть и в conf, и в Pkg, берётся conf (включая описание).
 
 Не помечаются: `this.callParent`, `this.mixins` (сам объект), динамика (`this.get(name)`, `this.sandbox.publish(name)`, `this[expr]`), `this._foo` **в том же файле**, где член объявлен. Если в схеме или родителе есть блок `mixins`, локальные имена доступны как `this.Name` и `this.mixins.Name`; методы миксина — через точку. Сообщения `sandbox` ищутся в `messages` текущей схемы/модуля, родителей, миксинов и в ядре `NavigationModule`.
 

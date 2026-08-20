@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../index/types";
 import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
-import { enablePlatformStubs } from "./platformLookup";
+import { enablePlatformStubs } from "../config";
 
 const GLOBAL_IDENTIFIERS = [
 	{

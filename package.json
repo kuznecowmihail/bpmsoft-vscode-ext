@@ -2,7 +2,7 @@
   "name": "bpmsoft-intellisense",
   "displayName": "BPMSoft IntelliSense",
   "description": "Autocomplete and navigation for BPMSoft AMD modules in Pkg",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "kuzecowmihail",
   "engines": {
     "vscode": "^1.85.0"
@@ -82,7 +82,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --allow-missing-repository --skip-license",
-    "smoke": "npm run compile && node out/../scripts/run-smoke.js"
+		"smoke": "npm run compile && node scripts/run-smoke.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

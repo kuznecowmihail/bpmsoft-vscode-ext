@@ -2,12 +2,8 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, schemaMessageDirectionLabel } from "../index/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
-import {
-	enablePlatformStubs,
-	isPlatformPrefix,
-	markdownHover,
-	modulesFromExpr
-} from "./platformLookup";
+import { enablePlatformStubs } from "../config";
+import { isPlatformPrefix, markdownHover, modulesFromExpr } from "./platformLookup";
 
 function memberHover(
 	title: string,

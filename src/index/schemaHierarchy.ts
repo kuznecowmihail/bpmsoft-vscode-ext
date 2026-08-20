@@ -21,6 +21,11 @@ export interface HierarchyLayer {
 const STRUCTURES_RE =
 	/BPMSoft\.configuration\.Structures\["([^"]+)"\]\s*=\s*\{([^}]*)\}/;
 const MAX_SCHEMA_WALK_DEPTH = 50;
+const ENTITY_NAME_RE = /^[A-Za-z_][\w]*$/;
+
+function isEntityName(name: string): boolean {
+	return Boolean(name) && ENTITY_NAME_RE.test(name);
+}
 
 /**
  * Resolves Creatio/BPMSoft schema replacement chains via conf/content Structures.
@@ -82,7 +87,7 @@ export class SchemaHierarchyResolver {
 	}
 
 	resolveEntitySchemaPath(entityName: string): string | undefined {
-		if (!entityName || !/^[A-Za-z_][\w]*$/.test(entityName)) {
+		if (!isEntityName(entityName)) {
 			return undefined;
 		}
 		for (const dir of this.confContentDirs) {
@@ -92,6 +97,57 @@ export class SchemaHierarchyResolver {
 			}
 		}
 		return undefined;
+	}
+
+	/** Pkg/{Package}/Schemas/{Entity}/metadata.json — custom entity columns. */
+	resolveEntityPkgMetadataPaths(entityName: string): string[] {
+		return this.collectPkgEntityFiles(entityName, (pkg, name) =>
+			path.join(pkg, "Schemas", name, "metadata.json")
+		);
+	}
+
+	/** Pkg/{Package}/Resources/{Entity}.Entity — column captions. */
+	resolveEntityPkgResourceDirs(entityName: string): string[] {
+		return this.collectPkgEntityFiles(entityName, (pkg, name) =>
+			path.join(pkg, "Resources", `${name}.Entity`)
+		);
+	}
+
+	private collectPkgEntityFiles(
+		entityName: string,
+		joinFromPkg: (pkgDir: string, entityName: string) => string
+	): string[] {
+		if (!isEntityName(entityName)) {
+			return [];
+		}
+		const out: string[] = [];
+		for (const pkgDir of this.pkgPackageDirs()) {
+			const candidate = joinFromPkg(pkgDir, entityName);
+			if (fs.existsSync(candidate)) {
+				out.push(candidate);
+			}
+		}
+		return out;
+	}
+
+	private pkgPackageDirs(): string[] {
+		const out: string[] = [];
+		for (const root of this.configurationRoots) {
+			const pkgRoot = path.join(root, "Pkg");
+			if (!fs.existsSync(pkgRoot)) {
+				continue;
+			}
+			let packages: string[];
+			try {
+				packages = fs.readdirSync(pkgRoot);
+			} catch {
+				continue;
+			}
+			for (const pkg of packages) {
+				out.push(path.join(pkgRoot, pkg));
+			}
+		}
+		return out;
 	}
 
 	private parseStructure(schemaName: string): SchemaStructure | null {

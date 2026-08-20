@@ -913,14 +913,6 @@ function indexAmdAst(
 	return found;
 }
 
-function parseScript(
-	source: string
-): { ast: AnyNode; comments: acorn.Comment[] } | undefined {
-	const comments: acorn.Comment[] = [];
-	const ast = parseJs(source.replace(/^\uFEFF/, ""), comments);
-	return ast ? { ast, comments } : undefined;
-}
-
 /**
  * Columns from conf/content/{Entity}.js (Ext.define … columns: { Name: { dataValueType } }).
  */
@@ -928,12 +920,13 @@ export function parseEntityColumns(
 	source: string,
 	filePath: string
 ): IndexedMember[] {
-	const parsed = parseScript(source);
-	if (!parsed) {
+	const comments: acorn.Comment[] = [];
+	const ast = parseJs(source.replace(/^\uFEFF/, ""), comments);
+	if (!ast) {
 		return [];
 	}
 	let columns: IndexedMember[] = [];
-	walk.simple(parsed.ast, {
+	walk.simple(ast, {
 		CallExpression(node: AnyNode) {
 			if (columns.length || !isExtDefineCall(node)) {
 				return;
@@ -944,7 +937,7 @@ export function parseEntityColumns(
 			}
 			const columnsObj = findSchemaSection(classBody, "columns");
 			if (columnsObj) {
-				columns = collectSchemaAttributes(columnsObj, parsed.comments);
+				columns = collectSchemaAttributes(columnsObj, comments);
 			}
 		}
 	} as any);
@@ -1430,10 +1423,12 @@ export function getThisLookupAccessContext(
  * this.Ext / this.BPMSoft → same lookup as global Ext / BPMSoft.
  */
 export function rewriteThisRuntimePrefix(prefix: string): string | undefined {
-	if (prefix === "this.Ext" || prefix.startsWith("this.Ext.")) {
-		return prefix.slice("this.".length);
-	}
-	if (prefix === "this.BPMSoft" || prefix.startsWith("this.BPMSoft.")) {
+	if (
+		prefix === "this.Ext" ||
+		prefix.startsWith("this.Ext.") ||
+		prefix === "this.BPMSoft" ||
+		prefix.startsWith("this.BPMSoft.")
+	) {
 		return prefix.slice("this.".length);
 	}
 	return undefined;

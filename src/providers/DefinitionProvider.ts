@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember } from "../index/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
-import { enablePlatformStubs, isPlatformPrefix, modulesFromExpr } from "./platformLookup";
+import { enablePlatformStubs } from "../config";
+import { isPlatformPrefix, modulesFromExpr } from "./platformLookup";
 
 function filePosLocation(
 	filePath: string,
@@ -28,7 +29,10 @@ function hitLocation(hit: {
 	if (!hit?.member.position) {
 		return undefined;
 	}
-	return filePosLocation(hit.module.filePath, hit.member.position);
+	return filePosLocation(
+		hit.member.filePath || hit.module.filePath,
+		hit.member.position
+	);
 }
 
 function locationKey(loc: vscode.Location): string {
