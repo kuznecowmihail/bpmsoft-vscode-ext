@@ -436,6 +436,7 @@ export class SymbolIndex {
 		this.appendMixinMembers(chainMods, result, seen);
 		this.appendMixinAccessors(chainMods, result, seen);
 		this.appendEntityColumns(chainMods, result, seen);
+		this.appendEntitySchemaObject(chainMods, result, seen);
 		for (const member of this.modalBoxViewModelMembers(chainMods)) {
 			this.pushUnseen(result, seen, member);
 		}
@@ -1201,6 +1202,95 @@ export class SymbolIndex {
 		}
 	}
 
+	/**
+	 * `this.entitySchema` — instance of BPMSoft.BaseEntitySchema
+	 * (SchemaBuilder: BPMSoft.require(entitySchemaName)).
+	 */
+	private appendEntitySchemaObject(
+		owners: IndexedModule[],
+		result: IndexedMember[],
+		seen: Set<string>
+	): void {
+		const entityMod = this.getEntityModuleForChain(owners);
+		const children = this.entitySchemaObjectMembers(entityMod);
+		if (!children.length) {
+			return;
+		}
+		const member: IndexedMember = {
+			name: "entitySchema",
+			kind: "property",
+			detail: entityMod
+				? `BPMSoft.${entityMod.name}`
+				: "BPMSoft.BaseEntitySchema",
+			documentation: entityMod
+				? `Схема объекта ${entityMod.name} (BPMSoft.BaseEntitySchema)`
+				: "Схема объекта страницы (BPMSoft.BaseEntitySchema)",
+			children,
+			filePath: entityMod?.filePath || children[0]?.filePath
+		};
+		const existingIdx = result.findIndex((item) => item.name === "entitySchema");
+		if (existingIdx >= 0) {
+			const existing = result[existingIdx];
+			result[existingIdx] = {
+				...existing,
+				detail: member.detail || existing.detail,
+				documentation: existing.documentation || member.documentation,
+				filePath: existing.filePath || member.filePath,
+				position: existing.position || member.position,
+				children
+			};
+			return;
+		}
+		this.pushUnseen(result, seen, member);
+	}
+
+	private entitySchemaObjectMembers(
+		entityMod: IndexedModule | undefined
+	): IndexedMember[] {
+		const base =
+			this.pickNamedModule("BPMSoft.BaseEntitySchema") ||
+			this.pickNamedModule("BPMSoft.data.models.BaseEntitySchema") ||
+			this.pickNamedModule("BaseEntitySchema");
+		const mods: IndexedModule[] = [];
+		if (entityMod?.entityClassMembers?.length) {
+			mods.push({
+				...entityMod,
+				members: entityMod.entityClassMembers
+			});
+		}
+		if (base) {
+			mods.push(base, ...this.collectInheritanceChain(base));
+		}
+		const members = mods.length ? this.mergeMembers(mods, true) : [];
+		const columnChildren = (entityMod?.members || []).map((column) => ({
+			...column,
+			kind: column.kind === "attribute" ? "property" : column.kind
+		}));
+		const columnsIdx = members.findIndex((item) => item.name === "columns");
+		const columnsMember: IndexedMember = {
+			name: "columns",
+			kind: "property",
+			detail: entityMod ? `entity ${entityMod.name} columns` : "entity columns",
+			documentation: "Колонки схемы объекта",
+			children: columnChildren,
+			filePath:
+				(columnsIdx >= 0 ? members[columnsIdx].filePath : undefined) ||
+				entityMod?.filePath
+		};
+		if (columnsIdx >= 0) {
+			members[columnsIdx] = {
+				...members[columnsIdx],
+				...columnsMember,
+				detail: members[columnsIdx].detail || columnsMember.detail,
+				documentation:
+					members[columnsIdx].documentation || columnsMember.documentation
+			};
+		} else if (columnChildren.length) {
+			members.push(columnsMember);
+		}
+		return members;
+	}
+
 	private getEntityModuleForChain(
 		owners: IndexedModule[]
 	): IndexedModule | undefined {
@@ -1225,6 +1315,7 @@ export class SymbolIndex {
 		}
 		try {
 			const byName = new Map<string, IndexedMember>();
+			let classMembers: IndexedMember[] = [];
 			if (confPath) {
 				const source = fs.readFileSync(confPath, "utf8");
 				for (const member of parseEntityColumns(source, confPath)) {
@@ -1234,6 +1325,8 @@ export class SymbolIndex {
 						detail: member.detail || `entity ${entityName}`
 					});
 				}
+				const api = parseAmdModule(source, confPath);
+				classMembers = api?.members || [];
 			}
 			const captions = loadEntityColumnCaptions(
 				this.hierarchy.resolveEntityPkgResourceDirs(entityName)
@@ -1268,6 +1361,7 @@ export class SymbolIndex {
 				dependencies: [],
 				paramNames: [],
 				members,
+				entityClassMembers: classMembers,
 				mixins: {},
 				messages: {},
 				entitySchemaName: entityName

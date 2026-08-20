@@ -68,6 +68,11 @@ export interface IndexedModule {
 	extend?: string;
 	/** Client schema entity, e.g. Account → conf/content/Account.js columns */
 	entitySchemaName?: string;
+	/**
+	 * Ext.define members of conf/content/{Entity}.js for `this.entitySchema`
+	 * (name, uId, caption, …). Columns stay on `members`.
+	 */
+	entityClassMembers?: IndexedMember[];
 	/** messages: { Name: { direction: PUBLISH | SUBSCRIBE | BIDIRECTIONAL } } */
 	messages: Record<string, IndexedSchemaMessage>;
 	/**

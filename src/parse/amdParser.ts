@@ -264,6 +264,13 @@ function extractMessages(
 }
 
 function stringProp(obj: AnyNode, key: string): string | undefined {
+	return findStringProp(obj, key)?.value;
+}
+
+function findStringProp(
+	obj: AnyNode,
+	key: string
+): { value: string; prop: AnyNode } | undefined {
 	if (!obj || obj.type !== "ObjectExpression") {
 		return undefined;
 	}
@@ -273,7 +280,7 @@ function stringProp(obj: AnyNode, key: string): string | undefined {
 		}
 		const v = prop.value as AnyNode;
 		if (v?.type === "Literal" && typeof v.value === "string") {
-			return v.value;
+			return { value: v.value, prop };
 		}
 	}
 	return undefined;
@@ -784,9 +791,17 @@ function parseDefineCall(
 			module.kind = module.kind === "mixin" || module.kind === "class" ? module.kind : "page";
 			Object.assign(module.mixins, extractMixins(returnArg));
 			Object.assign(module.messages, extractMessages(returnArg, module.filePath, comments));
-			const entityName = stringProp(returnArg, "entitySchemaName");
-			if (entityName) {
-				module.entitySchemaName = entityName;
+			const entityProp = findStringProp(returnArg, "entitySchemaName");
+			if (entityProp) {
+				module.entitySchemaName = entityProp.value;
+				module.members.push({
+					name: "entitySchemaName",
+					kind: "property",
+					detail: entityProp.value,
+					documentation: `Имя объекта страницы: "${entityProp.value}"`,
+					position: posFromNode(entityProp.prop.key ?? entityProp.prop),
+					filePath
+				});
 			}
 			const methodsObj = findSchemaSection(returnArg, "methods");
 			if (methodsObj) {

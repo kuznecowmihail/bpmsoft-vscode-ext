@@ -14,7 +14,7 @@
 
 | Контекст | Что предлагается |
 | --- | --- |
-| `this.` | Методы, properties, атрибуты (`$Name`), **миксины** схемы/иерархии, колонки entity, `sandbox` / `Ext` / `BPMSoft` |
+| `this.` | Методы, properties, атрибуты (`$Name`), **миксины** схемы/иерархии, колонки entity, `entitySchemaName` / `entitySchema`, `sandbox` / `Ext` / `BPMSoft` |
 | `this.MixinName.` / `this.mixins.MixinName.` | Методы и свойства этого миксина |
 | `this.$` | Атрибуты схемы и колонки `entitySchemaName` (`conf/content` + `Pkg/**/Schemas/{Entity}/metadata.json`) |
 | `this.get("` / `this.set("` | Имена атрибутов |
