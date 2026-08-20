@@ -2,7 +2,7 @@
   "name": "bpmsoft-intellisense",
   "displayName": "BPMSoft IntelliSense",
   "description": "Autocomplete and navigation for BPMSoft AMD modules in Pkg",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "publisher": "kuzecowmihail",
   "engines": {
     "vscode": "^1.85.0"

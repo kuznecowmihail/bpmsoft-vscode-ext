@@ -4,6 +4,7 @@ import * as acorn from "acorn";
 import * as walk from "acorn-walk";
 import { IndexedMember, MemberKind, SourcePosition } from "../index/types";
 import { resolveAppLayouts, collectResourceRoots, uniquePaths } from "../index/workspaceLayout";
+import { resolveFactoryExportObject } from "../parse/amdAst";
 import { AnyNode, posFromNode, leadingComment } from "../parse/jsAst";
 
 /**
@@ -120,7 +121,7 @@ function extractSandboxPrototype(filePath: string): {
 			if (!factory) {
 				return;
 			}
-			const obj = resolveSandboxExportsObject(factory);
+			const obj = resolveFactoryExportObject(factory);
 			if (!obj) {
 				return;
 			}
@@ -222,58 +223,6 @@ function factoryArg(node: AnyNode): AnyNode | undefined {
 	return args.find(
 		(a) => a.type === "FunctionExpression" || a.type === "ArrowFunctionExpression"
 	);
-}
-
-function resolveSandboxExportsObject(factory: AnyNode): AnyNode | undefined {
-	let prototypeSource: AnyNode | undefined;
-	walk.simple(factory, {
-		AssignmentExpression(node: AnyNode) {
-			const left = node.left as AnyNode | undefined;
-			if (left?.type !== "MemberExpression" || left.computed) {
-				return;
-			}
-			const prop = left.property as AnyNode;
-			if (prop?.type !== "Identifier" || prop.name !== "prototype") {
-				return;
-			}
-			prototypeSource = node.right as AnyNode;
-		}
-		} as any);
-
-	if (prototypeSource?.type === "ObjectExpression") {
-		return prototypeSource;
-	}
-	if (prototypeSource?.type === "Identifier") {
-		const named = findObjectBinding(factory, prototypeSource.name as string);
-		if (named) {
-			return named;
-		}
-	}
-
-	let returned: AnyNode | undefined;
-	walk.simple(factory, {
-		ReturnStatement(node: AnyNode) {
-			const arg = node.argument as AnyNode | undefined;
-			if (arg?.type === "ObjectExpression") {
-				returned = arg;
-			}
-		}
-		} as any);
-	return returned;
-}
-
-function findObjectBinding(scope: AnyNode, name: string): AnyNode | undefined {
-	let found: AnyNode | undefined;
-	walk.simple(scope, {
-		VariableDeclarator(node: AnyNode) {
-			const id = node.id as AnyNode | undefined;
-			const init = node.init as AnyNode | undefined;
-			if (id?.type === "Identifier" && id.name === name && init?.type === "ObjectExpression") {
-				found = init;
-			}
-		}
-		} as any);
-	return found;
 }
 
 function objectMembers(

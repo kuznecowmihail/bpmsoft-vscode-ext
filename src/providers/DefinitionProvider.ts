@@ -43,7 +43,7 @@ function sameFile(a: string, b: string): boolean {
 	return a.replace(/\\/g, "/") === b.replace(/\\/g, "/");
 }
 
-/** Schema `methods: {}` — JS already maps this.foo. Ext.define class config does not. */
+/** Object-literal exports (`methods: {}`, AMD sandbox bootstrap, constants) — JS already maps this.foo. Ext.define class config does not. */
 function skipLocalMethod(
 	kind: IndexedMember["kind"],
 	filePath: string | undefined,
@@ -51,7 +51,9 @@ function skipLocalMethod(
 	schemaKind: string | undefined
 ): boolean {
 	return (
-		schemaKind === "page" &&
+		(schemaKind === "page" ||
+			schemaKind === "amd" ||
+			schemaKind === "constants") &&
 		kind === "method" &&
 		!!filePath &&
 		sameFile(filePath, current)

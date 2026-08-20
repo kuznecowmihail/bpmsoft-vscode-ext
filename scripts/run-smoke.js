@@ -585,6 +585,35 @@ if (orderLead && eventTracking) {
 	}
 }
 
+{
+	const bootstrapPath = path.join(root, "Resources/ui/BPMSoft/amd/bootstrap.js");
+	if (!fs.existsSync(bootstrapPath)) {
+		console.error("MISSING", bootstrapPath);
+		failed = true;
+	} else {
+		const bootMod = parseAmdModule(fs.readFileSync(bootstrapPath, "utf8"), bootstrapPath);
+		if (!bootMod || bootMod.name !== "sandbox") {
+			console.error("Expected parse bootstrap.js as sandbox", bootMod && bootMod.name);
+			failed = true;
+		} else if (bootMod.kind === "page" || bootMod.kind === "constants") {
+			console.error("Expected sandbox kind amd, got", bootMod.kind);
+			failed = true;
+		} else if (!bootMod.members.some((m) => m.name === "getCurrentModuleDynamicMessages" && m.kind === "method")) {
+			console.error("Expected getCurrentModuleDynamicMessages on sandbox module", bootMod.members.map((m) => m.name).slice(0, 20));
+			failed = true;
+		} else {
+			index.upsertModule(bootMod);
+			const bootThis = index.resolveThisMembers(bootstrapPath);
+			if (!bootThis.some((m) => m.name === "getCurrentModuleDynamicMessages" && m.kind === "method")) {
+				console.error("Expected this.getCurrentModuleDynamicMessages in bootstrap.js");
+				failed = true;
+			} else {
+				console.log("bootstrap this.getCurrentModuleDynamicMessages OK");
+			}
+		}
+	}
+}
+
 const leadPath = path.join(root, samples[1]);
 const thisMembers = index.resolveThisMembers(leadPath);
 console.log(

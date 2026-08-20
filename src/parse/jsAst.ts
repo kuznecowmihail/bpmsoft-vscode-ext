@@ -89,3 +89,40 @@ export function leadingComment(
 		.replace(/\n\s*\*/g, "\n")
 		.trim();
 }
+
+export function skipJsString(text: string, start: number, end: number): number {
+	const quote = text[start];
+	let i = start + 1;
+	while (i < end) {
+		if (quote === "`" && text[i] === "$" && text[i + 1] === "{") {
+			i += 2;
+			let depth = 1;
+			while (i < end && depth > 0) {
+				if (text[i] === "'" || text[i] === '"') {
+					i = skipJsString(text, i, end);
+					continue;
+				}
+				if (text[i] === "`") {
+					i = skipJsString(text, i, end);
+					continue;
+				}
+				if (text[i] === "{") {
+					depth++;
+				} else if (text[i] === "}") {
+					depth--;
+				}
+				i++;
+			}
+			continue;
+		}
+		if (text[i] === "\\") {
+			i += 2;
+			continue;
+		}
+		if (text[i] === quote) {
+			return i + 1;
+		}
+		i++;
+	}
+	return end;
+}
