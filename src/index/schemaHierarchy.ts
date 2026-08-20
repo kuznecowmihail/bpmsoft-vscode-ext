@@ -54,6 +54,8 @@ export class SchemaHierarchyResolver {
 	private confContentDirs: string[] = [];
 	private configurationRoots: string[] = [];
 	private structureCache = new Map<string, SchemaStructure | null>();
+	/** Conf `parseClientSchemaType` then Pkg `properties.json`; independent of structureCache. */
+	private schemaTypeCache = new Map<string, string | null>();
 	private platformExtendCache = new Map<string, string | null>();
 	private descriptorParentCache = new Map<string, string | null>();
 
@@ -95,6 +97,7 @@ export class SchemaHierarchyResolver {
 		this.confContentDirs = [];
 		this.configurationRoots = [];
 		this.structureCache.clear();
+		this.schemaTypeCache.clear();
 		this.platformExtendCache.clear();
 		this.descriptorParentCache.clear();
 	}
@@ -173,11 +176,18 @@ export class SchemaHierarchyResolver {
 	 * `properties.json`.
 	 */
 	resolveSchemaType(schemaName: string): string | undefined {
-		const structure = this.parseStructure(schemaName);
-		if (structure?.schemaType) {
-			return structure.schemaType;
+		const cached = this.schemaTypeCache.get(schemaName);
+		if (cached !== undefined) {
+			return cached || undefined;
 		}
-		return this.readPkgSchemaType(schemaName);
+		this.parseStructure(schemaName);
+		const fromConf = this.schemaTypeCache.get(schemaName);
+		if (fromConf) {
+			return fromConf;
+		}
+		const fromPkg = this.readPkgSchemaType(schemaName);
+		this.schemaTypeCache.set(schemaName, fromPkg || null);
+		return fromPkg;
 	}
 
 	private parseStructure(schemaName: string): SchemaStructure | null {
@@ -197,8 +207,15 @@ export class SchemaHierarchyResolver {
 					if (!parsed.schemaType) {
 						parsed.schemaType = parseClientSchemaType(head);
 					}
+					if (parsed.schemaType) {
+						this.schemaTypeCache.set(schemaName, parsed.schemaType);
+					}
 					this.structureCache.set(schemaName, parsed);
 					return parsed;
+				}
+				const confType = parseClientSchemaType(head);
+				if (confType) {
+					this.schemaTypeCache.set(schemaName, confType);
 				}
 			} catch {
 				// ignore
@@ -215,12 +232,11 @@ export class SchemaHierarchyResolver {
 				continue;
 			}
 			try {
-				const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as {
-					SchemaType?: string;
-				};
-				const raw = parsed.SchemaType?.trim();
-				if (raw) {
-					return pascalSchemaTypeToEnum(raw);
+				const type = parsePkgPropertiesSchemaType(
+					fs.readFileSync(filePath, "utf8")
+				);
+				if (type) {
+					return type;
 				}
 			} catch {
 				// ignore
@@ -673,6 +689,31 @@ export function pascalSchemaTypeToEnum(value: string): string {
 		return trimmed;
 	}
 	return trimmed.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
+}
+
+/**
+ * Schema type from Pkg `properties.json`.
+ * Creatio wraps fields in `Properties`; some dumps keep a top-level `SchemaType`.
+ */
+export function parsePkgPropertiesSchemaType(jsonText: string): string | undefined {
+	try {
+		const parsed = JSON.parse(jsonText.replace(/^\uFEFF/, "")) as {
+			SchemaType?: unknown;
+			Properties?: { SchemaType?: unknown };
+		};
+		const nested = parsed?.Properties?.SchemaType;
+		const top = parsed?.SchemaType;
+		const raw =
+			(typeof nested === "string" ? nested : undefined) ||
+			(typeof top === "string" ? top : undefined);
+		const trimmed = raw?.trim();
+		if (trimmed) {
+			return pascalSchemaTypeToEnum(trimmed);
+		}
+	} catch {
+		// ignore
+	}
+	return undefined;
 }
 
 /**

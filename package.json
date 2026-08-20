@@ -2,7 +2,7 @@
   "name": "bpmsoft-intellisense",
   "displayName": "BPMSoft IntelliSense",
   "description": "Autocomplete and navigation for BPMSoft AMD modules in Pkg",
-  "version": "1.0.6",
+  "version": "1.0.9",
   "publisher": "kuzecowmihail",
   "engines": {
     "vscode": "^1.85.0"
@@ -12,7 +12,6 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:bpmsoft.rebuildIndex",
     "onLanguage:javascript",
     "onLanguage:csharp",
     "workspaceContains:**/BPMSoft.Configuration.Dev.csproj",

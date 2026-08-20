@@ -20,7 +20,8 @@ const {
 	parseDescriptorParent,
 	shouldWalkDescriptorParent,
 	parseClientSchemaType,
-	pascalSchemaTypeToEnum
+	pascalSchemaTypeToEnum,
+	parsePkgPropertiesSchemaType
 } = require("../out/index/schemaHierarchy");
 
 function resolveSmokeRoot() {
@@ -425,6 +426,21 @@ if (pascalSchemaTypeToEnum("ModuleViewModelSchema") !== "MODULE_VIEW_MODEL_SCHEM
 }
 if (pascalSchemaTypeToEnum("EditViewModelSchema") !== "EDIT_VIEW_MODEL_SCHEMA") {
 	console.error("pascalSchemaTypeToEnum EditViewModelSchema");
+	failed = true;
+}
+if (
+	parsePkgPropertiesSchemaType(
+		'{"Properties":{"CreatedInVersion":"7.18.0","SchemaType":"ModuleViewModelSchema"}}'
+	) !== "MODULE_VIEW_MODEL_SCHEMA"
+) {
+	console.error("parsePkgPropertiesSchemaType Properties.SchemaType");
+	failed = true;
+}
+if (
+	parsePkgPropertiesSchemaType('{"SchemaType":"EditViewModelSchema"}') !==
+	"EDIT_VIEW_MODEL_SCHEMA"
+) {
+	console.error("parsePkgPropertiesSchemaType top-level SchemaType");
 	failed = true;
 }
 const leadExtend = parseStructurePlatformExtend(leadConf);
