@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, isPrivateMemberFromOtherFile, IndexedSchemaMessage, sandboxMessageIssue, schemaMessageDirectionLabel } from "../index/types";
 import { collectThisMemberAccesses, parseAmdAst, ThisMemberAccess } from "../parse/amdParser";
+import { collectEsqColumnAccesses } from "../parse/esqQuery";
 import { clearDebounceTimers, debounceDocument, isJsFile } from "./jsDocuments";
 
 export const DIAG_SOURCE = "BPMSoft";
@@ -16,6 +17,7 @@ export const DIAG_MISSING_MIXIN_PROPERTY = "bpmsoft.missingMixinProperty";
 export const DIAG_PRIVATE_MEMBER = "bpmsoft.privateMember";
 export const DIAG_UNKNOWN_SANDBOX_MESSAGE = "bpmsoft.unknownSandboxMessage";
 export const DIAG_SANDBOX_MESSAGE_DIRECTION = "bpmsoft.sandboxMessageDirection";
+export const DIAG_UNKNOWN_ESQ_COLUMN = "bpmsoft.unknownEsqColumn";
 
 const METHOD_ALLOWLIST = new Set(["callParent"]);
 const BARE_ALLOWLIST = new Set(["callParent", "mixins"]);
@@ -71,6 +73,23 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 			if (diag) {
 				diags.push(diag);
 			}
+		}
+		for (const access of collectEsqColumnAccesses(source)) {
+			if (!access.entityNames.length) {
+				continue;
+			}
+			if (this.index.isKnownEsqColumn(access.entityNames, access.column)) {
+				continue;
+			}
+			diags.push(
+				makeDiag(
+					document,
+					access,
+					vscode.DiagnosticSeverity.Warning,
+					DIAG_UNKNOWN_ESQ_COLUMN,
+					`Колонка «${access.column}» не найдена в объекте ${access.entityNames.join(", ")} (conf / metadata)`
+				)
+			);
 		}
 		this.collection.set(document.uri, diags);
 	}

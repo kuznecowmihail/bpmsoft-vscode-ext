@@ -165,3 +165,12 @@ export {
 	collectLocalMethodKeys
 } from "./amdOverride";
 export type { OverrideInsertContext } from "./amdOverride";
+
+export {
+	getRootSchemaNameContext,
+	getQueryColumnContext,
+	resolveQueryEntities,
+	resolveQueryClassNames,
+	collectEsqColumnAccesses
+} from "./esqQuery";
+export type { EsqNameSpan, EsqColumnContext, EsqColumnAccess } from "./esqQuery";

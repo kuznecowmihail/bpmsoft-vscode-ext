@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember } from "../index/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
 import { isPlatformPrefix, modulesFromExpr } from "./platformLookup";
 
@@ -122,6 +123,38 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 			}
 		}
 
+		const rootCtx = getRootSchemaNameContext(text, offset);
+		if (rootCtx?.name) {
+			const loc = this.index.findEntityDefinition(rootCtx.name);
+			if (loc) {
+				return [filePosLocation(loc.filePath, loc.position)];
+			}
+		}
+
+		const colCtx = getQueryColumnContext(text, offset);
+		if (colCtx?.name) {
+			const entities = resolveQueryEntities(
+				text,
+				offset,
+				colCtx.queryIdent
+			);
+			const member = this.index.resolveEsqColumn(entities, colCtx.name);
+			if (member) {
+				const fallbackFilePath =
+					member.filePath ||
+					(entities.length
+						? this.index.findEntityDefinition(entities[0])?.filePath
+						: undefined);
+				const loc = memberLocation({
+					...member,
+					filePath: fallbackFilePath
+				});
+				if (loc) {
+					return [loc];
+				}
+			}
+		}
+
 		const ident = getIdentifierAt(text, offset);
 		if (!ident) {
 			return undefined;
@@ -209,6 +242,24 @@ export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
 				}
 			}
 		} else if (leftExpr && leftExpr !== ident.name) {
+			if (!leftExpr.includes(".")) {
+				const classNames = resolveQueryClassNames(
+					text,
+					ident.start,
+					leftExpr
+				);
+				const member = this.index.findQueryInstanceMember(
+					classNames,
+					ident.name
+				);
+				const loc = memberLocation(member);
+				if (loc) {
+					pushUnique(loc);
+					if (locations.length) {
+						return locations;
+					}
+				}
+			}
 			pushUnique(this.platformStubLocation(leftExpr, ident.name));
 			if (!locations.length) {
 				for (const m of modulesFromExpr(

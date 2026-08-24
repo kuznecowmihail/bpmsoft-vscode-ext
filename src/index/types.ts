@@ -26,6 +26,8 @@ export interface IndexedMember {
 	params?: string[];
 	/** Nested fields, e.g. lookup/enum value + displayValue */
 	children?: IndexedMember[];
+	/** Lookup/entity path target, e.g. Contact for column Contact */
+	referenceSchemaName?: string;
 }
 
 export function memberDedupeKey(member: IndexedMember): string {

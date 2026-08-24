@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, schemaMessageDirectionLabel } from "../index/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getQueryColumnContext, getRootSchemaNameContext, resolveQueryClassNames, resolveQueryEntities } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
 import { isPlatformPrefix, markdownHover, modulesFromExpr } from "./platformLookup";
 
@@ -28,6 +29,40 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 		const text = document.getText();
 		const offset = document.offsetAt(position);
 		const filePath = document.uri.fsPath;
+
+		const rootCtx = getRootSchemaNameContext(text, offset);
+		if (rootCtx?.name) {
+			const def = this.index.findEntityDefinition(rootCtx.name);
+			const cols = this.index.resolveEntityColumns(rootCtx.name);
+			if (def || cols.length) {
+				const lines = [`**${rootCtx.name}** *(entity)*`];
+				if (def) {
+					lines.push(`\`${def.filePath}\``);
+				}
+				if (cols.length) {
+					lines.push(`${cols.length} column(s)`);
+				}
+				return markdownHover(lines);
+			}
+		}
+
+		const colCtx = getQueryColumnContext(text, offset);
+		if (colCtx?.name) {
+			const entities = resolveQueryEntities(text, offset, colCtx.queryIdent);
+			const m = this.index.resolveEsqColumn(entities, colCtx.name);
+			if (m) {
+				const extra: string[] = [];
+				if (entities.length) {
+					extra.push(`entities: ${entities.join(", ")}`);
+				}
+				return memberHover(
+					`**${colCtx.name}** *(entity column)*`,
+					m,
+					extra
+				);
+			}
+		}
+
 		let thisMembers: IndexedMember[] | undefined;
 		const membersOfThis = (): IndexedMember[] =>
 			thisMembers ?? (thisMembers = this.index.resolveThisMembers(filePath));
@@ -130,6 +165,18 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 				const title =
 					m.kind === "attribute" ? `**$${m.name}** *(attribute)*` : `**${m.name}** *(${m.kind})*`;
 				return memberHover(title, m);
+			}
+		}
+
+		if (left && left !== "this" && !left.startsWith("this.") && !left.includes(".")) {
+			const classNames = resolveQueryClassNames(text, ident.start, left);
+			const m = this.index.findQueryInstanceMember(classNames, ident.name);
+			if (m) {
+				return memberHover(
+					`**${left}.${m.name}** *(${m.kind})*`,
+					m,
+					m.filePath ? [`\`${m.filePath}\``] : []
+				);
 			}
 		}
 

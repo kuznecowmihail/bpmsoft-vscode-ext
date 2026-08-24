@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../index/types";
 import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, EsqNameSpan } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
 
 const GLOBAL_IDENTIFIERS = [
@@ -80,6 +81,64 @@ function toItems(
 		} else if (isAttr) {
 			item.insertText = `$${m.name}`;
 		}
+		return item;
+	});
+}
+
+function toEntityNameItems(
+	names: string[],
+	ctx: EsqNameSpan,
+	document: vscode.TextDocument
+): vscode.CompletionItem[] {
+	const typed = ctx.name.toLowerCase();
+	const range = new vscode.Range(
+		document.positionAt(ctx.nameStart),
+		document.positionAt(ctx.nameEnd)
+	);
+	return names
+		.filter((name) => !typed || name.toLowerCase().startsWith(typed))
+		.map((name, i) => {
+			const item = new vscode.CompletionItem(
+				name,
+				vscode.CompletionItemKind.Class
+			);
+			item.detail = `BPMSoft · entity`;
+			item.sortText = `!${String(i).padStart(5, "0")}_${name}`;
+			item.filterText = name;
+			item.preselect = i === 0;
+			item.insertText = ctx.quote ? name : `"${name}"`;
+			item.range = range;
+			return item;
+		});
+}
+
+function toEsqColumnItems(
+	members: IndexedMember[],
+	ctx: EsqNameSpan,
+	parentPath: string[],
+	document: vscode.TextDocument
+): vscode.CompletionItem[] {
+	const range = new vscode.Range(
+		document.positionAt(ctx.nameStart),
+		document.positionAt(ctx.nameEnd)
+	);
+	return members.map((m, i) => {
+		const completed = parentPath.length
+			? [...parentPath, m.name].join(".")
+			: m.name;
+		const item = new vscode.CompletionItem(
+			m.name,
+			vscode.CompletionItemKind.Field
+		);
+		item.detail = m.detail || `entity column`;
+		item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
+		item.filterText = m.name;
+		item.preselect = i === 0;
+		if (m.documentation) {
+			item.documentation = new vscode.MarkdownString(m.documentation);
+		}
+		item.insertText = ctx.quote ? completed : `"${completed}"`;
+		item.range = range;
 		return item;
 	});
 }
@@ -248,6 +307,59 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 		const offset = document.offsetAt(position);
 		const text = document.getText();
 
+		const rootCtx = getRootSchemaNameContext(text, offset);
+		if (rootCtx) {
+			return asList(
+				toEntityNameItems(
+					this.index.listEntityNames(rootCtx.name),
+					rootCtx,
+					document
+				),
+				true
+			);
+		}
+
+		const colCtx = getQueryColumnContext(text, offset);
+		if (colCtx) {
+			const entities = resolveQueryEntities(text, offset, colCtx.queryIdent);
+			if (entities.length) {
+				const endsDot = colCtx.name.endsWith(".");
+				const parts = colCtx.name.split(".");
+				const parentPath = endsDot
+					? parts.filter(Boolean)
+					: parts.slice(0, -1).filter(Boolean);
+				const prefix = endsDot ? "" : parts[parts.length - 1] || "";
+				let members: IndexedMember[];
+				if (!parentPath.length) {
+					const byName = new Map<string, IndexedMember>();
+					for (const e of entities) {
+						for (const m of this.index.resolveEntityColumns(e)) {
+							byName.set(m.name, m);
+						}
+					}
+					members = [...byName.values()];
+				} else {
+					const parent = this.index.resolveEsqColumn(
+						entities,
+						parentPath.join(".")
+					);
+					const next = parent?.referenceSchemaName || parent?.name;
+					members = next
+						? this.index.resolveEntityColumns(next)
+						: [];
+				}
+				const filtered = prefix
+					? members.filter((m) =>
+							m.name.toLowerCase().startsWith(prefix.toLowerCase())
+						)
+					: members;
+				return asList(
+					toEsqColumnItems(filtered, colCtx, parentPath, document),
+					true
+				);
+			}
+		}
+
 		const lookupAccess = getThisLookupAccessContext(text, offset);
 		if (lookupAccess) {
 			const attr = this.index
@@ -360,6 +472,16 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 					{ thisPath }
 				)
 			);
+		}
+
+		if (!rawPrefix.includes(".")) {
+			const classNames = resolveQueryClassNames(text, offset, rawPrefix);
+			if (classNames.length) {
+				const members = this.index.resolveQueryInstanceMembers(classNames);
+				if (members.length) {
+					return asList(toItems(members));
+				}
+			}
 		}
 
 		const parts = rawPrefix.split(".");

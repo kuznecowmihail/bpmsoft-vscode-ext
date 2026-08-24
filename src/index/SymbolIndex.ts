@@ -1532,6 +1532,22 @@ export class SymbolIndex {
 					});
 				}
 			}
+			if (!confPath) {
+				const basePath = this.hierarchy.resolveEntitySchemaPath("BaseEntity");
+				if (basePath) {
+					const source = fs.readFileSync(basePath, "utf8");
+					for (const member of parseEntityColumns(source, basePath)) {
+						if (byName.has(member.name)) {
+							continue;
+						}
+						byName.set(member.name, {
+							...member,
+							filePath: basePath,
+							detail: member.detail || `entity ${entityName}`
+						});
+					}
+				}
+			}
 			const members = Array.from(byName.values());
 			if (!members.length) {
 				this.entityCache.set(entityName, null);
@@ -1555,6 +1571,116 @@ export class SymbolIndex {
 			this.entityCache.set(entityName, null);
 			return undefined;
 		}
+	}
+
+	listEntityNames(prefix?: string): string[] {
+		return this.hierarchy.listEntityNames(prefix);
+	}
+
+	resolveEntityColumns(entityName: string): IndexedMember[] {
+		return this.getEntityModule(entityName)?.members.slice() || [];
+	}
+
+	findEntityDefinition(
+		entityName: string
+	): { filePath: string; position: { line: number; character: number } } | undefined {
+		const conf = this.hierarchy.resolveEntitySchemaPath(entityName);
+		if (conf) {
+			return { filePath: conf, position: { line: 0, character: 0 } };
+		}
+		const meta = this.hierarchy.resolveEntityPkgMetadataPaths(entityName)[0];
+		if (meta) {
+			return { filePath: meta, position: { line: 0, character: 0 } };
+		}
+		return undefined;
+	}
+
+	resolveEsqColumn(
+		entityNames: string[],
+		columnPath: string
+	): IndexedMember | undefined {
+		const parts = columnPath.split(".").filter(Boolean);
+		if (!parts.length || !entityNames.length) {
+			return undefined;
+		}
+		for (const entityName of entityNames) {
+			let currentEntity = entityName;
+			let found: IndexedMember | undefined;
+			let ok = true;
+			for (let i = 0; i < parts.length; i++) {
+				const members = this.getEntityModule(currentEntity)?.members || [];
+				found = members.find((m) => m.name === parts[i]);
+				if (!found) {
+					ok = false;
+					break;
+				}
+				if (i < parts.length - 1) {
+					currentEntity = found.referenceSchemaName || found.name;
+				}
+			}
+			if (ok && found) {
+				return found;
+			}
+		}
+		return undefined;
+	}
+
+	isKnownEsqColumn(entityNames: string[], columnPath: string): boolean {
+		const known = entityNames.filter((n) => Boolean(this.getEntityModule(n)));
+		if (!known.length) {
+			return true;
+		}
+		return Boolean(this.resolveEsqColumn(known, columnPath));
+	}
+
+	resolveQueryInstanceMembers(classNames: string[]): IndexedMember[] {
+		const mods: IndexedModule[] = [];
+		const seenPaths = new Set<string>();
+
+		const pushMod = (mod: IndexedModule | undefined) => {
+			if (!mod) {
+				return;
+			}
+			const pathKey = normalizeFilePath(mod.filePath);
+			if (seenPaths.has(pathKey)) {
+				return;
+			}
+			seenPaths.add(pathKey);
+			mods.push(mod);
+		};
+
+		for (const className of classNames) {
+			if (!className) {
+				continue;
+			}
+			const root = this.pickNamedModule(className);
+			if (!root) {
+				continue;
+			}
+			const chain = [root, ...this.collectInheritanceChain(root)];
+			for (const mod of chain) {
+				pushMod(mod);
+				for (const { className: mixinClassName } of this.declaredMixins([mod])) {
+					for (const mixinMod of this.mixinModulesForClass(mixinClassName)) {
+						pushMod(mixinMod);
+						for (const parent of this.collectInheritanceChain(mixinMod)) {
+							pushMod(parent);
+						}
+					}
+				}
+			}
+		}
+
+		return mods.length ? this.mergeMembers(mods, true) : [];
+	}
+
+	findQueryInstanceMember(
+		classNames: string[],
+		memberName: string
+	): IndexedMember | undefined {
+		return this.resolveQueryInstanceMembers(classNames).find(
+			(m) => m.name === memberName
+		);
 	}
 
 	resolveLocalAlias(filePath: string, alias: string): string | undefined {

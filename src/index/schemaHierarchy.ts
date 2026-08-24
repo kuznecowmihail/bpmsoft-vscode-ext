@@ -49,6 +49,14 @@ function isEntityName(name: string): boolean {
 	return Boolean(name) && ENTITY_NAME_RE.test(name);
 }
 
+function isConfEntityHead(head: string): boolean {
+	if (/BPMSoft\.configuration\.Structures\[/.test(head)) return false;
+	return (
+		/extend\s*:\s*["']BPMSoft\.BaseEntitySchema["']/.test(head) ||
+		/\bcolumns\s*:\s*\{/.test(head)
+	);
+}
+
 /**
  * Resolves Creatio/BPMSoft schema replacement chains via conf/content Structures.
  *
@@ -63,6 +71,7 @@ export class SchemaHierarchyResolver {
 	private schemaTypeCache = new Map<string, string | null>();
 	private platformExtendCache = new Map<string, string | null>();
 	private descriptorParentCache = new Map<string, string | null>();
+	private entityNames: string[] = [];
 
 	setWorkspaceRoots(roots: string[]): void {
 		this.clear();
@@ -96,6 +105,8 @@ export class SchemaHierarchyResolver {
 				}
 			}
 		}
+
+		this.entityNames = this.collectEntityNames();
 	}
 
 	clear(): void {
@@ -105,10 +116,21 @@ export class SchemaHierarchyResolver {
 		this.schemaTypeCache.clear();
 		this.platformExtendCache.clear();
 		this.descriptorParentCache.clear();
+		this.entityNames = [];
 	}
 
 	hasRoots(): boolean {
 		return this.configurationRoots.length > 0 || this.confContentDirs.length > 0;
+	}
+
+	listEntityNames(prefix?: string): string[] {
+		if (!prefix) {
+			return [...this.entityNames];
+		}
+		const lower = prefix.toLowerCase();
+		return this.entityNames.filter((name) =>
+			name.toLowerCase().startsWith(lower)
+		);
 	}
 
 	resolveEntitySchemaPath(entityName: string): string | undefined {
@@ -173,6 +195,63 @@ export class SchemaHierarchyResolver {
 			}
 		}
 		return out;
+	}
+
+	private collectEntityNames(): string[] {
+		const names = new Set<string>();
+		// conf/content/*.js
+		for (const dir of this.confContentDirs) {
+			if (!fs.existsSync(dir)) continue;
+			let files: string[];
+			try {
+				files = fs.readdirSync(dir);
+			} catch {
+				continue;
+			}
+			for (const file of files) {
+				if (!file.endsWith(".js") || file.endsWith("Resources.js")) continue;
+				const schemaName = file.slice(0, -".js".length);
+				if (!isEntityName(schemaName)) continue;
+				const filePath = path.join(dir, file);
+				try {
+					const head = fs.readFileSync(filePath, "utf8").slice(0, 4000);
+					if (isConfEntityHead(head)) names.add(schemaName);
+				} catch {
+					/* ignore */
+				}
+			}
+		}
+		// Pkg/*/Schemas/*/metadata.json
+		for (const pkg of this.pkgPackageDirs()) {
+			const schemasRoot = path.join(pkg, "Schemas");
+			if (!fs.existsSync(schemasRoot)) continue;
+			let entries: string[];
+			try {
+				entries = fs.readdirSync(schemasRoot);
+			} catch {
+				continue;
+			}
+			for (const schemaName of entries) {
+				if (!isEntityName(schemaName)) continue;
+				const schemaDir = path.join(schemasRoot, schemaName);
+				const meta = path.join(schemaDir, "metadata.json");
+				if (!fs.existsSync(meta)) continue;
+				if (fs.existsSync(path.join(schemaDir, `${schemaName}.js`))) continue;
+				const propsPath = path.join(schemaDir, "properties.json");
+				if (fs.existsSync(propsPath)) {
+					try {
+						const type = parsePkgPropertiesSchemaType(
+							fs.readFileSync(propsPath, "utf8"),
+						);
+						if (type) continue;
+					} catch {
+						/* ignore */
+					}
+				}
+				names.add(schemaName);
+			}
+		}
+		return Array.from(names).sort((a, b) => a.localeCompare(b));
 	}
 
 	/**

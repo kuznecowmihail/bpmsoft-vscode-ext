@@ -757,7 +757,7 @@ export function collectSchemaAttributes(
 			continue;
 		}
 		const value = prop.value as AnyNode;
-		members.push({
+		const member: IndexedMember = {
 			name,
 			kind: "attribute",
 			documentation: attributeDocumentation(value, comments, prop),
@@ -765,7 +765,14 @@ export function collectSchemaAttributes(
 			children: attributeHasLookupFields(value)
 				? lookupEnumFieldMembers()
 				: undefined
-		});
+		};
+		if (value?.type === "ObjectExpression") {
+			const ref = stringProp(value, "referenceSchemaName");
+			if (ref && /^[A-Za-z_][\w]*$/.test(ref)) {
+				member.referenceSchemaName = ref;
+			}
+		}
+		members.push(member);
 	}
 	return members;
 }

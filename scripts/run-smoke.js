@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert } = require("../out/parse/amdParser");
+const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert, getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, collectEsqColumnAccesses } = require("../out/parse/amdParser");
 const { parsePkgEntityColumns, parseEntityResourceCaptions } = require("../out/parse/entityMetadata");
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
@@ -40,6 +40,42 @@ function resolveSmokeRoot() {
 		process.exit(1);
 	}
 	return found;
+}
+
+function loadUiClassFileMap(appRoot) {
+	const ui = path.join(appRoot, "Resources", "ui", "BPMSoft");
+	const map = new Map();
+	for (const file of walkJsFiles(ui, (p) => p.endsWith(".js"))) {
+		let head;
+		try { head = fs.readFileSync(file, "utf8").slice(0, 4000); } catch { continue; }
+		const def = head.match(/Ext\.define\(\s*["']([^"']+)["']/);
+		const alt = head.match(/alternateClassName:\s*["']([^"']+)["']/);
+		if (def) map.set(def[1], file);
+		if (alt) map.set(alt[1], file);
+	}
+	return map;
+}
+
+function upsertNamedClassChain(symbolIndex, uiMap, className, seen = new Set()) {
+	let name = className;
+	while (name && !seen.has(name)) {
+		seen.add(name);
+		const file = uiMap.get(name);
+		if (!file) break;
+		const mod = parseAmdModule(fs.readFileSync(file, "utf8"), file);
+		if (!mod) break;
+		symbolIndex.upsertModule(mod);
+		for (const mixinName of Object.values(mod.mixins || {})) {
+			if (typeof mixinName === "string" && mixinName) {
+				upsertNamedClassChain(symbolIndex, uiMap, mixinName, seen);
+			}
+		}
+		name = mod.extend;
+	}
+}
+
+function isPlatformUiPath(p) {
+	return /\/Resources\/ui\//i.test(String(p || "").replace(/\\/g, "/"));
 }
 
 const root = resolveSmokeRoot();
@@ -609,6 +645,202 @@ if (orderLead && eventTracking) {
 				failed = true;
 			} else {
 				console.log("bootstrap this.getCurrentModuleDynamicMessages OK");
+			}
+		}
+	}
+}
+
+{
+	const entityNames = index.listEntityNames();
+	if (!entityNames.includes("Account") || !entityNames.includes("Lead")) {
+		console.error("Expected entity catalog to include Account and Lead", entityNames.slice(0, 10));
+		failed = true;
+	} else if (!entityNames.includes("GoBusinessSubscription")) {
+		console.error("Expected entity catalog to include GoBusinessSubscription from Pkg metadata");
+		failed = true;
+	} else if (index.listEntityNames("AccountPage").length) {
+		console.error("Client schema AccountPage must not be in entity catalog", index.listEntityNames("AccountPage"));
+		failed = true;
+	} else {
+		console.log("entity catalog OK", entityNames.length, "names");
+	}
+
+	const goCols = index.resolveEntityColumns("GoBusinessSubscription");
+	if (!goCols.some((m) => m.name === "Id")) {
+		console.error("Expected GoBusinessSubscription.Id from BaseEntity inherit");
+		failed = true;
+	} else if (!goCols.some((m) => m.name === "GoManager")) {
+		console.error("Expected GoBusinessSubscription.GoManager from metadata");
+		failed = true;
+	} else {
+		console.log("GoBusinessSubscription columns OK", goCols.length);
+	}
+
+	const def = index.findEntityDefinition("GoBusinessSubscription");
+	if (!def || !/GoBusinessSubscription/.test(def.filePath)) {
+		console.error("Expected findEntityDefinition GoBusinessSubscription", def);
+		failed = true;
+	}
+
+	const accountPagePath = path.join(root, "BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/AccountPageV2/AccountPageV2.js");
+	if (!fs.existsSync(accountPagePath)) {
+		console.error("MISSING", accountPagePath);
+		failed = true;
+	} else {
+		const accSrc = fs.readFileSync(accountPagePath, "utf8");
+		const needle = 'rootSchemaName: "GoBusinessSubscription"';
+		const rootAt = accSrc.indexOf(needle);
+		if (rootAt < 0) {
+			console.error("Expected AccountPageV2 ESQ rootSchemaName GoBusinessSubscription");
+			failed = true;
+		} else {
+			const inside = rootAt + 'rootSchemaName: "'.length + 2;
+			const ctx = getRootSchemaNameContext(accSrc, inside);
+			if (!ctx || ctx.name !== "GoBusinessSubscription") {
+				console.error("getRootSchemaNameContext failed", ctx);
+				failed = true;
+			}
+		}
+		const colNeedle = 'esq.addAggregationSchemaColumn("Id"';
+		const colAt = accSrc.indexOf(colNeedle);
+		if (colAt < 0) {
+			console.error("Expected AccountPageV2 addAggregationSchemaColumn Id");
+			failed = true;
+		} else {
+			const inside = colAt + 'esq.addAggregationSchemaColumn("'.length;
+			const ctx = getQueryColumnContext(accSrc, inside);
+			if (!ctx || ctx.name !== "Id" || ctx.queryIdent !== "esq") {
+				console.error("getQueryColumnContext addAggregation failed", ctx);
+				failed = true;
+			} else {
+				const ents = resolveQueryEntities(accSrc, inside, ctx.queryIdent);
+				if (!ents.includes("GoBusinessSubscription")) {
+					console.error("resolveQueryEntities expected GoBusinessSubscription", ents);
+					failed = true;
+				} else if (!index.isKnownEsqColumn(ents, "Id")) {
+					console.error("Expected Id known on GoBusinessSubscription");
+					failed = true;
+				} else if (index.isKnownEsqColumn(ents, "NoSuchEsqColumnXYZ")) {
+					console.error("Expected unknown column NoSuchEsqColumnXYZ");
+					failed = true;
+				} else {
+					console.log("AccountPageV2 ESQ GoBusinessSubscription.Id OK");
+				}
+			}
+		}
+	}
+
+	const helperSrc = [
+		'define("GoEsqPage", [], function() {',
+		"\treturn {",
+		'\t\tentitySchemaName: "Lead",',
+		"\t\tmethods: {",
+		"\t\t\taddCols: function(esq) {",
+		'\t\t\t\tesq.addColumn("Title");',
+		'\t\t\t\tesq.filters.addItem(esq.createColumnFilterWithParameter(',
+		"\t\t\t\t\tBPMSoft.ComparisonType.EQUAL,",
+		'\t\t\t\t\t"Id",',
+		"\t\t\t\t\ttrue",
+		"\t\t\t\t));",
+		"\t\t\t},",
+		"\t\t\trun: function() {",
+		'\t\t\t\tconst esq = this.Ext.create("BPMSoft.EntitySchemaQuery", {',
+		'\t\t\t\t\trootSchemaName: "Lead"',
+		"\t\t\t\t});",
+		"\t\t\t\tthis.addCols(esq);",
+		"\t\t\t},",
+		"\t\t\tupd: function() {",
+		'\t\t\t\tconst update = Ext.create("BPMSoft.UpdateQuery", {',
+		'\t\t\t\t\trootSchemaName: "Lead"',
+		"\t\t\t\t});",
+		'\t\t\t\tupdate.setParameterValue("Title", "x", BPMSoft.DataValueType.TEXT);',
+		"\t\t\t}",
+		"\t\t}",
+		"\t};",
+		"});"
+	].join("\n");
+	const titleAt = helperSrc.indexOf('esq.addColumn("Title")') + 'esq.addColumn("'.length;
+	const helperEnts = resolveQueryEntities(helperSrc, titleAt, "esq");
+	if (!helperEnts.includes("Lead")) {
+		console.error("Expected helper addCols(esq) to bind Lead", helperEnts);
+		failed = true;
+	} else {
+		const filterAt = helperSrc.indexOf('\t\t\t\t\t"Id",');
+		const filterCtx = getQueryColumnContext(helperSrc, filterAt + 6);
+		const filterEnts = resolveQueryEntities(helperSrc, filterAt, filterCtx && filterCtx.queryIdent);
+		if (!filterCtx || filterCtx.name !== "Id") {
+			console.error("Expected filter createColumnFilterWithParameter Id context", filterCtx);
+			failed = true;
+		} else if (!filterEnts.includes("Lead")) {
+			console.error("Expected filter column to bind Lead", filterEnts, filterCtx);
+			failed = true;
+		} else {
+			const accesses = collectEsqColumnAccesses(helperSrc);
+			const names = accesses.map((a) => a.column).sort();
+			if (!names.includes("Title") || !names.includes("Id")) {
+				console.error("collectEsqColumnAccesses missed columns", names);
+				failed = true;
+			} else {
+				console.log("ESQ helper + filter bind OK", helperEnts, names);
+			}
+		}
+	}
+
+	const updAt = helperSrc.indexOf('update.setParameterValue("Title"') + 'update.setParameterValue("'.length;
+	const updEnts = resolveQueryEntities(helperSrc, updAt, "update");
+	if (!updEnts.includes("Lead")) {
+		console.error("Expected UpdateQuery setParameterValue to bind Lead", updEnts);
+		failed = true;
+	} else {
+		console.log("UpdateQuery ESQ bind OK");
+	}
+
+	const uiMap = loadUiClassFileMap(root);
+	upsertNamedClassChain(index, uiMap, "BPMSoft.EntitySchemaQuery");
+	upsertNamedClassChain(index, uiMap, "BPMSoft.InsertQuery");
+	upsertNamedClassChain(index, uiMap, "BPMSoft.UpdateQuery");
+	upsertNamedClassChain(index, uiMap, "BPMSoft.DeleteQuery");
+
+	const esqClassAt = helperSrc.indexOf("esq.addColumn");
+	const esqClasses = resolveQueryClassNames(helperSrc, esqClassAt, "esq");
+	if (!esqClasses.includes("BPMSoft.EntitySchemaQuery")) {
+		console.error("Expected resolveQueryClassNames EntitySchemaQuery", esqClasses);
+		failed = true;
+	} else {
+		const esqMembers = index.resolveQueryInstanceMembers(esqClasses);
+		const names = new Set(esqMembers.map((m) => m.name));
+		const addCol = index.findQueryInstanceMember(esqClasses, "addColumn");
+		const filters = index.findQueryInstanceMember(esqClasses, "filters");
+		const execute = index.findQueryInstanceMember(esqClasses, "execute");
+		if (!names.has("addColumn") || !names.has("getEntityCollection")) {
+			console.error("Expected EntitySchemaQuery methods addColumn/getEntityCollection", [...names].slice(0, 30));
+			failed = true;
+		} else if (!names.has("filters")) {
+			console.error("Expected BaseFilterableQuery.filters in ESQ hierarchy", [...names].slice(0, 30));
+			failed = true;
+		} else if (!names.has("execute")) {
+			console.error("Expected BaseQuery.execute in ESQ hierarchy", [...names].slice(0, 30));
+			failed = true;
+		} else if (!addCol?.filePath || !isPlatformUiPath(addCol.filePath)) {
+			console.error("Expected addColumn from CRM platform UI", addCol);
+			failed = true;
+		} else if (!filters?.filePath || !isPlatformUiPath(filters.filePath)) {
+			console.error("Expected filters from CRM platform UI hierarchy", filters);
+			failed = true;
+		} else if (!execute?.filePath || !isPlatformUiPath(execute.filePath)) {
+			console.error("Expected execute from CRM platform UI hierarchy", execute);
+			failed = true;
+		} else if (addCol.filePath === filters.filePath) {
+			console.error("Expected addColumn and filters from different hierarchy files", addCol.filePath);
+			failed = true;
+		} else {
+			const updClasses = resolveQueryClassNames(helperSrc, helperSrc.indexOf("update.setParameterValue"), "update");
+			const setParam = index.findQueryInstanceMember(updClasses, "setParameterValue");
+			if (!updClasses.includes("BPMSoft.UpdateQuery") || !setParam || !isPlatformUiPath(setParam.filePath)) {
+				console.error("Expected UpdateQuery.setParameterValue from CRM UI", updClasses, setParam);
+				failed = true;
+			} else {
+				console.log("ESQ class methods hierarchy OK", "addColumn", path.basename(addCol.filePath), "execute", path.basename(execute.filePath), "filters", path.basename(filters.filePath));
 			}
 		}
 	}
@@ -4175,6 +4407,150 @@ public class Sample
 		}
 	}
 
+	// ESQ package regression (all GoRestaurantsMain JS)
+	let esqFiles = 0;
+	let esqAccesses = 0;
+	let esqBound = 0;
+	let esqKnown = 0;
+	let esqCursorHits = 0;
+	let esqClassBound = 0;
+	const esqEntities = new Set();
+	for (const { filePath, source } of parsedFiles) {
+		let accesses;
+		try {
+			accesses = collectEsqColumnAccesses(source);
+		} catch (err) {
+			console.error("GoRestaurantsMain ESQ: collect threw", filePath, err);
+			failed = true;
+			continue;
+		}
+		if (!accesses.length) continue;
+		esqFiles++;
+		esqAccesses += accesses.length;
+		for (const access of accesses) {
+			if (access.entityNames.length) {
+				esqBound++;
+				for (const n of access.entityNames) esqEntities.add(n);
+				if (index.isKnownEsqColumn(access.entityNames, access.column)) {
+					esqKnown++;
+				}
+			}
+			const ctx = getQueryColumnContext(source, access.start);
+			if (ctx && ctx.name) esqCursorHits++;
+			else {
+				console.error("GoRestaurantsMain ESQ: cursor miss", path.basename(filePath), access.column);
+				failed = true;
+			}
+			let classes;
+			try {
+				classes = resolveQueryClassNames(source, access.start, access.queryIdent);
+			} catch (err) {
+				console.error("GoRestaurantsMain ESQ: class resolve threw", filePath, err);
+				failed = true;
+				continue;
+			}
+			if (classes.length) {
+				esqClassBound++;
+				const members = index.resolveQueryInstanceMembers(classes);
+				if (!members.length) {
+					console.error("GoRestaurantsMain ESQ: empty class members", path.basename(filePath), classes);
+					failed = true;
+				} else if (!index.findQueryInstanceMember(classes, "execute") && !index.findQueryInstanceMember(classes, "addColumn") && !index.findQueryInstanceMember(classes, "setParameterValue") && !index.findQueryInstanceMember(classes, "filters")) {
+					console.error("GoRestaurantsMain ESQ: expected execute/addColumn/setParameterValue/filters on", classes, path.basename(filePath));
+					failed = true;
+				}
+			}
+		}
+	}
+	if (esqFiles < 70) {
+		console.error("GoRestaurantsMain ESQ: expected >= 70 files with column accesses, got", esqFiles);
+		failed = true;
+	}
+	if (esqAccesses < 480) {
+		console.error("GoRestaurantsMain ESQ: expected >= 480 column accesses, got", esqAccesses);
+		failed = true;
+	}
+	if (esqBound < 280) {
+		console.error("GoRestaurantsMain ESQ: expected >= 280 bound column accesses, got", esqBound);
+		failed = true;
+	}
+	if (esqKnown < 250) {
+		console.error("GoRestaurantsMain ESQ: expected >= 250 known columns, got", esqKnown);
+		failed = true;
+	}
+	if (esqCursorHits !== esqAccesses) {
+		console.error("GoRestaurantsMain ESQ: cursor hits", esqCursorHits, "!= accesses", esqAccesses);
+		failed = true;
+	}
+	if (esqClassBound < 280) {
+		console.error("GoRestaurantsMain ESQ: expected >= 280 class-bound accesses, got", esqClassBound);
+		failed = true;
+	}
+	if (esqEntities.size < 35) {
+		console.error("GoRestaurantsMain ESQ: expected >= 35 bound entities, got", esqEntities.size);
+		failed = true;
+	}
+
+	// Golden files from the package
+	function esqFileAccesses(rel) {
+		const row = parsedFiles.find((p) => p.filePath.replace(/\\/g, "/").endsWith(rel));
+		if (!row) {
+			console.error("GoRestaurantsMain ESQ: missing parsed file", rel);
+			failed = true;
+			return [];
+		}
+		return collectEsqColumnAccesses(row.source);
+	}
+	const accPage = esqFileAccesses("AccountPageV2/AccountPageV2.js");
+	if (!accPage.some((a) => a.entityNames.includes("GoBusinessSubscription") && a.column === "Id")) {
+		console.error("GoRestaurantsMain ESQ: AccountPageV2 missing GoBusinessSubscription.Id");
+		failed = true;
+	}
+	const leadEsq = esqFileAccesses("LeadPageV2/LeadPageV2.js");
+	if (!leadEsq.some((a) => a.entityNames.includes("LeadInQualifyStatus") && a.column === "Id")) {
+		console.error("GoRestaurantsMain ESQ: LeadPageV2 missing LeadInQualifyStatus.Id");
+		failed = true;
+	}
+	const insertEsq = esqFileAccesses("GoRestaurantsCallWebFormComponentModule/GoRestaurantsCallWebFormComponentModule.js");
+	if (!insertEsq.some((a) => a.entityNames.includes("Call") && (a.column === "Direction" || a.column === "Caption" || a.column === "Activity"))) {
+		console.error("GoRestaurantsMain ESQ: InsertQuery Call columns missing", insertEsq.map((a) => a.entityNames.join("/") + "." + a.column).slice(0, 12));
+		failed = true;
+	}
+	const delEsq = esqFileAccesses("GoBaseViewModuleGoRestaurantsMain/GoBaseViewModuleGoRestaurantsMain.js");
+	if (!delEsq.some((a) => a.entityNames.includes("GoMetricSurveyData"))) {
+		console.error("GoRestaurantsMain ESQ: DeleteQuery GoMetricSurveyData missing");
+		failed = true;
+	}
+
+	const accSrc = parsedFiles.find((p) => p.filePath.replace(/\\/g, "/").endsWith("AccountPageV2/AccountPageV2.js"));
+	if (accSrc) {
+		const needle = 'rootSchemaName: "GoBusinessSubscription"';
+		const at = accSrc.source.indexOf(needle);
+		if (at < 0) {
+			console.error("GoRestaurantsMain ESQ: AccountPageV2 rootSchemaName string missing");
+			failed = true;
+		} else {
+			const ctx = getRootSchemaNameContext(accSrc.source, at + 'rootSchemaName: "'.length + 2);
+			if (!ctx || ctx.name !== "GoBusinessSubscription") {
+				console.error("GoRestaurantsMain ESQ: getRootSchemaNameContext failed", ctx);
+				failed = true;
+			} else if (!index.listEntityNames("GoBusiness").includes("GoBusinessSubscription")) {
+				console.error("GoRestaurantsMain ESQ: catalog missing GoBusinessSubscription");
+				failed = true;
+			}
+		}
+	}
+
+	console.log(
+		"GoRestaurantsMain ESQ regression:",
+		`files=${esqFiles}`,
+		`accesses=${esqAccesses}`,
+		`bound=${esqBound}`,
+		`known=${esqKnown}`,
+		`classBound=${esqClassBound}`,
+		`entities=${esqEntities.size}`
+	);
+
 	// Lead entity metadata
 	const leadMetaPath = path.join(pkgSchemas, "Lead/metadata.json");
 	if (!fs.existsSync(leadMetaPath)) {
@@ -4259,7 +4635,8 @@ public class Sample
 		`GoPlacePage=${goPlacePageCount}`,
 		`GoPlaceDetailV2=${goPlaceDetailCount}`,
 		`GoEncryptedDataUtils=${encryptedUtilsCount}`,
-		`csScanned=${csScanned}/${csFiles.length}`
+		`csScanned=${csScanned}/${csFiles.length}`,
+		`esqAccesses=${esqAccesses}`
 	);
 }
 
