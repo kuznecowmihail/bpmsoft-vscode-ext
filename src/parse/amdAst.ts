@@ -534,13 +534,27 @@ function memberNameIfRoot(
 
 export function isExtDefineCall(node: AnyNode): boolean {
 	const callee = node.callee as AnyNode;
-	return (
-		callee?.type === "MemberExpression" &&
-		(callee.object as AnyNode)?.type === "Identifier" &&
-		(callee.object as AnyNode).name === "Ext" &&
-		(callee.property as AnyNode)?.type === "Identifier" &&
-		(callee.property as AnyNode).name === "define"
-	);
+	if (callee?.type !== "MemberExpression" || callee.computed) {
+		return false;
+	}
+	const prop = callee.property as AnyNode;
+	if (prop?.type !== "Identifier" || prop.name !== "define") {
+		return false;
+	}
+	const obj = callee.object as AnyNode;
+	if (obj?.type === "Identifier" && obj.name === "Ext") {
+		return true;
+	}
+	if (obj?.type === "MemberExpression" && !obj.computed) {
+		const objObj = obj.object as AnyNode;
+		const objProp = obj.property as AnyNode;
+		return (
+			objObj?.type === "ThisExpression" &&
+			objProp?.type === "Identifier" &&
+			objProp.name === "Ext"
+		);
+	}
+	return false;
 }
 
 function isSandboxRegisterMessagesCall(node: AnyNode): boolean {

@@ -1198,6 +1198,35 @@ if (!gridThis.some((m) => m.name === "formatCellContent")) {
 	console.log("GoPersonalDataGrid override→Grid OK");
 }
 
+{
+	const qPath = path.join(root, "BPMSoft.Configuration/Pkg/GoQualityControl/Schemas/GoQuestionnaireZoneModule/GoQuestionnaireZoneModule.js");
+	if (!fs.existsSync(qPath)) {
+		console.error("MISSING", qPath);
+		failed = true;
+	} else {
+		const src = fs.readFileSync(qPath, "utf8");
+		if (!/this\.Ext\.define\(/.test(src)) {
+			console.error("Expected this.Ext.define in GoQuestionnaireZoneModule");
+			failed = true;
+		} else {
+			const qMod = parseAmdModule(src, qPath);
+			if (!qMod || !qMod.members.some((m) => m.name === "getContainerConfig" && m.kind === "method")) {
+				console.error("Expected getContainerConfig on this.Ext.define module", qMod && qMod.members.map((m) => m.name).slice(0, 20), qMod && qMod.kind);
+				failed = true;
+			} else {
+				index.upsertModule(qMod);
+				const qThis = index.resolveThisMembers(qPath);
+				if (!qThis.some((m) => m.name === "getContainerConfig" && m.kind === "method")) {
+					console.error("Expected this.getContainerConfig in GoQuestionnaireZoneModule");
+					failed = true;
+				} else {
+					console.log("this.Ext.define getContainerConfig OK", qMod.kind);
+				}
+			}
+		}
+	}
+}
+
 const wsOverridePath = path.join(root, samples[8]);
 const wsThis = index.resolveThisMembers(wsOverridePath);
 if (!wsThis.some((m) => m.name === "getFilterCollectionResult")) {
