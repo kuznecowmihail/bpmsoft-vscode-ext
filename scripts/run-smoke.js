@@ -1699,6 +1699,139 @@ if (!syntheticMixinPage || !syntheticMixin) {
 }
 
 {
+	const goGridUtilsBasePath = path.join(root, "synthetic/GoGridUtilsBase.js");
+	const goGridUtilsV2Path = path.join(root, "synthetic/GoGridUtilsV2.js");
+	const goGridDetailPagePath = path.join(root, "synthetic/GoGridDetailPage.js");
+	const goGridUtilsBase = parseAmdModule(
+		`
+define("GoGridUtilsBase", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoGridUtilsBase", {
+		alternateClassName: "BPMSoft.GoGridUtilsBase",
+		changeRow: function() {},
+		unSelectRow: function() {},
+		onGridClick: function() {},
+		generateActiveRowControlsConfig: function() {}
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoGridUtilsBase");
+});
+`,
+		goGridUtilsBasePath
+	);
+	const goGridUtilsV2 = parseAmdModule(
+		`
+define("GoGridUtilsV2", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoGridUtilsV2", {
+		alternateClassName: "BPMSoft.GoGridUtilsV2",
+		extend: "BPMSoft.GoGridUtilsBase",
+		localGridHelper: function() {}
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoGridUtilsV2");
+});
+`,
+		goGridUtilsV2Path
+	);
+	const goGridDetailPage = parseAmdModule(
+		`
+define("GoGridDetailPage", [], function() {
+	return {
+		mixins: {
+			ConfigurationGridUtilitiesV2: "BPMSoft.GoGridUtilsV2"
+		},
+		diff: [{
+			values: {
+				generateControlsConfig: { bindTo: "generateActiveRowControlsConfig" },
+				changeRow: { bindTo: "changeRow" },
+				unSelectRow: { bindTo: "unSelectRow" },
+				onGridClick: { bindTo: "onGridClick" }
+			}
+		}],
+		methods: {
+			init: function() {
+				this.changeRow();
+				this.localGridHelper();
+			}
+		}
+	};
+});
+`,
+		goGridDetailPagePath
+	);
+	if (!goGridUtilsBase || !goGridUtilsV2 || !goGridDetailPage) {
+		console.error("Failed to parse mixin extend hierarchy fixtures");
+		failed = true;
+	} else {
+		index.upsertModule(goGridUtilsBase);
+		index.upsertModule(goGridUtilsV2);
+		index.upsertModule(goGridDetailPage);
+		const pageThis = index.resolveThisMembers(goGridDetailPagePath);
+		const expectedMethods = [
+			"changeRow",
+			"unSelectRow",
+			"onGridClick",
+			"generateActiveRowControlsConfig",
+			"localGridHelper"
+		];
+		for (const name of expectedMethods) {
+			if (!pageThis.some((m) => m.name === name && m.kind === "method")) {
+				console.error(
+					`Expected this.${name} from mixin extend hierarchy`,
+					pageThis.filter((m) => m.kind === "method").map((m) => m.name)
+				);
+				failed = true;
+			}
+		}
+		const nested = index.resolveThisPathMembers(
+			goGridDetailPagePath,
+			"mixins.ConfigurationGridUtilitiesV2"
+		);
+		if (!nested.some((m) => m.name === "changeRow")) {
+			console.error(
+				"Expected parent mixin method changeRow via mixins.ConfigurationGridUtilitiesV2",
+				nested.map((m) => m.name)
+			);
+			failed = true;
+		}
+		if (!nested.some((m) => m.name === "localGridHelper")) {
+			console.error(
+				"Expected child mixin method localGridHelper via mixins.ConfigurationGridUtilitiesV2",
+				nested.map((m) => m.name)
+			);
+			failed = true;
+		}
+		const changeRowLocs = index.findThisMemberLocations(
+			goGridDetailPagePath,
+			"changeRow",
+			"method"
+		);
+		if (!changeRowLocs.some((h) => h.module.filePath === goGridUtilsBasePath)) {
+			console.error(
+				"Expected F12 this.changeRow to resolve to parent mixin file",
+				changeRowLocs.map((h) => h.module.filePath)
+			);
+			failed = true;
+		}
+		const inherited = index.resolveInheritedSchemaNames(goGridDetailPagePath);
+		if (!inherited.methods.has("changeRow")) {
+			console.error(
+				"Expected changeRow in inherited schema methods",
+				[...inherited.methods]
+			);
+			failed = true;
+		}
+		if (!inherited.methods.has("generateActiveRowControlsConfig")) {
+			console.error(
+				"Expected generateActiveRowControlsConfig in inherited schema methods",
+				[...inherited.methods]
+			);
+			failed = true;
+		}
+		if (!failed) {
+			console.log("mixin extend hierarchy on schema OK");
+		}
+	}
+}
+
+{
 	const hostBoundMixinPath = path.join(root, "synthetic/GoHostBoundMixin.js");
 	const hostBoundCardPath = path.join(root, "synthetic/GoHostBoundCard.js");
 	const hostBoundMixin = parseAmdModule(

@@ -956,6 +956,25 @@ export class SymbolIndex {
 		return Array.from(unique.values());
 	}
 
+	private mixinModulesWithInheritance(className: string): IndexedModule[] {
+		const seen = new Set<string>();
+		const out: IndexedModule[] = [];
+		for (const mixinMod of this.mixinModulesForClass(className)) {
+			if (!seen.has(mixinMod.filePath)) {
+				seen.add(mixinMod.filePath);
+				out.push(mixinMod);
+			}
+			for (const parent of this.collectInheritanceChain(mixinMod)) {
+				if (seen.has(parent.filePath)) {
+					continue;
+				}
+				seen.add(parent.filePath);
+				out.push(parent);
+			}
+		}
+		return out;
+	}
+
 	private forEachMixinHostKey(
 		mod: IndexedModule,
 		visit: (key: string) => void
@@ -1127,7 +1146,7 @@ export class SymbolIndex {
 	): void {
 		const seen = new Set<string>();
 		for (const { className } of this.declaredMixins(owners)) {
-			for (const mixinMod of this.mixinModulesForClass(className)) {
+			for (const mixinMod of this.mixinModulesWithInheritance(className)) {
 				if (seen.has(mixinMod.filePath)) {
 					continue;
 				}
@@ -1155,14 +1174,16 @@ export class SymbolIndex {
 	}
 
 	private mixinMembersForClass(className: string): IndexedMember[] {
-		return this.mixinMembersFromModules(this.mixinModulesForClass(className));
+		return this.mixinMembersFromModules(
+			this.mixinModulesWithInheritance(className)
+		);
 	}
 
 	private mixinAccessorMember(
 		localName: string,
 		className: string
 	): IndexedMember {
-		const mods = this.mixinModulesForClass(className);
+		const mods = this.mixinModulesWithInheritance(className);
 		const origin = mods[0];
 		return {
 			name: localName,
