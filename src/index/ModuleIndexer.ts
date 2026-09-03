@@ -9,6 +9,7 @@ import { buildSandboxStubs } from "../stubs/sandboxGlobals";
 import { buildNavigationMessages } from "../stubs/navigationMessages";
 import {
 	resolveAppLayouts,
+	supportedAppLayouts,
 	walkJsFiles,
 	BpmsoftAppLayout
 } from "./workspaceLayout";
@@ -22,7 +23,10 @@ export class ModuleIndexer {
 		const folders =
 			vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
 		this.index.setWorkspaceRoots(folders);
-		const layouts = resolveAppLayouts(folders);
+		const layouts = supportedAppLayouts(resolveAppLayouts(folders));
+		if (!layouts.length) {
+			return 0;
+		}
 
 		const enableStubs = enablePlatformStubs();
 		this.index.setPlatformStubs(
@@ -34,7 +38,7 @@ export class ModuleIndexer {
 		this.index.setCoreMessages(buildNavigationMessages(folders));
 
 		let files = this.collectIndexFiles(layouts);
-		if (!files.length) {
+		if (!files.length && layouts.length > 0) {
 			files = await this.collectViaWorkspaceGlobs();
 		}
 

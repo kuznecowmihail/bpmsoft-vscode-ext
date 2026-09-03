@@ -7,7 +7,7 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
-        "${workspaceFolder}/../../crm-infrastructure/crm-volumes/suppliers2_190_test"
+        "${workspaceFolder}/../../docker/crm-infrastructure/crm-volumes/suppliers2_190_test"
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
@@ -20,6 +20,16 @@
       "request": "launch",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "package"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Smoke Test",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "smoke"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "npm: compile"

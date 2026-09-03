@@ -202,6 +202,8 @@ BPMSoft.configuration.Structures["LeadPageV2"] = {
 - `BPMSoft.Configuration/Pkg`
 - `BPMSoft.Configuration/Pkg/{PackageName}`
 
+Не открывайте родительский каталог с несколькими приложениями (например `crm-infrastructure`): расширение не активируется, если `BPMSoft.Configuration` лежит глубже открытой папки. Нужен корень конкретного приложения или `BPMSoft.Configuration` / `Pkg` / пакет.
+
 ## Разработка
 
 ```bash

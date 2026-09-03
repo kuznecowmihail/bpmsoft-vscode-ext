@@ -30,7 +30,8 @@ function resolveSmokeRoot() {
 		path.resolve(__dirname, "../../crm-volumes/suppliers2_190_test"),
 		path.resolve(__dirname, "../../../crm-volumes/suppliers2_190_test"),
 		path.resolve(__dirname, "../../../crm-infrastructure/crm-volumes/suppliers2_190_test"),
-		path.resolve(__dirname, "../../crm-infrastructure/crm-volumes/suppliers2_190_test")
+		path.resolve(__dirname, "../../crm-infrastructure/crm-volumes/suppliers2_190_test"),
+		path.resolve(__dirname, "../../../docker/crm-infrastructure/crm-volumes/suppliers2_190_test")
 	].filter(Boolean);
 	const found = candidates.find((p) =>
 		fs.existsSync(path.join(p, "BPMSoft.Configuration"))
@@ -130,6 +131,19 @@ for (const [label, openPath] of layoutCases) {
 		);
 		process.exit(1);
 	}
+}
+{
+	const parent = path.dirname(root);
+	const layout = resolveAppLayout(parent);
+	if (layout.kind !== "unknown") {
+		console.error(
+			"Parent of app root must not be a BPMSoft workspace",
+			parent,
+			layout
+		);
+		process.exit(1);
+	}
+	console.log("layout parent-of-app: kind=unknown");
 }
 {
 	const slnText = formatDevDotnetSln("BPMSoft.Configuration.Dev.csproj");
