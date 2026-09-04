@@ -118,6 +118,30 @@ export function csharpNamingDiagnosticsEnabled(): boolean {
 		.get<boolean>("csharpNamingDiagnostics", true);
 }
 
+/** Off by default — see `CsharpNamingSettings.checkRoleSuffix`'s own doc
+ * (`csharpSchemaAnalyzer.ts`) for the real noise-rate data behind that
+ * choice. */
+export function csharpNamingCheckRoleSuffix(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("csharpNaming.checkRoleSuffix", false);
+}
+
+export function csharpNamingRoleSuffixes(): string[] {
+	return commaList(
+		"csharpNaming.roleSuffixes",
+		"Service,EventListener,Helper,Utils,Manager,Handler,Repository,Client,Connector,Job,Process"
+	);
+}
+
+/** Off by default — see `CsharpNamingSettings.checkSingleClassPerSchema`'s
+ * own doc for the real noise-rate data behind that choice. */
+export function csharpNamingCheckSingleClassPerSchema(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("csharpNaming.checkSingleClassPerSchema", false);
+}
+
 export function dataNamingDiagnosticsEnabled(): boolean {
 	return vscode.workspace
 		.getConfiguration("bpmsoft")

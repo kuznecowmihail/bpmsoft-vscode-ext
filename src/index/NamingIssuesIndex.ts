@@ -10,7 +10,7 @@ import {
 } from "./schemaStructureParse";
 import { findResourceDirs, findSchemaDir } from "./schemaResourceLookup";
 import { checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
-import { checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
+import { CsharpNamingSettings, checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
 import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
 import {
 	EntityCodeOccurrence,
@@ -51,7 +51,10 @@ import {
 } from "../parse/dataSchemaNamingAnalyzer";
 import { SymbolIndex } from "./SymbolIndex";
 import {
+	csharpNamingCheckRoleSuffix,
+	csharpNamingCheckSingleClassPerSchema,
 	csharpNamingDiagnosticsEnabled,
+	csharpNamingRoleSuffixes,
 	dataNamingDiagnosticsEnabled,
 	entityNamingCheckSingular,
 	entityNamingDateSuffixes,
@@ -159,6 +162,12 @@ export class NamingIssuesIndex {
 		const userTaskDiagnosticsOn = processUserTaskNamingDiagnosticsEnabled();
 		const dataDiagnosticsOn = dataNamingDiagnosticsEnabled();
 		const csharpDiagnosticsOn = csharpNamingDiagnosticsEnabled();
+		const csharpSettings: CsharpNamingSettings = {
+			prefixes,
+			checkRoleSuffix: csharpNamingCheckRoleSuffix(),
+			roleSuffixes: csharpNamingRoleSuffixes(),
+			checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
+		};
 		const out: NamingFinding[] = [];
 		const entityOccurrences: EntityCodeOccurrence[] = [];
 		const sysSettingsOccurrences: SysSettingsOccurrence[] = [];
@@ -212,7 +221,7 @@ export class NamingIssuesIndex {
 					(p) => /\/Schemas\//i.test(p.replace(/\\/g, "/"))
 				);
 				for (const filePath of csharpFiles) {
-					out.push(...this.findingsForCsharpSchema(filePath, prefixes));
+					out.push(...this.findingsForCsharpSchema(filePath, csharpSettings));
 				}
 			}
 			const sqlScriptFiles = walkFiles(
@@ -337,7 +346,12 @@ export class NamingIssuesIndex {
 			if (!csharpNamingDiagnosticsEnabled()) {
 				return [];
 			}
-			return this.findingsForCsharpSchema(filePath, prefixes);
+			return this.findingsForCsharpSchema(filePath, {
+				prefixes,
+				checkRoleSuffix: csharpNamingCheckRoleSuffix(),
+				roleSuffixes: csharpNamingRoleSuffixes(),
+				checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
+			});
 		}
 		if (/\/Data\/[^/]+\/descriptor\.json$/i.test(normalized)) {
 			if (!dataNamingDiagnosticsEnabled()) {
@@ -678,7 +692,7 @@ export class NamingIssuesIndex {
 	 * inherited from the platform, not chosen in this package) — same
 	 * reasoning as every other schema type's own substitution guard.
 	 */
-	private findingsForCsharpSchema(filePath: string, prefixes: string[]): NamingFinding[] {
+	private findingsForCsharpSchema(filePath: string, settings: CsharpNamingSettings): NamingFinding[] {
 		const text = readFileSafe(filePath);
 		if (text === undefined) {
 			return [];
@@ -691,7 +705,17 @@ export class NamingIssuesIndex {
 		if (schemaName && descriptorText && parseDescriptorParent(descriptorText) === schemaName) {
 			return [];
 		}
-		const findings = checkCsharpSchemaNaming(text, prefixes, schemaName).map((issue) => ({
+		// The role-suffix vocabulary is naming-guidelines.md §4's own — a
+		// Process/UserTask/Entity schema's own attached .cs file is subject
+		// to that OTHER guideline point's own suffix instead (e.g.
+		// "UserTask", not in §4's list), so checking it here would just be a
+		// guaranteed false positive. Same scoping as the Title-coverage
+		// check below.
+		const effectiveSettings: CsharpNamingSettings = {
+			...settings,
+			checkRoleSuffix: settings.checkRoleSuffix && info?.managerName === "SourceCodeSchemaManager"
+		};
+		const findings = checkCsharpSchemaNaming(text, effectiveSettings, schemaName).map((issue) => ({
 			packageName: packageFromPath(filePath),
 			label: schemaName || path.basename(filePath, ".cs"),
 			message: issue.message,

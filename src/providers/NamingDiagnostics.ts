@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import {
+	DescriptorInfo,
 	parseDescriptorInfo,
 	parseDescriptorParent,
 	parseSqlScriptDescriptorName
@@ -13,7 +14,13 @@ import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
 import { parseDataSchemaDescriptor } from "../parse/dataSchemaMetadata";
 import { checkDataSchemaCodeNaming } from "../parse/dataSchemaNamingAnalyzer";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { namingDiagnosticsEnabled, namingPrefixes } from "../config";
+import {
+	csharpNamingCheckRoleSuffix,
+	csharpNamingCheckSingleClassPerSchema,
+	csharpNamingRoleSuffixes,
+	namingDiagnosticsEnabled,
+	namingPrefixes
+} from "../config";
 import { clearDebounceTimers, debounceDocument } from "./jsDocuments";
 
 export const NAMING_DIAG_SOURCE = "bpmsoft-naming";
@@ -144,24 +151,41 @@ export class NamingDiagnostics implements vscode.Disposable {
 	}
 
 	private checkCsharpSchema(document: vscode.TextDocument): PositionedIssue[] {
-		const schemaName = csharpSchemaDescriptorName(document.uri.fsPath);
-		return checkCsharpSchemaNaming(document.getText(), namingPrefixes(), schemaName);
+		const info = csharpSchemaDescriptorInfo(document.uri.fsPath);
+		return checkCsharpSchemaNaming(
+			document.getText(),
+			{
+				prefixes: namingPrefixes(),
+				// The role-suffix vocabulary is naming-guidelines.md §4's own
+				// (Service/Helper/Manager/...) — a Process/UserTask/Entity
+				// schema's own attached .cs file is subject to that OTHER
+				// guideline point's own suffix instead (e.g. "UserTask"),
+				// which isn't in §4's list, so checking it here would just be
+				// a guaranteed false positive. Same scoping as the
+				// Title-coverage check in NamingIssuesIndex.ts.
+				checkRoleSuffix: csharpNamingCheckRoleSuffix() && info?.managerName === "SourceCodeSchemaManager",
+				roleSuffixes: csharpNamingRoleSuffixes(),
+				checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
+			},
+			info?.name
+		);
 	}
 }
 
-/** The schema's registered name, from `descriptor.json` in the same
- * `Schemas/{Name}/` folder as `filePath` (a .cs file) — the authoritative
- * source naming-guidelines.md checks are meant to validate against, same as
- * for JS/SQL schemas. `undefined` if the descriptor is missing/unreadable,
- * letting the caller fall back to the source-extracted class name. */
-function csharpSchemaDescriptorName(filePath: string): string | undefined {
+/** The schema's registered name and ManagerName, from `descriptor.json` in
+ * the same `Schemas/{Name}/` folder as `filePath` (a .cs file) — the
+ * authoritative source naming-guidelines.md checks are meant to validate
+ * against, same as for JS/SQL schemas. `undefined` if the descriptor is
+ * missing/unreadable, letting the caller fall back to the source-extracted
+ * class name. */
+function csharpSchemaDescriptorInfo(filePath: string): DescriptorInfo | undefined {
 	const schema = findSchemaDir(filePath);
 	if (!schema) {
 		return undefined;
 	}
 	try {
 		const descriptorText = fs.readFileSync(path.join(schema.schemaDir, "descriptor.json"), "utf8");
-		return parseDescriptorInfo(descriptorText)?.name;
+		return parseDescriptorInfo(descriptorText);
 	} catch {
 		return undefined;
 	}

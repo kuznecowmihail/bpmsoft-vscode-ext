@@ -415,7 +415,22 @@
         "bpmsoft.csharpNamingDiagnostics": {
           "type": "boolean",
           "default": true,
-          "description": "Check C# schema code (naming-guidelines.md §4 'Исходный код') against every .cs file under Schemas/ — not just SourceCodeSchemaManager schemas, matching the guideline's own 'and similar server-side artifacts' scope: the package prefix, Service/EventListener suffix (only checked when the class actually inherits BaseService/BaseEntityEventListener or carries [ServiceContract]/[EntityEventListener] — no reliable platform marker exists for Helper/Manager/Handler/Repository/Client/Job, so those roles' suffixes aren't verified), the schema's registered name matching an actual class in the file, no redundant 'SourceCode' suffix, no temporary designation (New/Test/Temp/Copy/V2), and no chained/mixed role suffixes (e.g. ...ServiceHelper). ru-RU/en-US Title coverage is checked separately, only for real SourceCodeSchemaManager schemas (a Process/UserTask/Entity's own .cs file already has its Title checked by that schema type's own check)."
+          "description": "Check C# schema code (naming-guidelines.md §4 'Исходный код') against every .cs file under Schemas/ — not just SourceCodeSchemaManager schemas, matching the guideline's own 'and similar server-side artifacts' scope: the package prefix, Service/EventListener suffix (only checked when the class actually inherits BaseService/BaseEntityEventListener or carries [ServiceContract]/[EntityEventListener] — no reliable platform marker exists for Helper/Manager/Handler/Repository/Client/Job, so those roles' suffixes aren't verified the same way, see bpmsoft.csharpNaming.checkRoleSuffix for the heuristic opt-in instead), the schema's registered name matching an actual class in the file, no redundant 'SourceCode' suffix, no temporary designation (New/Test/Temp/Copy/V2), and no chained/mixed role suffixes (e.g. ...ServiceHelper). ru-RU/en-US Title coverage is checked separately, only for real SourceCodeSchemaManager schemas (a Process/UserTask/Entity's own .cs file already has its Title checked by that schema type's own check)."
+        },
+        "bpmsoft.csharpNaming.checkRoleSuffix": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag a C# schema Code that doesn't end in any of bpmsoft.csharpNaming.roleSuffixes at all (Helper/Manager/Handler/Repository/Client/Connector/Job/... have no base-class or interface marker to verify the suffix is actually correct, unlike Service/EventListener — this only checks that *some* recognized role suffix is present). Off by default — confirmed ~37-45% of real Source Code schemas across two installs end in none of the defaults, and a good share of those are legitimately something the guideline's table doesn't cover at all (Constants/DTO/Exception/Extensions/Callout classes, ...), not a missed suffix. Tune bpmsoft.csharpNaming.roleSuffixes to your own real patterns before turning this on."
+        },
+        "bpmsoft.csharpNaming.roleSuffixes": {
+          "type": "string",
+          "default": "Service,EventListener,Helper,Utils,Manager,Handler,Repository,Client,Connector,Job,Process",
+          "description": "Comma-separated role suffixes recognized as 'has a role suffix' (bpmsoft.csharpNaming.checkRoleSuffix) and checked for chaining/mixing (e.g. ...ServiceHelper, always on)."
+        },
+        "bpmsoft.csharpNaming.checkSingleClassPerSchema": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag a C# schema file that declares more than one top-level class. Off by default — naming-guidelines.md's own 'один основной класс — одна схема' rule has an explicit exception for a data object model, and ~26-27% of real Source Code schemas across two installs are legitimately multi-class (request/response DTOs alongside the main class) — this can't be told apart from a genuinely crammed-together schema automatically, so it's a team preference to opt into, not a default-on check."
         }
       }
     },
