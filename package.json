@@ -406,6 +406,11 @@
           "type": "boolean",
           "default": false,
           "description": "naming-guidelines.md §8: recommends an Input/Output suffix on parameter names when a UserTask has more than one, to indicate direction. Off by default — confirmed 0% real adoption across two installs (176 real parameters, none suffixed), so enabling this flags nearly every existing multi-parameter UserTask. Turn on if your team wants to start enforcing it going forward."
+        },
+        "bpmsoft.dataNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check Data package items (naming-guidelines.md §5 'Данные') against their own descriptor.json/data.json: Code (PascalCase, must start with its target table's own name — Descriptor.Schema.Name, e.g. Lookup_X/City_Main/SysSettings_X all reduce to the same {TableName}_... template), no raw GUID/hash segment in the code, and — the platform-risk check — every SysSettings data schema must have a matching SysSettingsValue and vice versa, matched by the real seeded row Id/foreign key, not by folder name. A SysSettings without a SysSettingsValue can 400 when read; the reverse can be a legitimate override of a stock setting's value, so is worded as a hint rather than a hard violation."
         }
       }
     },

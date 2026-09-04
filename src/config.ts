@@ -112,6 +112,12 @@ export function processUserTaskActionVerbs(): string[] {
 	return commaList("processUserTask.actionVerbs", DEFAULT_ACTION_VERBS);
 }
 
+export function dataNamingDiagnosticsEnabled(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("dataNamingDiagnostics", true);
+}
+
 /** naming-guidelines.md §8's Input/Output parameter-suffix recommendation
  * has 0% real adoption in either surveyed install — off by default so it
  * doesn't flag nearly every existing multi-parameter UserTask; a team that

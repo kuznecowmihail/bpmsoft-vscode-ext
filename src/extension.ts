@@ -510,7 +510,8 @@ function registerWatchers(
 		"**/Resources/ui/BPMSoft/**/*.js",
 		"**/Pkg/**/Schemas/**/descriptor.json",
 		"**/Pkg/**/Schemas/**/*.cs",
-		"**/Pkg/**/SqlScripts/**/descriptor.json"
+		"**/Pkg/**/SqlScripts/**/descriptor.json",
+		"**/Pkg/**/Data/**/descriptor.json"
 	];
 	const supportedRoots = new Set(
 		layouts.map((l) => path.normalize(l.workspaceRoot))

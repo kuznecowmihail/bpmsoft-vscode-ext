@@ -42,8 +42,16 @@ import {
 	checkProcessUserTaskParameterDirectionSuffix,
 	checkProcessUserTaskParameterNaming
 } from "../parse/processUserTaskNamingAnalyzer";
+import { parseDataSchemaDescriptor, readDataRowColumnValue } from "../parse/dataSchemaMetadata";
+import {
+	SysSettingsOccurrence,
+	SysSettingsValueOccurrence,
+	checkDataSchemaCodeNaming,
+	findSysSettingsPairingIssues
+} from "../parse/dataSchemaNamingAnalyzer";
 import { SymbolIndex } from "./SymbolIndex";
 import {
+	dataNamingDiagnosticsEnabled,
 	entityNamingCheckSingular,
 	entityNamingDateSuffixes,
 	entityNamingDiagnosticsEnabled,
@@ -148,8 +156,11 @@ export class NamingIssuesIndex {
 			checkParameterDirectionSuffix: processUserTaskCheckParameterDirectionSuffix()
 		};
 		const userTaskDiagnosticsOn = processUserTaskNamingDiagnosticsEnabled();
+		const dataDiagnosticsOn = dataNamingDiagnosticsEnabled();
 		const out: NamingFinding[] = [];
 		const entityOccurrences: EntityCodeOccurrence[] = [];
+		const sysSettingsOccurrences: SysSettingsOccurrence[] = [];
+		const sysSettingsValueOccurrences: SysSettingsValueOccurrence[] = [];
 		for (const layout of layouts) {
 			if (!layout.pkgRoot) {
 				continue;
@@ -213,6 +224,16 @@ export class NamingIssuesIndex {
 			for (const findings of sqlFindings) {
 				out.push(...findings);
 			}
+			if (dataDiagnosticsOn) {
+				const dataDescriptorFiles = walkFiles(
+					layout.pkgRoot,
+					(name) => name === "descriptor.json",
+					(p) => /\/Data\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
+				);
+				for (const filePath of dataDescriptorFiles) {
+					out.push(...this.findingsForDataSchema(filePath, sysSettingsOccurrences, sysSettingsValueOccurrences));
+				}
+			}
 		}
 		if (entityDiagnosticsOn) {
 			for (const collision of findEntityCodeCollisions(entityOccurrences)) {
@@ -224,6 +245,33 @@ export class NamingIssuesIndex {
 					filePath: collision.filePath,
 					position: text
 						? offsetToPosition(text, locateJsonNameOffset(text, collision.name))
+						: new vscode.Position(0, 0)
+				});
+			}
+		}
+		if (dataDiagnosticsOn) {
+			const pairing = findSysSettingsPairingIssues(sysSettingsOccurrences, sysSettingsValueOccurrences);
+			for (const missing of pairing.missingValue) {
+				const text = readFileSafe(missing.filePath);
+				out.push({
+					packageName: packageFromPath(missing.filePath),
+					label: missing.code,
+					message: `Data "${missing.code}": no matching SysSettingsValue found — reading this setting (e.g. SysSettings.GetValue) can 400 without one`,
+					filePath: missing.filePath,
+					position: text
+						? offsetToPosition(text, locateJsonNameOffset(text, missing.code))
+						: new vscode.Position(0, 0)
+				});
+			}
+			for (const missing of pairing.missingSettings) {
+				const text = readFileSafe(missing.filePath);
+				out.push({
+					packageName: packageFromPath(missing.filePath),
+					label: missing.code,
+					message: `Data "${missing.code}": its "SysSettings" reference doesn't match any SysSettings data schema found in the scanned packages — either an orphaned value, or a value for a stock/platform setting not present under Pkg`,
+					filePath: missing.filePath,
+					position: text
+						? offsetToPosition(text, locateJsonNameOffset(text, missing.code))
 						: new vscode.Position(0, 0)
 				});
 			}
@@ -283,6 +331,16 @@ export class NamingIssuesIndex {
 		}
 		if (/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized)) {
 			return this.findingsForCsharpSchema(filePath, prefixes);
+		}
+		if (/\/Data\/[^/]+\/descriptor\.json$/i.test(normalized)) {
+			if (!dataNamingDiagnosticsEnabled()) {
+				return [];
+			}
+			// SysSettings/SysSettingsValue pairing needs every occurrence in
+			// the workspace at once — same trade-off as the EntitySchemaManager
+			// cross-package uniqueness check above; it settles again on the
+			// next full `refresh()`.
+			return this.findingsForDataSchema(filePath, [], []);
 		}
 		return [];
 	}
@@ -638,6 +696,60 @@ export class NamingIssuesIndex {
 				});
 			}
 		}
+		return findings;
+	}
+
+	/**
+	 * `Data/{Name}/` package item (naming-guidelines.md §5 "Данные") — Code
+	 * naming against its own real target table (`descriptor.json`'s
+	 * `Descriptor.Schema.Name`, see `dataSchemaMetadata.ts`). For a
+	 * SysSettings/SysSettingsValue row specifically, also records its
+	 * pairing key (own row Id / "SysSettings" reference) into the
+	 * caller-owned accumulator arrays — the actual pairing gap is only
+	 * detectable with every occurrence in hand, so `scanWorkspace` computes
+	 * it once after the whole workspace has been walked (same pattern as
+	 * `findEntityCodeCollisions`).
+	 */
+	private findingsForDataSchema(
+		filePath: string,
+		sysSettingsOccurrences: SysSettingsOccurrence[],
+		sysSettingsValueOccurrences: SysSettingsValueOccurrence[]
+	): NamingFinding[] {
+		const text = readFileSafe(filePath);
+		if (text === undefined) {
+			return [];
+		}
+		const info = parseDataSchemaDescriptor(text);
+		if (!info) {
+			return [];
+		}
+		const findings = checkDataSchemaCodeNaming(info.code, info.tableName).map((issue) => ({
+			packageName: packageFromPath(filePath),
+			label: info.code,
+			message: issue.message,
+			filePath,
+			position: offsetToPosition(text, locateJsonNameOffset(text, info.code))
+		}));
+
+		if (info.tableName === "SysSettings" || info.tableName === "SysSettingsValue") {
+			const dataText = readFileSafe(path.join(path.dirname(filePath), "data.json"));
+			if (dataText !== undefined) {
+				if (info.tableName === "SysSettings") {
+					sysSettingsOccurrences.push({
+						code: info.code,
+						filePath,
+						rowId: readDataRowColumnValue(text, dataText, "Id")
+					});
+				} else {
+					sysSettingsValueOccurrences.push({
+						code: info.code,
+						filePath,
+						referencedSysSettingsId: readDataRowColumnValue(text, dataText, "SysSettings")
+					});
+				}
+			}
+		}
+
 		return findings;
 	}
 }

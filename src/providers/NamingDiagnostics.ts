@@ -10,6 +10,8 @@ import { findSchemaDir } from "../index/schemaResourceLookup";
 import { checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
 import { checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
 import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
+import { parseDataSchemaDescriptor } from "../parse/dataSchemaMetadata";
+import { checkDataSchemaCodeNaming } from "../parse/dataSchemaNamingAnalyzer";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { namingDiagnosticsEnabled, namingPrefixes } from "../config";
 import { clearDebounceTimers, debounceDocument } from "./jsDocuments";
@@ -27,7 +29,8 @@ export function isNamingDiagnosticsTarget(fsPath: string): boolean {
 	return (
 		/\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(normalized) ||
 		/\/Schemas\/[^/]+\/descriptor\.json$/i.test(normalized) ||
-		(/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized))
+		(/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized)) ||
+		/\/Data\/[^/]+\/descriptor\.json$/i.test(normalized)
 	);
 }
 
@@ -71,9 +74,11 @@ export class NamingDiagnostics implements vscode.Disposable {
 			const normalized = document.uri.fsPath.replace(/\\/g, "/");
 			const issues = /\/SqlScripts\//i.test(normalized)
 				? this.checkSqlDescriptor(document)
-				: normalized.endsWith(".cs")
-					? this.checkCsharpSchema(document)
-					: this.checkSchemaDescriptor(document);
+				: /\/Data\//i.test(normalized)
+					? this.checkDataDescriptor(document)
+					: normalized.endsWith(".cs")
+						? this.checkCsharpSchema(document)
+						: this.checkSchemaDescriptor(document);
 			this.collection.set(document.uri, issues.map((issue) => toDiagnostic(document, issue)));
 		} catch {
 			this.collection.delete(document.uri);
@@ -121,6 +126,21 @@ export class NamingDiagnostics implements vscode.Disposable {
 		}
 		const pos = locateJsonNameValue(text, scriptName);
 		return checkSqlScriptNaming(scriptName).map((issue) => ({ ...issue, ...pos }));
+	}
+
+	/** `Data/{Name}/descriptor.json` (naming-guidelines.md §5) — Code naming
+	 * only (against its own target table, `Descriptor.Schema.Name`). The
+	 * SysSettings/SysSettingsValue pairing check needs every occurrence in
+	 * the workspace at once, so it only ever shows up via `NamingIssuesIndex`
+	 * (tree view / Packages decorations), not here. */
+	private checkDataDescriptor(document: vscode.TextDocument): PositionedIssue[] {
+		const text = document.getText();
+		const info = parseDataSchemaDescriptor(text);
+		if (!info) {
+			return [];
+		}
+		const pos = locateJsonNameValue(text, info.code);
+		return checkDataSchemaCodeNaming(info.code, info.tableName).map((issue) => ({ ...issue, ...pos }));
 	}
 
 	private checkCsharpSchema(document: vscode.TextDocument): PositionedIssue[] {
