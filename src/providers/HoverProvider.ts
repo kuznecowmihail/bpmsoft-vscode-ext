@@ -6,7 +6,7 @@ import { getQueryColumnContext, getRootSchemaNameContext, resolveQueryClassNames
 import { enablePlatformStubs } from "../config";
 import { isPlatformPrefix, markdownHover, modulesFromExpr } from "./platformLookup";
 import { findSchemaDir } from "../index/schemaResourceLookup";
-import { resolveLocalizedString } from "../index/localizationLookup";
+import { resolveLocalizedString, resolveLocalizedImage } from "../index/localizationLookup";
 
 function memberHover(
 	title: string,
@@ -226,34 +226,43 @@ export class HoverProvider implements vscode.HoverProvider {
 		return undefined;
 	}
 
-	/** `Resources.Strings.<key>` (bare expression or inside a string literal
-	 * like `bindTo: "Resources.Strings.Key"` — `left`/`ident` come from the
-	 * same plain character-class scan either way, quotes just aren't in the
-	 * identifier charset) resolves against the *current* schema's own
-	 * resources. `<param>.localizableStrings.<key>` — the schema's own
-	 * injected `"{Name}Resources"` AMD dependency, commonly aliased
-	 * `resources` but not always — resolves against whichever schema that
-	 * dependency actually names, which is frequently a *different* schema
-	 * (a mixin, a base page, …) than the one being edited; `paramNames`/
-	 * `dependencies` positional lookup (`resolveLocalAlias`) is what already
-	 * backs the plain "jump to this dependency" hover/definition cases, so
-	 * it's the right lookup here too. See `localizationLookup.ts` for the
-	 * shared resolution rule (same XML item, either access path). */
+/** `Resources.Strings.<key>` / `Resources.Images.<key>` (bare expression or
+	 * inside a string literal like `bindTo: "Resources.Strings.Key"` —
+	 * `left`/`ident` come from the same plain character-class scan either
+	 * way, quotes just aren't in the identifier charset) resolve against the
+	 * *current* schema's own resources. `<param>.localizableStrings.<key>` /
+	 * `<param>.localizableImages.<key>` — the schema's own injected
+	 * `"{Name}Resources"` AMD dependency, commonly aliased `resources` but
+	 * not always — resolve against whichever schema that dependency actually
+	 * names, which is frequently a *different* schema (a mixin, a base
+	 * page, …) than the one being edited; `paramNames`/`dependencies`
+	 * positional lookup (`resolveLocalAlias`) is what already backs the
+	 * plain "jump to this dependency" hover/definition cases, so it's the
+	 * right lookup here too. See `localizationLookup.ts` for the resolution
+	 * rules (same XML item family, either access path per kind — images
+	 * have real, documented gaps a string lookup doesn't). */
 	private resolveLocalizationHover(
 		filePath: string,
 		left: string,
 		key: string
 	): vscode.Hover | undefined {
+		const kind =
+			left === "Resources.Strings" || /\.localizableStrings$/.test(left)
+				? "strings"
+				: left === "Resources.Images" || /\.localizableImages$/.test(left)
+					? "images"
+					: undefined;
+		if (!kind) {
+			return undefined;
+		}
 		const ownSchema = findSchemaDir(filePath);
 		let schemaName: string | undefined;
-		if (left === "Resources.Strings") {
+		if (left === "Resources.Strings" || left === "Resources.Images") {
 			schemaName = ownSchema?.schemaName;
 		} else {
-			const m = /^(.+)\.localizableStrings$/.exec(left);
-			if (m) {
-				const dep = this.index.resolveLocalAlias(filePath, m[1]);
-				schemaName = dep?.endsWith("Resources") ? dep.slice(0, -"Resources".length) : undefined;
-			}
+			const paramName = left.slice(0, left.lastIndexOf("."));
+			const dep = this.index.resolveLocalAlias(filePath, paramName);
+			schemaName = dep?.endsWith("Resources") ? dep.slice(0, -"Resources".length) : undefined;
 		}
 		if (!schemaName) {
 			return undefined;
@@ -265,6 +274,12 @@ export class HoverProvider implements vscode.HoverProvider {
 		if (!schemaDir) {
 			return undefined;
 		}
+		return kind === "strings"
+			? this.stringHover(schemaDir, schemaName, key)
+			: this.imageHover(schemaDir, schemaName, key);
+	}
+
+	private stringHover(schemaDir: string, schemaName: string, key: string): vscode.Hover | undefined {
 		const localized = resolveLocalizedString(schemaDir, schemaName, key);
 		if (!localized) {
 			return undefined;
@@ -273,6 +288,30 @@ export class HoverProvider implements vscode.HoverProvider {
 			`**${key}** *(Resources.Strings, ${schemaName})*`,
 			...localized.values.map((v) => `**${v.culture}:** ${v.value}`)
 		]);
+	}
+
+	private imageHover(schemaDir: string, schemaName: string, key: string): vscode.Hover | undefined {
+		const images = resolveLocalizedImage(schemaDir, schemaName, key);
+		if (!images) {
+			return undefined;
+		}
+		// Same image reused across every culture is the common case - group
+		// by content so it's shown once, not once per culture.
+		const byContent = new Map<string, { mimeType: string; cultures: string[] }>();
+		for (const img of images) {
+			const entry = byContent.get(img.base64);
+			if (entry) {
+				entry.cultures.push(img.culture);
+			} else {
+				byContent.set(img.base64, { mimeType: img.mimeType, cultures: [img.culture] });
+			}
+		}
+		const lines = [`**${key}** *(Resources.Images, ${schemaName})*`];
+		for (const [base64, { mimeType, cultures }] of byContent) {
+			lines.push(cultures.join(", "));
+			lines.push(`![${key}](data:${mimeType};base64,${base64})`);
+		}
+		return markdownHover(lines);
 	}
 
 	private findSchemaDirByName(schemaName: string): string | undefined {

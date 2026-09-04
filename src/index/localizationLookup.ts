@@ -18,12 +18,41 @@ export interface LocalizedString {
 	values: LocalizedCultureValue[];
 }
 
+export interface LocalizedImage {
+	culture: string;
+	mimeType: string;
+	base64: string;
+}
+
+interface ResourceItem {
+	value: string;
+	type?: string;
+	contentType?: string;
+	fileExtension?: string;
+}
+
 interface ResourceFileCache {
 	mtimeMs: number;
-	items: Map<string, string>;
+	items: Map<string, ResourceItem>;
 }
 
 const fileCache = new Map<string, ResourceFileCache>();
+
+/** A base64 image blob this large (before decoding) is almost certainly not
+ * a UI icon someone wants inline in a hover tooltip — a defensive cap, not
+ * a real limit seen in practice (every real icon sampled was a few KB). */
+const MAX_IMAGE_BASE64_LENGTH = 500_000;
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+	".svg": "image/svg+xml",
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".bmp": "image/bmp",
+	".ico": "image/x-icon"
+};
 
 function readDirSafe(dirPath: string): fs.Dirent[] {
 	try {
@@ -42,12 +71,13 @@ function unescapeXmlAttr(value: string): string {
 		.replace(/&amp;/g, "&");
 }
 
-/** BPMSoft's own resource XML is flat enough (`<Item Name="..." Value="..." />`
- * per line, no nesting to speak of) that a real XML parser is unnecessary —
- * a per-tag attribute scan, same lightweight-parsing spirit as this
- * codebase's other analyzers. Attribute order isn't assumed. */
-function parseResourceItems(xml: string): Map<string, string> {
-	const items = new Map<string, string>();
+/** BPMSoft's own resource XML is flat enough (`<Item Name="..." Value="..." />`,
+ * optionally with `Type`/`ContentType`/`FileExtension` on an image item) that
+ * a real XML parser is unnecessary — a per-tag attribute scan, same
+ * lightweight-parsing spirit as this codebase's other analyzers. Attribute
+ * order isn't assumed. */
+function parseResourceItems(xml: string): Map<string, ResourceItem> {
+	const items = new Map<string, ResourceItem>();
 	const itemRe = /<Item\b([^>]*)\/?>/g;
 	let m: RegExpExecArray | null;
 	while ((m = itemRe.exec(xml))) {
@@ -57,7 +87,12 @@ function parseResourceItems(xml: string): Map<string, string> {
 		if (name === undefined || value === undefined) {
 			continue;
 		}
-		items.set(unescapeXmlAttr(name), unescapeXmlAttr(value));
+		items.set(unescapeXmlAttr(name), {
+			value: unescapeXmlAttr(value),
+			type: /\bType="([^"]*)"/.exec(attrs)?.[1],
+			contentType: /\bContentType="([^"]*)"/.exec(attrs)?.[1],
+			fileExtension: /\bFileExtension="([^"]*)"/.exec(attrs)?.[1]
+		});
 	}
 	return items;
 }
@@ -67,7 +102,7 @@ function parseResourceItems(xml: string): Map<string, string> {
  * on each call would be wasteful, but this is a cache, not a watcher: an
  * edit made outside this process within the same mtime tick (rare) would be
  * missed until the next real change. */
-function readResourceItemsCached(filePath: string): Map<string, string> {
+function readResourceItemsCached(filePath: string): Map<string, ResourceItem> {
 	let mtimeMs: number;
 	try {
 		mtimeMs = fs.statSync(filePath).mtimeMs;
@@ -89,6 +124,28 @@ function readResourceItemsCached(filePath: string): Map<string, string> {
 	return items;
 }
 
+/** Every `resource.{culture}.xml` file directly under one of `schemaName`'s
+ * own resource dirs, paired with its already-cached parsed items. */
+function eachCultureFile(
+	schemaDir: string,
+	schemaName: string
+): { culture: string; items: Map<string, ResourceItem> }[] {
+	const out: { culture: string; items: Map<string, ResourceItem> }[] = [];
+	for (const dir of findResourceDirs(schemaDir, schemaName)) {
+		for (const entry of readDirSafe(dir)) {
+			if (!entry.isFile()) {
+				continue;
+			}
+			const m = /^resource\.([a-zA-Z]+(?:-[a-zA-Z]+)?)\.xml$/i.exec(entry.name);
+			if (!m) {
+				continue;
+			}
+			out.push({ culture: m[1], items: readResourceItemsCached(path.join(dir, entry.name)) });
+		}
+	}
+	return out;
+}
+
 function cultureRank(culture: string): number {
 	const idx = PREFERRED_CULTURE_ORDER.indexOf(culture);
 	return idx < 0 ? PREFERRED_CULTURE_ORDER.length : idx;
@@ -107,25 +164,12 @@ export function resolveLocalizedString(
 	schemaName: string,
 	key: string
 ): LocalizedString | undefined {
-	const dirs = findResourceDirs(schemaDir, schemaName);
-	if (!dirs.length) {
-		return undefined;
-	}
 	const wantedName = `LocalizableStrings.${key}.Value`;
 	const values: LocalizedCultureValue[] = [];
-	for (const dir of dirs) {
-		for (const entry of readDirSafe(dir)) {
-			if (!entry.isFile()) {
-				continue;
-			}
-			const m = /^resource\.([a-zA-Z]+(?:-[a-zA-Z]+)?)\.xml$/i.exec(entry.name);
-			if (!m) {
-				continue;
-			}
-			const value = readResourceItemsCached(path.join(dir, entry.name)).get(wantedName);
-			if (value !== undefined) {
-				values.push({ culture: m[1], value });
-			}
+	for (const { culture, items } of eachCultureFile(schemaDir, schemaName)) {
+		const item = items.get(wantedName);
+		if (item !== undefined) {
+			values.push({ culture, value: item.value });
 		}
 	}
 	if (!values.length) {
@@ -133,4 +177,62 @@ export function resolveLocalizedString(
 	}
 	values.sort((a, b) => cultureRank(a.culture) - cultureRank(b.culture));
 	return { key, values };
+}
+
+/**
+ * Resolves a `Resources.Images.<key>` (JS) reference to the actual image
+ * bytes, across every culture the schema's own resource files carry.
+ *
+ * Unlike strings, an image's *name* and its actual data live under two
+ * different, GUID-linked XML items - `Images.<guid>.Caption` (the
+ * human-typed name shown in the Designer's image picker, which is what
+ * `key` actually is) and `Images.<guid>.Image` (the real
+ * `Type="Image" ContentType="Data" FileExtension=".svg" Value="<base64>"`
+ * payload) - confirmed against real schemas. There is no static mapping
+ * from an arbitrary JS binding key straight to a GUID (that link only
+ * exists in the platform's own image registry at runtime), so this only
+ * resolves when the Caption happens to equal `key` exactly - which real
+ * code does hit (`AnRefreshDataButtonIcon`, `MenuItemSelectedIcon`, ...),
+ * but far from always: plenty of images are captioned differently than
+ * however their key was later named in code, or aren't captioned at all,
+ * or come from a base/stock schema whose resources aren't reachable this
+ * way at all. No match here means exactly that - not "this image doesn't
+ * exist," just "can't be found from static files alone." */
+export function resolveLocalizedImage(
+	schemaDir: string,
+	schemaName: string,
+	key: string
+): LocalizedImage[] | undefined {
+	const images: LocalizedImage[] = [];
+	for (const { culture, items } of eachCultureFile(schemaDir, schemaName)) {
+		let guid: string | undefined;
+		for (const [name, item] of items) {
+			if (item.value !== key) {
+				continue;
+			}
+			const m = /^Images\.([0-9a-fA-F-]+)\.Caption$/.exec(name);
+			if (m) {
+				guid = m[1];
+				break;
+			}
+		}
+		if (!guid) {
+			continue;
+		}
+		const imageItem = items.get(`Images.${guid}.Image`);
+		if (
+			!imageItem ||
+			imageItem.contentType !== "Data" ||
+			!imageItem.fileExtension ||
+			imageItem.value.length > MAX_IMAGE_BASE64_LENGTH
+		) {
+			continue;
+		}
+		const mimeType = MIME_BY_EXTENSION[imageItem.fileExtension.toLowerCase()];
+		if (!mimeType) {
+			continue;
+		}
+		images.push({ culture, mimeType, base64: imageItem.value });
+	}
+	return images.length ? images : undefined;
 }
