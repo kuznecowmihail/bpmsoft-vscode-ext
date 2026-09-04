@@ -22,7 +22,7 @@ import { tokenize, Token, decodeCsharpStringLiteral } from "./csharpStyleAnalyze
  * the schema name would need tracing back through wherever that variable
  * was itself assigned. Coverage swept across two real installs' owned C#:
  * root-schema-name hovers resolve 100% of the time (the literal is always
- * self-contained); column-path hovers resolve 65.8%/6.5% respectively — the
+ * self-contained); column-path hovers resolve 72.6%/6.5% respectively — the
  * lower number specifically traced to one real file built entirely around
  * pattern (1) above. */
 
@@ -69,7 +69,7 @@ export interface CsharpEsqColumnContext {
 	end: number;
 }
 
-function matchForwardParen(tokens: Token[], openIdx: number): number {
+export function matchForwardParen(tokens: Token[], openIdx: number): number {
 	let depth = 0;
 	for (let j = openIdx; j < tokens.length; j++) {
 		if (tokens[j].value === "(") {
@@ -124,11 +124,41 @@ function enclosingBlock(tokens: Token[], idx: number): { start: number; end: num
 	return { start: openIdx, end: closeIdx < 0 ? tokens.length - 1 : closeIdx };
 }
 
+export interface CsharpLiteralArg {
+	value: string;
+	/** For `nameof(A.B.Value)`, everything before the final segment ("A.B",
+	 * or just "A" for the common `nameof(Schema.Column)` shape) — a real,
+	 * useful signal when it names a *different* schema than whatever
+	 * enclosing context would otherwise be assumed (e.g. a related entity
+	 * fetched under an unrelated variable name, `deal.SetColumnValue(nameof
+	 * (GoDeal.GoEquipmentCapex), ...)` inside a GoCapexEquipment listener —
+	 * confirmed real). `undefined` for a plain string literal or a bare
+	 * `nameof(Column)` with no qualifying prefix. */
+	qualifier?: string;
+	start: number;
+	end: number;
+}
+
 /** The first *direct* (not nested inside another call within the same
  * argument list — e.g. `AddColumn(esq.CreateAggregationColumn(..., "Id"))`
  * must not pick up that inner call's own "Id" argument) plain string
- * literal among `(openParen, closeParen)`'s own arguments. */
-function firstDirectStringArg(tokens: Token[], openParen: number, closeParen: number): Token | undefined {
+ * literal, OR `nameof(...)` expression, among `(openParen, closeParen)`'s
+ * own arguments.
+ *
+ * `nameof(Schema.Column)` evaluates to just `"Column"` — nameof of a member
+ * access yields the member's own simple name, not the qualifying prefix —
+ * and is genuinely common in real code (confirmed: roughly a fifth to half
+ * of real `SchemaName =`/`AddColumn`/`SetColumnValue`-family arguments use
+ * it rather than a plain string), so it has to resolve the same way a
+ * literal does, not just be skipped over. The returned span covers only
+ * the final identifier inside `nameof(...)` (e.g. "Column", not the whole
+ * "nameof(Schema.Column)"), matching where a user would actually hover -
+ * and correctly excluding "Schema", which isn't the value being named. */
+export function firstDirectLiteralArg(
+	tokens: Token[],
+	openParen: number,
+	closeParen: number
+): CsharpLiteralArg | undefined {
 	let depth = 0;
 	for (let j = openParen; j <= closeParen; j++) {
 		const v = tokens[j].value;
@@ -143,8 +173,30 @@ function firstDirectStringArg(tokens: Token[], openParen: number, closeParen: nu
 		if (depth !== 1) {
 			continue;
 		}
-		if (tokens[j].kind === "str" && !tokens[j].value.startsWith("'")) {
-			return tokens[j];
+		if (tokens[j].kind === "str" && !v.startsWith("'")) {
+			const value = decodeCsharpStringLiteral(v);
+			return value ? { value, start: tokens[j].start, end: tokens[j].end } : undefined;
+		}
+		// "nameof" is in KEYWORDS (csharpStyleAnalyzer's tokenizer classifies
+		// context-dependent identifiers like this as kind "kw", not "ident").
+		if (v === "nameof" && tokens[j + 1]?.value === "(") {
+			const nameofOpen = j + 1;
+			const nameofClose = matchForwardParen(tokens, nameofOpen);
+			if (nameofClose < 0) {
+				return undefined;
+			}
+			const idents: Token[] = [];
+			for (let k = nameofOpen + 1; k < nameofClose; k++) {
+				if (tokens[k].kind === "ident") {
+					idents.push(tokens[k]);
+				}
+			}
+			const lastIdent = idents[idents.length - 1];
+			if (!lastIdent) {
+				return undefined;
+			}
+			const qualifier = idents.length > 1 ? idents.slice(0, -1).map((t) => t.value).join(".") : undefined;
+			return { value: lastIdent.value, qualifier, start: lastIdent.start, end: lastIdent.end };
 		}
 	}
 	return undefined;
@@ -175,19 +227,18 @@ export function collectCsharpEsqDeclarations(source: string): CsharpEsqDeclarati
 		if (closeParen < 0) {
 			continue;
 		}
-		const nameTok = firstDirectStringArg(tokens, openParen, closeParen);
-		const schemaName = nameTok && decodeCsharpStringLiteral(nameTok.value);
-		if (!nameTok || !schemaName) {
+		const nameArg = firstDirectLiteralArg(tokens, openParen, closeParen);
+		if (!nameArg) {
 			continue;
 		}
 		const block = enclosingBlock(tokens, i - 2);
 		out.push({
 			varName: varTok.value,
-			schemaName,
+			schemaName: nameArg.value,
 			scopeStart: tokens[block.start]?.start ?? 0,
 			scopeEnd: tokens[block.end]?.end ?? source.length,
-			nameLiteralStart: nameTok.start,
-			nameLiteralEnd: nameTok.end
+			nameLiteralStart: nameArg.start,
+			nameLiteralEnd: nameArg.end
 		});
 	}
 	return out;
@@ -245,12 +296,11 @@ export function getCsharpEsqColumnContext(source: string, offset: number): Cshar
 		}
 		// offset is inside THIS call's own parens - resolve strictly against
 		// it (success or not) rather than continuing to scan other calls.
-		const pathTok = firstDirectStringArg(tokens, openParen, closeParen);
-		if (!pathTok || offset < pathTok.start || offset > pathTok.end) {
+		const pathArg = firstDirectLiteralArg(tokens, openParen, closeParen);
+		if (!pathArg || offset < pathArg.start || offset > pathArg.end) {
 			return undefined;
 		}
-		const path = decodeCsharpStringLiteral(pathTok.value);
-		return path ? { varName: varTok.value, path, start: pathTok.start, end: pathTok.end } : undefined;
+		return { varName: varTok.value, path: pathArg.value, start: pathArg.start, end: pathArg.end };
 	}
 	return undefined;
 }

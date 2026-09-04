@@ -9,9 +9,10 @@ import {
 	findEsqDeclarationForOffset,
 	getCsharpEsqColumnContext
 } from "../parse/esqCsharp";
+import { findEnclosingEntityEventListenerSchema, getEntityColumnContext } from "../parse/entityCsharp";
 
 /**
- * Two independent hover sources for `.cs` files:
+ * Three independent hover sources for `.cs` files:
  *
  * 1. `EntitySchemaQuery` — hovering the root-schema-name string literal in
  *    `new EntitySchemaQuery(EntitySchemaManager, "Contact")` shows the
@@ -22,7 +23,14 @@ import {
  *    token-based declaration/call-site detection (no C# AST here, unlike
  *    JS's real scope tree).
  *
- * 2. Localization strings — a string-literal key (e.g.
+ * 2. `Entity` CRUD — `entity.SetColumnValue("Col", ...)` /
+ *    `.GetTypedColumnValue<T>("Col")` / `.GetColumnValue("Col")` resolve
+ *    against the nearest enclosing `[EntityEventListener(SchemaName = "X")]`
+ *    class attribute — see `entityCsharp.ts` for why that's the one
+ *    reliably-traceable case, not every possible way an `Entity` reaches
+ *    that call.
+ *
+ * 3. Localization strings — a string-literal key (e.g.
  *    `GetLocalizableStringValue(userConnection, "SomeKey")`, or the raw
  *    `"LocalizableStrings.SomeKey.Value"` form) shows the actual RU/EN text
  *    from that schema's own resource XML — see `localizationLookup.ts` for
@@ -46,6 +54,11 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 		const esqHover = this.resolveEsqHover(text, offset);
 		if (esqHover) {
 			return esqHover;
+		}
+
+		const entityHover = this.resolveEntityColumnHover(text, offset);
+		if (entityHover) {
+			return entityHover;
 		}
 
 		const schema = findSchemaDir(document.uri.fsPath);
@@ -114,5 +127,36 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 			lines.push(`join: ${resolved.hops.map((h) => `${h.joinType} → ${h.schemaName}`).join(", ")}`);
 		}
 		return markdownHover(lines);
+	}
+
+	private resolveEntityColumnHover(text: string, offset: number): vscode.Hover | undefined {
+		const colCtx = getEntityColumnContext(text, offset);
+		if (!colCtx) {
+			return undefined;
+		}
+		// A schema explicitly named right in the call (nameof(Schema.Column))
+		// beats the ambient listener context when it's a real, known schema -
+		// it's the more direct signal, and is sometimes a genuinely different
+		// schema than the enclosing listener's own (a related entity reached
+		// under an unrelated variable name). Only falls back to the listener
+		// when there's no such qualifier, or it isn't a real schema at all.
+		const schemaName =
+			(colCtx.explicitSchemaName && this.index.findEntityDefinition(colCtx.explicitSchemaName)
+				? colCtx.explicitSchemaName
+				: undefined) ?? findEnclosingEntityEventListenerSchema(text, offset);
+		if (!schemaName) {
+			return undefined;
+		}
+		const member = this.index
+			.resolveEntityColumns(schemaName)
+			.find((m) => m.name === colCtx.columnName);
+		if (!member) {
+			return undefined;
+		}
+		return markdownHover([
+			`**${colCtx.columnName}** *(entity column, ${schemaName})*`,
+			...(member.detail ? [member.detail] : []),
+			...(member.documentation ? ["", member.documentation] : [])
+		]);
 	}
 }
