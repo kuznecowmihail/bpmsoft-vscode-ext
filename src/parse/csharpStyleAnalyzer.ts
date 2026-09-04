@@ -612,7 +612,13 @@ class Analyzer {
 		if (end < 0) {
 			return;
 		}
-		const start = this.tokens[bodyIdx].start;
+		// Starts at the end of the previous token (the condition's closing
+		// `)`, or the bare keyword for else/do/try/finally/catch), not at the
+		// body statement itself — when the body already sits on its own line,
+		// leaving that gap untouched left the original newline+indent behind
+		// as an orphan blank line once the fix's own leading newline was
+		// added on top of it.
+		const start = this.tokens[bodyIdx - 1].end;
 		const stop = this.tokens[end].end;
 		const indent = lineIndent(this.source, tok.start);
 		const nl = newline(this.source);
