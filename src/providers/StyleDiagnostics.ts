@@ -52,7 +52,9 @@ const CODE_BY_KIND: Record<StyleIssue["kind"], string> = {
 	commentSpacing: "bpmsoft.style.commentSpacing",
 	xmlDocMissing: "bpmsoft.style.xmlDocMissing",
 	trailingComment: "bpmsoft.style.trailingComment",
-	selectAllColumnsHint: "bpmsoft.style.selectAllColumnsHint"
+	selectAllColumnsHint: "bpmsoft.style.selectAllColumnsHint",
+	jsDocTagTypo: "bpmsoft.style.jsDocTagTypo",
+	xmlDocTagTypo: "bpmsoft.style.xmlDocTagTypo"
 };
 
 export class StyleDiagnostics implements vscode.Disposable {

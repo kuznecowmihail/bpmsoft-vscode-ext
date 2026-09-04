@@ -1,4 +1,5 @@
 import { StyleFix, StyleIssue, isSuppressedAbove } from "./styleAnalyzer";
+import { KNOWN_XMLDOC_TAGS, nearestKnownTag } from "./docTagCheck";
 
 interface Token {
 	kind: "ident" | "kw" | "punct" | "num" | "str";
@@ -208,6 +209,45 @@ class Analyzer {
 		for (const comment of this.comments) {
 			this.checkCommentSpacing(comment);
 			this.checkTrailingComment(comment);
+			this.checkXmlDocTagTypo(comment);
+		}
+	}
+
+	/** `<tag>`/`</tag>` in an XML doc comment (`///`) line — checked against
+	 * `KNOWN_XMLDOC_TAGS`, flagged only when unambiguously a typo of a real
+	 * one (see `docTagCheck.ts`). Real generic-type mentions inside prose
+	 * (`List<string>`) aren't at risk of a false match here: the distance
+	 * gate only fires for names *close* to an actual tag, and ordinary type
+	 * names essentially never are. Plain `//`/`/* *​/` comments (not `///`)
+	 * are skipped - they're not doc comments, mentioning `<...>` in one is
+	 * unrelated to this check. */
+	private checkXmlDocTagTypo(comment: CommentRange): void {
+		if (!comment.text.startsWith("///")) {
+			return;
+		}
+		const tagRe = /<\/?([A-Za-z]+)/g;
+		let m: RegExpExecArray | null;
+		while ((m = tagRe.exec(comment.text))) {
+			const tag = m[1];
+			const suggestion = nearestKnownTag(tag, KNOWN_XMLDOC_TAGS);
+			if (!suggestion) {
+				continue;
+			}
+			const tagStart = comment.start + m.index + (m[0].startsWith("</") ? 2 : 1);
+			const tagEnd = tagStart + tag.length;
+			this.issues.push({
+				kind: "xmlDocTagTypo",
+				start: tagStart,
+				end: tagEnd,
+				message: `Неизвестный тег XML-doc «${m[0].startsWith("</") ? "/" : ""}${tag}» — похоже на опечатку, ожидается «${suggestion}»`,
+				severity: "warning",
+				fix: {
+					title: `Заменить на ${suggestion}`,
+					start: tagStart,
+					end: tagEnd,
+					text: suggestion
+				}
+			});
 		}
 	}
 

@@ -1,6 +1,7 @@
 import * as acorn from "acorn";
 import { collectSchemaUnusedIssues, collectDiffDuplicateIssues, InheritedSchemaNames } from "./schemaUsageAnalyzer";
 import { AnyNode, childNodes, parseJs } from "./jsAst";
+import { KNOWN_JSDOC_TAGS, nearestKnownTag } from "./docTagCheck";
 
 type StyleIssueKind =
 	| "krBrace"
@@ -42,7 +43,9 @@ type StyleIssueKind =
 	| "commentSpacing"
 	| "xmlDocMissing"
 	| "trailingComment"
-	| "selectAllColumnsHint";
+	| "selectAllColumnsHint"
+	| "jsDocTagTypo"
+	| "xmlDocTagTypo";
 
 export interface StyleFix {
 	title: string;
@@ -97,7 +100,9 @@ export const AUTO_FORMAT_SAFE_KINDS: ReadonlySet<StyleIssueKind> = new Set<Style
 	"allmanCuddle",
 	"nullPattern",
 	"commentSpacing",
-	"trailingComment"
+	"trailingComment",
+	"jsDocTagTypo",
+	"xmlDocTagTypo"
 ]);
 
 const SUPPRESS_COMMENT_RE = /^\/\/\s*bpmsoft-ignore:\s*([\w-]+)\s*$/;
@@ -193,6 +198,7 @@ export function collectStyleIssues(
 	issues.push(...collectSchemaUnusedIssues(source, inherited, ast));
 	issues.push(...collectDiffDuplicateIssues(ast));
 	issues.push(...collectTrailingCommentIssues(source, comments));
+	issues.push(...collectJsDocTagIssues(comments));
 	return issues;
 }
 
@@ -1711,6 +1717,48 @@ function collectTrailingCommentIssues(source: string, comments: acorn.Comment[])
 				text: `${indent}${commentText}${nl}${codeOnly}`
 			}
 		});
+	}
+	return issues;
+}
+
+/** `@tag` lines in a `/** ... *​/` JSDoc comment — checked against
+ * `KNOWN_JSDOC_TAGS`, flagged only when unambiguously a typo of a real one
+ * (see `docTagCheck.ts`). Only matches at the start of a comment line (after
+ * the conventional leading `*`), which also keeps this from misfiring on an
+ * inline `{@link ...}` tag or an `@`-mention mid-sentence (an email address
+ * in a comment, say) - both sit mid-line, never at the line start. */
+function collectJsDocTagIssues(comments: acorn.Comment[]): StyleIssue[] {
+	const issues: StyleIssue[] = [];
+	const tagRe = /(^|\n)([ \t]*\*?[ \t]*)@([A-Za-z]+)\b/g;
+	for (const comment of comments) {
+		if (comment.type !== "Block" || !comment.value.startsWith("*")) {
+			continue;
+		}
+		const valueStart = comment.start + 2;
+		tagRe.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		while ((m = tagRe.exec(comment.value))) {
+			const tag = m[3];
+			const suggestion = nearestKnownTag(tag, KNOWN_JSDOC_TAGS);
+			if (!suggestion) {
+				continue;
+			}
+			const tagStart = valueStart + m.index + m[1].length + m[2].length;
+			const tagEnd = tagStart + 1 + tag.length;
+			issues.push({
+				kind: "jsDocTagTypo",
+				start: tagStart,
+				end: tagEnd,
+				message: `Неизвестный JSDoc-тег «@${tag}» — похоже на опечатку, ожидается «@${suggestion}»`,
+				severity: "warning",
+				fix: {
+					title: `Заменить на @${suggestion}`,
+					start: tagStart,
+					end: tagEnd,
+					text: `@${suggestion}`
+				}
+			});
+		}
 	}
 	return issues;
 }
