@@ -309,9 +309,14 @@ export class HoverProvider implements vscode.HoverProvider {
 		const lines = [`**${key}** *(Resources.Images, ${schemaName})*`];
 		for (const [base64, { mimeType, cultures }] of byContent) {
 			lines.push(cultures.join(", "));
-			lines.push(`![${key}](data:${mimeType};base64,${base64})`);
+			// Plain Markdown image syntax has no size control, and these are
+			// UI icons - rendered at native size (often the SVG's own large
+			// viewBox) they can dwarf the rest of the hover. An HTML <img>
+			// with a fixed width (height follows automatically) needs
+			// supportHtml on the MarkdownString.
+			lines.push(`<img src="data:${mimeType};base64,${base64}" width="32" />`);
 		}
-		return markdownHover(lines);
+		return markdownHover(lines, true);
 	}
 
 	private findSchemaDirByName(schemaName: string): string | undefined {
