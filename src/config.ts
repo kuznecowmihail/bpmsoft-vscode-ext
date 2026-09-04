@@ -90,6 +90,12 @@ export function entityNamingBooleanPrefixes(): string[] {
 	return commaList("entityNaming.booleanPrefixes", "Is,Has,Can");
 }
 
+export function processNamingDiagnosticsEnabled(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("processNamingDiagnostics", true);
+}
+
 /** A `_Temp` SQL script (naming-guidelines.md §6) is meant to be removed
  * from the package after its one-time run on target environments — this is
  * a nudge, not an authoritative check (no visibility into what's actually

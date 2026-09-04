@@ -22,6 +22,13 @@ import {
 	stripPrefix
 } from "../parse/entityNamingAnalyzer";
 import { parsePkgEntityColumns } from "../parse/entityMetadata";
+import {
+	ProcessNamingSettings,
+	checkProcessCaptionCoverage,
+	checkProcessCodeNaming,
+	checkProcessElementNaming
+} from "../parse/processNamingAnalyzer";
+import { findProcessElementCaption, locateProcessElementOffset, parseProcessSchemaElements } from "../parse/processElementsMetadata";
 import { SymbolIndex } from "./SymbolIndex";
 import {
 	entityNamingCheckSingular,
@@ -31,6 +38,7 @@ import {
 	entityNamingSingularExceptions,
 	namingDiagnosticsEnabled,
 	namingPrefixes,
+	processNamingDiagnosticsEnabled,
 	sqlTempScriptMaxAgeDays
 } from "../config";
 
@@ -116,6 +124,8 @@ export class NamingIssuesIndex {
 			booleanPrefixes: entityNamingBooleanPrefixes()
 		};
 		const entityDiagnosticsOn = entityNamingDiagnosticsEnabled();
+		const processSettings: ProcessNamingSettings = { prefixes };
+		const processDiagnosticsOn = processNamingDiagnosticsEnabled();
 		const out: NamingFinding[] = [];
 		const entityOccurrences: EntityCodeOccurrence[] = [];
 		for (const layout of layouts) {
@@ -142,6 +152,13 @@ export class NamingIssuesIndex {
 					if (result.occurrence) {
 						entityOccurrences.push(result.occurrence);
 					}
+					continue;
+				}
+				if (info?.managerName === "ProcessSchemaManager") {
+					if (!processDiagnosticsOn) {
+						continue;
+					}
+					out.push(...this.findingsForProcessSchema(filePath, text, info, processSettings));
 					continue;
 				}
 				out.push(...this.findingsForClientSchemaText(filePath, text, prefixes));
@@ -216,6 +233,12 @@ export class NamingIssuesIndex {
 					booleanPrefixes: entityNamingBooleanPrefixes()
 				};
 				return this.findingsForEntitySchema(filePath, text, info, entitySettings).findings;
+			}
+			if (info?.managerName === "ProcessSchemaManager") {
+				if (!processNamingDiagnosticsEnabled()) {
+					return [];
+				}
+				return this.findingsForProcessSchema(filePath, text, info, { prefixes });
 			}
 			return this.findingsForClientSchemaText(filePath, text, prefixes);
 		}
@@ -342,6 +365,96 @@ export class NamingIssuesIndex {
 		}
 
 		return { findings, occurrence: { name: schemaName, filePath, isSubstitution } };
+	}
+
+	/**
+	 * `ProcessSchemaManager` schema (a "Бизнес-процесс" in the naming
+	 * guideline, §7) — checks the process's own Code/Title the same way as an
+	 * Object (`findingsForEntitySchema`), plus every BPMN-style diagram
+	 * element's title, parsed straight from `metadata.json` (confirmed real
+	 * plain JSON for this schema type, unlike client schemas' diff-DSL — see
+	 * `processElementsMetadata.ts`). Element titles live in the same
+	 * `Resources/{Process}.Process/resource.{culture}.xml` as the process's
+	 * own Title, under `BaseElements.{A2}.Caption`.
+	 */
+	private findingsForProcessSchema(
+		filePath: string,
+		text: string,
+		info: { name?: string; managerName?: string },
+		settings: ProcessNamingSettings
+	): NamingFinding[] {
+		const schemaName = info.name || path.basename(path.dirname(filePath));
+		if (!schemaName) {
+			return [];
+		}
+		const schemaDir = path.dirname(filePath);
+		const parentName = parseDescriptorParent(text);
+		const isSubstitution = parentName === schemaName;
+		const findings: NamingFinding[] = [];
+		const namePosition = offsetToPosition(text, locateJsonNameOffset(text, schemaName));
+
+		if (!isSubstitution) {
+			for (const issue of checkProcessCodeNaming(schemaName, settings)) {
+				findings.push({
+					packageName: packageFromPath(filePath),
+					label: schemaName,
+					message: issue.message,
+					filePath,
+					position: namePosition
+				});
+			}
+		}
+
+		const resourceDirs = findResourceDirs(schemaDir, schemaName);
+		let hasRu = false;
+		let hasEn = false;
+		let elementResourceText: string | undefined;
+		for (const dir of resourceDirs) {
+			const ruText = readFileSafe(path.join(dir, "resource.ru-RU.xml"));
+			hasRu = hasRu || hasNonEmptyCaption(ruText);
+			hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
+			// Element titles are Russian-specific checks (verb prefix, past
+			// tense, closed question) — the ru-RU resource file is the right
+			// one to read them from.
+			elementResourceText = elementResourceText || ruText;
+		}
+		if (!isSubstitution) {
+			for (const issue of checkProcessCaptionCoverage(schemaName, hasRu, hasEn)) {
+				findings.push({
+					packageName: packageFromPath(filePath),
+					label: schemaName,
+					message: issue.message,
+					filePath,
+					position: namePosition
+				});
+			}
+		}
+
+		const metadataPath = path.join(schemaDir, "metadata.json");
+		const metadataText = readFileSafe(metadataPath);
+		if (metadataText !== undefined) {
+			for (const element of parseProcessSchemaElements(metadataText)) {
+				const caption = elementResourceText
+					? findProcessElementCaption(elementResourceText, element.name)
+					: undefined;
+				const elementIssues = checkProcessElementNaming({
+					name: element.name,
+					category: element.category,
+					caption
+				});
+				for (const issue of elementIssues) {
+					findings.push({
+						packageName: packageFromPath(filePath),
+						label: caption || element.name,
+						message: issue.message,
+						filePath: metadataPath,
+						position: offsetToPosition(metadataText, locateProcessElementOffset(metadataText, element.name))
+					});
+				}
+			}
+		}
+
+		return findings;
 	}
 
 	private findingsForCsharpSchema(filePath: string, prefixes: string[]): NamingFinding[] {

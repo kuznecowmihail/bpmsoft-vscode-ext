@@ -386,6 +386,11 @@
           "type": "number",
           "default": 30,
           "description": "naming-guidelines.md §6: a _Temp SQL script should be removed from the package after its one-time run on target environments. This extension can't know what's actually been deployed, so it's a nudge, not a hard check — a _Temp script older than this many days (by its git add date) gets flagged as 'possibly forgotten'. 0 disables it."
+        },
+        "bpmsoft.processNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check ProcessSchemaManager business processes (naming-guidelines.md §7 'Бизнес-процессы') against their own descriptor.json/metadata.json/Resources: process Code (PascalCase, prefix, mandatory 'Process' suffix, no temporary designation like New/Test/Temp/Copy/V2), ru-RU/en-US Title coverage, and per-diagram-element title rules — Actions should start with a verb, Events should describe an already-happened fact (past tense), Exclusive gateways are recommended as closed questions, and a Sequence flow without a transition condition should normally be left unnamed. The Action/Event checks are weak word-ending heuristics (no real Russian morphology available) and can be noisy — same trade-off as the SQL script pattern check."
         }
       }
     },
