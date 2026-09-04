@@ -11,6 +11,7 @@ import {
 	type SchemaStructure,
 } from "./schemaStructureParse";
 import { resolveAppLayouts } from "./workspaceLayout";
+import { parsePkgPath } from "./pkgPath";
 
 export {
 	packageFromStackEntry,
@@ -727,9 +728,8 @@ function descriptorPathForSchemaFile(filePath: string): string {
 }
 
 function packageFromPkgPath(filePath: string): string | undefined {
-	const norm = normalizePath(filePath);
-	const m = norm.match(/\/Pkg\/([^/]+)\/Schemas\//);
-	return m?.[1];
+	const info = parsePkgPath(filePath);
+	return info?.category === "Schemas" ? info.packageName : undefined;
 }
 
 function packageFromAutogenPath(

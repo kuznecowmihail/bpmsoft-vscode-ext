@@ -7,6 +7,7 @@ import { parseDescriptorInfo } from "../index/schemaStructureParse";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { NamingIssuesIndex } from "../index/NamingIssuesIndex";
 import { findResourceDirs } from "../index/schemaResourceLookup";
+import { parsePkgPath } from "../index/pkgPath";
 import { TopFolderKind, topFolderIcon, schemaIcon } from "./packageIcons";
 
 const TOP_FOLDER_ORDER: TopFolderKind[] = [
@@ -167,8 +168,7 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 	 * item, …) is a plain `fsEntry` leaf; `getParent` reconstructs the rest
 	 * of the chain up from there. */
 	nodeForFilePath(fsPath: string): PackagesNode | undefined {
-		const normalized = fsPath.replace(/\\/g, "/");
-		if (!/\/Pkg\/[^/]+\//i.test(normalized)) {
+		if (!parsePkgPath(fsPath)) {
 			return undefined;
 		}
 		return { kind: "fsEntry", path: fsPath, isDirectory: false, label: path.basename(fsPath) };

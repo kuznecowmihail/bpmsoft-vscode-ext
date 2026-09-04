@@ -10,6 +10,7 @@ import {
 	parseSqlScriptDescriptorName
 } from "./schemaStructureParse";
 import { findResourceDirs, findSchemaDir, readModuleSource } from "./schemaResourceLookup";
+import { findPkgRoot, packageNameFromPkgPath } from "./pkgPath";
 import {
 	ClientSchemaNamingContext,
 	ClientSchemaNamingSettings,
@@ -332,7 +333,7 @@ export class NamingIssuesIndex {
 	private async findingsForFile(filePath: string, prefixes: string[]): Promise<NamingFinding[]> {
 		const normalized = filePath.replace(/\\/g, "/");
 		if (/\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(normalized)) {
-			return this.findingsForSqlScript(filePath, pkgRootFromFilePath(filePath), sqlTempScriptMaxAgeDays());
+			return this.findingsForSqlScript(filePath, findPkgRoot(filePath), sqlTempScriptMaxAgeDays());
 		}
 		if (/\/Schemas\/[^/]+\/descriptor\.json$/i.test(normalized)) {
 			const text = readFileSafe(filePath);
@@ -883,15 +884,6 @@ export class NamingIssuesIndex {
 	}
 }
 
-/** `.../Pkg/...` → `.../Pkg` — the git root, per the confirmed repo topology
- * (the whole `Pkg` folder is one git repo). Used only by the single-file
- * `findingsForFile` path; `scanWorkspace` already has `layout.pkgRoot` from
- * its own loop. */
-function pkgRootFromFilePath(filePath: string): string | undefined {
-	const match = /^(.*\/Pkg)\//.exec(filePath.replace(/\\/g, "/"));
-	return match ? match[1].replace(/\//g, path.sep) : undefined;
-}
-
 /** Days since the commit that (most recently) added `filePath` — the
  * closest proxy available for "how long has this `_Temp` script been
  * sitting here" (naming-guidelines.md §6: `_Temp` scripts are meant to be
@@ -934,8 +926,7 @@ function hasNonEmptyCaption(xmlText: string | undefined): boolean {
 }
 
 function packageFromPath(filePath: string): string {
-	const match = /\/Pkg\/([^/]+)\//.exec(filePath.replace(/\\/g, "/"));
-	return match ? match[1] : "?";
+	return packageNameFromPkgPath(filePath) ?? "?";
 }
 
 function locateJsonNameOffset(text: string, name: string): number {

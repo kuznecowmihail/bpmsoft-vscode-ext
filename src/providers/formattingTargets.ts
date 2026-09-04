@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { parsePkgPath } from "../index/pkgPath";
 
 export function formattingEnabled(): boolean {
 	return vscode.workspace
@@ -20,7 +21,7 @@ export function isJsFormatTarget(filePath: string): boolean {
 		// running our schema-oriented formatter on them is wrong scope, not
 		// just noisy (a multi-hundred-KB minified file reformatted by
 		// Prettier is actively harmful, not merely unhelpful).
-		/\/Pkg\/[^/]+\/Files\//.test(normalized)
+		parsePkgPath(filePath)?.category === "Files"
 	);
 }
 
@@ -30,6 +31,6 @@ export function isCsharpFormatTarget(filePath: string): boolean {
 }
 
 export function isSqlScriptFormatTarget(filePath: string): boolean {
-	const normalized = filePath.replace(/\\/g, "/");
-	return /\/Pkg\/[^/]+\/SqlScripts\/[^/]+\/[^/]+\.sql$/i.test(normalized);
+	const info = parsePkgPath(filePath);
+	return Boolean(info?.category === "SqlScripts" && info.itemName && info.rest && /^[^/]+\.sql$/i.test(info.rest));
 }

@@ -6,7 +6,7 @@ const { parsePkgEntityColumns, parseEntityResourceCaptions } = require("../out/p
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
 const { SymbolIndex } = require("../out/index/SymbolIndex");
-const { isPrivateMemberFromOtherFile, sandboxMessageIssue } = require("../out/index/types");
+const { isPrivateMemberFromOtherFile, sandboxMessageIssue } = require("../out/parse/types");
 const { buildPlatformStubs } = require("../out/stubs/platformGlobals");
 const { buildExtStubs } = require("../out/stubs/extGlobals");
 const { buildSandboxStubs } = require("../out/stubs/sandboxGlobals");
@@ -22,7 +22,7 @@ const {
 	parseClientSchemaType,
 	pascalSchemaTypeToEnum,
 	parsePkgPropertiesSchemaType
-} = require("../out/index/schemaHierarchy");
+} = require("../out/index/SchemaHierarchyResolver");
 
 function resolveSmokeRoot() {
 	const candidates = [

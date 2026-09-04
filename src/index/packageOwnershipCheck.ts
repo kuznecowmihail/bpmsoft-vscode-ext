@@ -1,6 +1,7 @@
 import * as path from "path";
 import { readFileSafe } from "../fsUtils";
 import { parseJsonNoBom } from "../textUtils";
+import { parsePkgPath } from "./pkgPath";
 
 export interface PackageDescriptor {
 	name: string;
@@ -24,9 +25,7 @@ export interface PackageOwnershipSettings {
 /** `.../Pkg/{Package}/...` → `.../Pkg/{Package}` — works for any file inside
  * a package (schemas, SQL scripts, resources), not just `Schemas/`. */
 export function findPackageDir(filePath: string): string | undefined {
-	const normalized = filePath.replace(/\\/g, "/");
-	const match = normalized.match(/^(.*\/Pkg\/[^/]+)\//);
-	return match?.[1];
+	return parsePkgPath(filePath)?.packageDir;
 }
 
 /** Package-level `descriptor.json` (`{Descriptor: {Name, Maintainer, ...}}`)

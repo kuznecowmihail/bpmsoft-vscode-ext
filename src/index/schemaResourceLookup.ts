@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { readFileSafe } from "../fsUtils";
+import { parsePkgPath } from "./pkgPath";
 
 function readDirSafe(dirPath: string): fs.Dirent[] {
 	try {
@@ -38,14 +39,12 @@ export function findResourceDirs(schemaPath: string, schemaName: string): string
  * instead of erroring. `undefined` if the path isn't under a package's
  * `Resources/` at all, or no matching schema/descriptor exists on disk. */
 export function findOwningSchemaDescriptor(resourceFilePath: string): string | undefined {
-	const normalized = resourceFilePath.replace(/\\/g, "/");
-	const match = /^(.*\/Pkg\/[^/]+)\/Resources\/([^/]+)\/resource\.[^/]+\.xml$/i.exec(normalized);
-	if (!match) {
+	const info = parsePkgPath(resourceFilePath);
+	if (info?.category !== "Resources" || !info.itemName || !info.rest || !/^resource\.[^/]+\.xml$/i.test(info.rest)) {
 		return undefined;
 	}
-	const pkgRoot = match[1].replace(/\//g, path.sep);
-	const resourceFolderName = match[2];
-	const schemasRoot = path.join(pkgRoot, "Schemas");
+	const resourceFolderName = info.itemName;
+	const schemasRoot = path.join(info.packageDir, "Schemas");
 	for (const entry of readDirSafe(schemasRoot)) {
 		if (!entry.isDirectory() || !resourceFolderName.startsWith(`${entry.name}.`)) {
 			continue;
@@ -77,23 +76,20 @@ export interface PackageItemRef {
 	itemDir: string;
 }
 
-const PACKAGE_ITEM_RE = /^(.*\/Pkg\/([^/]+)\/(Schemas|SqlScripts|Data|Resources)\/([^/]+))\//;
-
 /** Generalizes `findSchemaDir` to any package item folder — a package's
  * content isn't only `Schemas/`, so anything watching "what changed in this
  * package" (Open Schemas grouping, Timeline's file set) needs to key off
  * `Pkg/{Package}/{ItemType}/{ItemName}/…` broadly, not just schemas. */
 export function resolvePackageItem(filePath: string): PackageItemRef | undefined {
-	const normalized = filePath.replace(/\\/g, "/");
-	const match = PACKAGE_ITEM_RE.exec(normalized);
-	if (!match) {
+	const info = parsePkgPath(filePath);
+	if (!info?.category || info.category === "Files" || !info.itemName || !info.itemDir) {
 		return undefined;
 	}
 	return {
-		packageName: match[2],
-		itemType: match[3] as PackageItemRef["itemType"],
-		itemName: match[4],
-		itemDir: match[1].replace(/\//g, path.sep)
+		packageName: info.packageName,
+		itemType: info.category,
+		itemName: info.itemName,
+		itemDir: info.itemDir
 	};
 }
 

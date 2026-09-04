@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { collectStyleIssues, StyleIssue } from "../parse/styleAnalyzer";
 import { collectCsharpStyleIssues } from "../parse/csharpStyleAnalyzer";
 import { SymbolIndex } from "../index/SymbolIndex";
+import { parsePkgPath } from "../index/pkgPath";
 import { DIAG_SOURCE } from "./MissingMemberDiagnostics";
 import {
 	clearDebounceTimers,
@@ -173,6 +174,6 @@ function isStyleTarget(filePath: string, csharp = false): boolean {
 		// Pkg/{Package}/Files/** is static/vendor assets (minified
 		// third-party bundles, Angular components, …), not BPMSoft AMD
 		// schemas — our var/eqeqeq/camelCase rules don't apply to them.
-		/\/Pkg\/[^/]+\/Files\//.test(normalized)
+		parsePkgPath(filePath)?.category === "Files"
 	);
 }
