@@ -53,3 +53,39 @@ export function expectedMaintainers(): string[] {
 		.map((part) => part.trim())
 		.filter(Boolean);
 }
+
+function commaList(key: string, fallback: string): string[] {
+	const raw = vscode.workspace.getConfiguration("bpmsoft").get<string>(key, fallback);
+	return raw
+		.split(",")
+		.map((part) => part.trim())
+		.filter(Boolean);
+}
+
+export function entityNamingDiagnosticsEnabled(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("entityNamingDiagnostics", true);
+}
+
+/** Kept as its own toggle, separate from `entityNamingDiagnostics` — the
+ * singular/plural heuristic is the noisiest of the entity-naming checks
+ * (no dictionary, English has no reliable syntactic plural rule), so a team
+ * that finds it too noisy can turn off just this one. */
+export function entityNamingCheckSingular(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("entityNaming.checkSingularName", true);
+}
+
+export function entityNamingSingularExceptions(): string[] {
+	return commaList("entityNaming.singularExceptions", "Settings,Permissions,Statistics");
+}
+
+export function entityNamingDateSuffixes(): string[] {
+	return commaList("entityNaming.dateSuffixes", "On,Date");
+}
+
+export function entityNamingBooleanPrefixes(): string[] {
+	return commaList("entityNaming.booleanPrefixes", "Is,Has,Can");
+}

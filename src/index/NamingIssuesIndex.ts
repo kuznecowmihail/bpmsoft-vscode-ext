@@ -7,12 +7,30 @@ import {
 	parseDescriptorParent,
 	parseSqlScriptDescriptorName
 } from "./schemaStructureParse";
-import { findSchemaDir } from "./schemaResourceLookup";
+import { findResourceDirs, findSchemaDir } from "./schemaResourceLookup";
 import { checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
 import { checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
 import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
+import {
+	EntityCodeOccurrence,
+	EntityNamingSettings,
+	checkEntityCaptionCoverage,
+	checkEntityCodeNaming,
+	checkEntityColumnNaming,
+	findEntityCodeCollisions,
+	stripPrefix
+} from "../parse/entityNamingAnalyzer";
+import { parsePkgEntityColumns } from "../parse/entityMetadata";
 import { SymbolIndex } from "./SymbolIndex";
-import { namingDiagnosticsEnabled, namingPrefixes } from "../config";
+import {
+	entityNamingCheckSingular,
+	entityNamingDateSuffixes,
+	entityNamingDiagnosticsEnabled,
+	entityNamingBooleanPrefixes,
+	entityNamingSingularExceptions,
+	namingDiagnosticsEnabled,
+	namingPrefixes
+} from "../config";
 
 export interface NamingFinding {
 	packageName: string;
@@ -85,18 +103,43 @@ export class NamingIssuesIndex {
 		const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
 		const layouts = resolveAppLayouts(folders);
 		const prefixes = namingPrefixes();
+		const entitySettings: EntityNamingSettings = {
+			prefixes,
+			checkSingularName: entityNamingCheckSingular(),
+			singularExceptions: entityNamingSingularExceptions(),
+			dateSuffixes: entityNamingDateSuffixes(),
+			booleanPrefixes: entityNamingBooleanPrefixes()
+		};
+		const entityDiagnosticsOn = entityNamingDiagnosticsEnabled();
 		const out: NamingFinding[] = [];
+		const entityOccurrences: EntityCodeOccurrence[] = [];
 		for (const layout of layouts) {
 			if (!layout.pkgRoot) {
 				continue;
 			}
-			const clientSchemaFiles = walkFiles(
+			const schemaDescriptorFiles = walkFiles(
 				layout.pkgRoot,
 				(name) => name === "descriptor.json",
 				(p) => /\/Schemas\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
 			);
-			for (const filePath of clientSchemaFiles) {
-				out.push(...this.findingsForClientSchema(filePath, prefixes));
+			for (const filePath of schemaDescriptorFiles) {
+				const text = readFileSafe(filePath);
+				if (text === undefined) {
+					continue;
+				}
+				const info = parseDescriptorInfo(text);
+				if (info?.managerName === "EntitySchemaManager") {
+					if (!entityDiagnosticsOn) {
+						continue;
+					}
+					const result = this.findingsForEntitySchema(filePath, text, info, entitySettings);
+					out.push(...result.findings);
+					if (result.occurrence) {
+						entityOccurrences.push(result.occurrence);
+					}
+					continue;
+				}
+				out.push(...this.findingsForClientSchemaText(filePath, text, prefixes));
 			}
 			const csharpFiles = walkFiles(
 				layout.pkgRoot,
@@ -115,20 +158,56 @@ export class NamingIssuesIndex {
 				out.push(...this.findingsForSqlScript(filePath));
 			}
 		}
+		if (entityDiagnosticsOn) {
+			for (const collision of findEntityCodeCollisions(entityOccurrences)) {
+				const text = readFileSafe(collision.filePath);
+				out.push({
+					packageName: packageFromPath(collision.filePath),
+					label: collision.name,
+					message: `Object "${collision.name}": code already used by a different, non-substituting object in another package`,
+					filePath: collision.filePath,
+					position: text
+						? offsetToPosition(text, locateJsonNameOffset(text, collision.name))
+						: new vscode.Position(0, 0)
+				});
+			}
+		}
 		return out;
 	}
 
 	/** Dispatches a single file to the right per-category check based on its
-	 * path shape — mirrors the three branches `scanWorkspace` walks, but for
+	 * path shape — mirrors the branches `scanWorkspace` walks, but for
 	 * exactly one file. Returns `[]` (not an error) for a file that isn't a
-	 * naming target at all, or that no longer exists (deleted). */
+	 * naming target at all, or that no longer exists (deleted). Unlike the
+	 * full workspace scan, an `EntitySchemaManager` descriptor here skips the
+	 * cross-package uniqueness check (needs every occurrence at once — not
+	 * worth a full rescan just to keep that one check current on every
+	 * keystroke; it settles again on the next full `refresh()`). */
 	private findingsForFile(filePath: string, prefixes: string[]): NamingFinding[] {
 		const normalized = filePath.replace(/\\/g, "/");
 		if (/\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(normalized)) {
 			return this.findingsForSqlScript(filePath);
 		}
 		if (/\/Schemas\/[^/]+\/descriptor\.json$/i.test(normalized)) {
-			return this.findingsForClientSchema(filePath, prefixes);
+			const text = readFileSafe(filePath);
+			if (text === undefined) {
+				return [];
+			}
+			const info = parseDescriptorInfo(text);
+			if (info?.managerName === "EntitySchemaManager") {
+				if (!entityNamingDiagnosticsEnabled()) {
+					return [];
+				}
+				const entitySettings: EntityNamingSettings = {
+					prefixes,
+					checkSingularName: entityNamingCheckSingular(),
+					singularExceptions: entityNamingSingularExceptions(),
+					dateSuffixes: entityNamingDateSuffixes(),
+					booleanPrefixes: entityNamingBooleanPrefixes()
+				};
+				return this.findingsForEntitySchema(filePath, text, info, entitySettings).findings;
+			}
+			return this.findingsForClientSchemaText(filePath, text, prefixes);
 		}
 		if (/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized)) {
 			return this.findingsForCsharpSchema(filePath, prefixes);
@@ -136,11 +215,7 @@ export class NamingIssuesIndex {
 		return [];
 	}
 
-	private findingsForClientSchema(filePath: string, prefixes: string[]): NamingFinding[] {
-		const text = readFileSafe(filePath);
-		if (text === undefined) {
-			return [];
-		}
+	private findingsForClientSchemaText(filePath: string, text: string, prefixes: string[]): NamingFinding[] {
 		const info = parseDescriptorInfo(text);
 		const schemaName = info?.name || path.basename(path.dirname(filePath));
 		if (!schemaName) {
@@ -160,6 +235,103 @@ export class NamingIssuesIndex {
 			filePath,
 			position: offsetToPosition(text, locateJsonNameOffset(text, schemaName))
 		}));
+	}
+
+	/**
+	 * `EntitySchemaManager` schema (an "Объект" in the naming guideline) —
+	 * unlike `findingsForClientSchemaText`, checks three independent things:
+	 * the object's own Code (skipped for a substitution — same `Parent.Name
+	 * === Name` signal, confirmed real for entity descriptors too, e.g.
+	 * `Account` substituted across `GoMain`/`GoLavkaDarkMain`/
+	 * `GoSuppliersMain`), its ru-RU/en-US Title coverage (checked for every
+	 * occurrence — each package's own `Resources/{Entity}.Entity` can carry
+	 * its own captions), and its own custom columns' Code (also checked
+	 * unconditionally — a substituting package routinely adds columns of its
+	 * own). Returns the `EntityCodeOccurrence` needed for the workspace-wide
+	 * uniqueness check separately, since that needs every occurrence at once.
+	 */
+	private findingsForEntitySchema(
+		filePath: string,
+		text: string,
+		info: { name?: string; managerName?: string },
+		settings: EntityNamingSettings
+	): { findings: NamingFinding[]; occurrence: EntityCodeOccurrence | undefined } {
+		const schemaName = info.name || path.basename(path.dirname(filePath));
+		if (!schemaName) {
+			return { findings: [], occurrence: undefined };
+		}
+		const schemaDir = path.dirname(filePath);
+		const parentName = parseDescriptorParent(text);
+		const isSubstitution = parentName === schemaName;
+		const findings: NamingFinding[] = [];
+		const namePosition = offsetToPosition(text, locateJsonNameOffset(text, schemaName));
+
+		if (!isSubstitution) {
+			for (const issue of checkEntityCodeNaming(schemaName, settings)) {
+				findings.push({
+					packageName: packageFromPath(filePath),
+					label: schemaName,
+					message: issue.message,
+					filePath,
+					position: namePosition
+				});
+			}
+		}
+
+		// Skipped for substitutions for the same reason as the Code check
+		// above: a package extending an existing entity (stock or another
+		// package's) routinely doesn't restate the Title at all, relying on
+		// the base definition's own Caption — which, for a *stock* base, only
+		// lives in conf/content/Autogenerated, outside what this Pkg-only
+		// scan can see. Confirmed as a real false-positive source while
+		// building this: every Pkg-level substitution of a stock entity
+		// (SysModule, Opportunity, Contact, …) showed up as "missing a
+		// title" before this guard, none of which is a real issue.
+		if (!isSubstitution) {
+			const resourceDirs = findResourceDirs(schemaDir, schemaName);
+			let hasRu = false;
+			let hasEn = false;
+			for (const dir of resourceDirs) {
+				hasRu = hasRu || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.ru-RU.xml")));
+				hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
+			}
+			for (const issue of checkEntityCaptionCoverage(schemaName, hasRu, hasEn)) {
+				findings.push({
+					packageName: packageFromPath(filePath),
+					label: schemaName,
+					message: issue.message,
+					filePath,
+					position: namePosition
+				});
+			}
+		}
+
+		const metadataPath = path.join(schemaDir, "metadata.json");
+		const metadataText = readFileSafe(metadataPath);
+		if (metadataText !== undefined) {
+			const businessName = stripPrefix(schemaName, settings.prefixes);
+			for (const column of parsePkgEntityColumns(metadataText, metadataPath)) {
+				const isLookup = column.detail === "entity lookup";
+				const columnIssues = checkEntityColumnNaming(
+					businessName,
+					{ name: column.name, dataValueType: column.dataValueType, isLookup },
+					settings
+				);
+				for (const issue of columnIssues) {
+					findings.push({
+						packageName: packageFromPath(filePath),
+						label: column.name,
+						message: issue.message,
+						filePath: metadataPath,
+						position: column.position
+							? new vscode.Position(column.position.line, column.position.character)
+							: new vscode.Position(0, 0)
+					});
+				}
+			}
+		}
+
+		return { findings, occurrence: { name: schemaName, filePath, isSubstitution } };
 	}
 
 	private findingsForCsharpSchema(filePath: string, prefixes: string[]): NamingFinding[] {
@@ -202,6 +374,19 @@ function readFileSafe(filePath: string): string | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+/** `<Item Name="Caption" Value="..." />` — the entity's own title, at the
+ * top level of `Resources/{Entity}.Entity/resource.{culture}.xml` (confirmed
+ * real shape: `GoTicket.Entity`'s own `resource.ru-RU.xml` has `Value="Тикет"`
+ * alongside the per-column `Columns.X.Caption` items this codebase already
+ * reads elsewhere). */
+function hasNonEmptyCaption(xmlText: string | undefined): boolean {
+	if (!xmlText) {
+		return false;
+	}
+	const match = /<Item\s+Name="Caption"\s+Value="([^"]*)"\s*\/>/.exec(xmlText);
+	return !!match && match[1].trim().length > 0;
 }
 
 /** The schema's registered name, from `descriptor.json` in the same

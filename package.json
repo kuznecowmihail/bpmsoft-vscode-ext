@@ -356,6 +356,31 @@
           "type": "string",
           "default": "",
           "description": "Comma-separated Maintainer value(s) your team's packages should have (e.g. \"YandexGo\") — stand-in for the Maintainer system setting. Empty (default) disables the maintainer check."
+        },
+        "bpmsoft.entityNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check EntitySchemaManager objects (naming-guidelines.md §2 'Объекты') against their own descriptor.json/metadata.json/Resources: object Code (PascalCase, prefix, singular, no Tbl/Entity/Field affix), ru-RU/en-US Title coverage, custom column Code (prefix, boolean Is/Has/Can prefix, date suffix, no redundant lookup 'Id' suffix, no redundant repetition of the owning entity's name), and cross-package Code uniqueness (aware of the substitution mechanism — the same Code across packages via ExtendParent is expected, not a collision)."
+        },
+        "bpmsoft.entityNaming.checkSingularName": {
+          "type": "boolean",
+          "default": true,
+          "description": "Part of bpmsoft.entityNamingDiagnostics: flag an object Code that looks plural. Kept as its own toggle — English has no reliable syntactic plural rule without a dictionary, so this heuristic (ends in 's', not 'ss'/'us'/'is') is noisier than the other checks."
+        },
+        "bpmsoft.entityNaming.singularExceptions": {
+          "type": "string",
+          "default": "Settings,Permissions,Statistics",
+          "description": "Comma-separated object Codes that are legitimately plural by meaning, exempt from bpmsoft.entityNaming.checkSingularName."
+        },
+        "bpmsoft.entityNaming.dateSuffixes": {
+          "type": "string",
+          "default": "On,Date",
+          "description": "Comma-separated acceptable suffixes for DATE/DATE_TIME/TIME column names (e.g. CreatedOn/ModifiedOn → \"On\", StartDate → \"Date\")."
+        },
+        "bpmsoft.entityNaming.booleanPrefixes": {
+          "type": "string",
+          "default": "Is,Has,Can",
+          "description": "Comma-separated acceptable verb/assertion prefixes for BOOLEAN column names (e.g. IsActive, HasAttachment, CanEdit)."
         }
       }
     },

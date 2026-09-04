@@ -202,6 +202,23 @@ Hover по тем же конструкциям: вид члена, докуме
 
 Схемы / SQL-скрипты, чьё имя не соответствует `naming-guidelines.md` (суффиксы `Page`/`PageV2`, `Section`/`SectionV2`, `Detail`/`DetailV2`, C# `Service`/`EventListener` — там, где платформа даёт однозначный маркер). Отдельный список + те же находки декорациями прямо в дереве Packages. Настраивается через `bpmsoft.namingDiagnostics` / `bpmsoft.namingPrefixes`.
 
+**Объекты** (`EntitySchemaManager`-схемы, §2 гайдлайна) проверяются отдельно, включается через `bpmsoft.entityNamingDiagnostics`:
+
+| Проверка | Детали |
+| --- | --- |
+| Код объекта: PascalCase, только английские буквы/цифры, префикс (`bpmsoft.namingPrefixes`) | Пропускается для замещений (`Parent.Name` = собственному имени, `ExtendParent`) — имя выбирали не в этом пакете |
+| Код объекта: единственное число | Эвристика (оканчивается на `s`, кроме `ss`/`us`/`is`) + список исключений `bpmsoft.entityNaming.singularExceptions` (по умолчанию `Settings,Permissions,Statistics`); выключается отдельно через `bpmsoft.entityNaming.checkSingularName`, т.к. в английском нет надёжного синтаксического признака множественного числа |
+| Технические префиксы/суффиксы (`Tbl`, `Entity`, `Field`) | И у объекта, и у колонок |
+| Заголовок на русском и английском | `Resources/{Entity}.Entity/resource.{ru-RU,en-US}.xml`, `Item Name="Caption"`. Тоже пропускается для замещений — заголовок может быть унаследован от базовой (в т.ч. коробочной) сущности, не видной в `Pkg` |
+| Уникальность кода по всей системе | Один и тот же код в нескольких пакетах — это нормально (механизм замещения), нарушение — только если **больше одного** пакета определяет код НЕ как замещение |
+| Префикс у кастомных колонок | Та же логика, что у объекта |
+| Булевы колонки — префикс-глагол | `bpmsoft.entityNaming.booleanPrefixes` (по умолчанию `Is,Has,Can`) |
+| Колонки даты/времени — суффикс | `bpmsoft.entityNaming.dateSuffixes` (по умолчанию `On,Date`) |
+| Lookup-колонка не должна заканчиваться на `Id` | Суффикс `Id` добавляется платформой автоматически на уровне БД/автогенерённого C# — второй раз в коде колонки его быть не должно |
+| Избыточное повторение имени сущности в колонке своей же сущности | `Customer.CustomerName` → предлагается `Customer.Name` |
+
+Не проверяется: наименование колонок «по смыслу значения» и «сущность, а не коллекция» — это про смысл, не про синтаксис, автоматически не отличить.
+
 ## BPMSoft Settings
 
 Второй контейнер в Activity Bar, для настроек и утилит расширения.
@@ -260,6 +277,11 @@ BPMSoft.configuration.Structures["LeadPageV2"] = {
 | `bpmsoft.packageOwnershipDiagnostics` | boolean | `true` | Проверка пакета активного файла по префиксу и издателю (см. раздел «Проверка пакета»), результат — в статус-баре. |
 | `bpmsoft.currentPackage` | string | `""` | Справочное значение — «текущий пакет» (аналог `CurrentPackageId`), пока не участвует в проверке. Удобнее задавать через вкладку Package Settings. |
 | `bpmsoft.expectedMaintainers` | string | `""` | Издатель(и) через запятую, которым должны принадлежать пакеты (аналог `Maintainer`). Пусто — проверка издателя выключена. |
+| `bpmsoft.entityNamingDiagnostics` | boolean | `true` | Проверка объектов (`EntitySchemaManager`) — код, заголовок, уникальность, колонки. См. раздел «Naming Issues». |
+| `bpmsoft.entityNaming.checkSingularName` | boolean | `true` | Отдельный флаг для самой шумной эвристики (единственное число кода объекта). |
+| `bpmsoft.entityNaming.singularExceptions` | string | `Settings,Permissions,Statistics` | Коды объектов, которые не проверяются на единственное число. |
+| `bpmsoft.entityNaming.dateSuffixes` | string | `On,Date` | Допустимые суффиксы для колонок даты/времени. |
+| `bpmsoft.entityNaming.booleanPrefixes` | string | `Is,Has,Can` | Допустимые префиксы-глаголы для булевых колонок. |
 
 Пример workspace `.vscode/settings.json`:
 
