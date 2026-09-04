@@ -159,3 +159,21 @@ export function parseSqlScriptDescriptorName(source: string): string | undefined
 	const name = json?.SqlScript?.Name;
 	return typeof name === "string" && name ? name : undefined;
 }
+
+/**
+ * `Descriptor.ModifiedOnUtc` from a schema's own descriptor.json \u2014 the
+ * .NET JSON date wire format (`"\/Date(<ms since epoch>)\/"`), confirmed
+ * real against every schema descriptor checked in two installs. Used as the
+ * cache-invalidation key for an owned schema (see `ownedSchemaCache.ts`):
+ * this extension keeps it current itself (see `touchSchemaModifiedOnUtc` in
+ * `extension.ts`) whenever any file belonging to the schema is saved,
+ * rather than relying on it only being updated by the BPMSoft Designer/
+ * server, which a git-first, edit-the-files-directly workflow never
+ * actually goes through.
+ */
+export function parseDescriptorModifiedOnUtc(source: string): string | undefined {
+	const json = parseJsonNoBom<any>(source);
+	const root = json?.Descriptor && typeof json.Descriptor === "object" ? json.Descriptor : json;
+	const value = root?.ModifiedOnUtc;
+	return typeof value === "string" && value ? value : undefined;
+}
