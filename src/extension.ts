@@ -11,6 +11,7 @@ import { ensureDotnetSolution, maybeOfferCsharpExtension } from "./dotnet/ensure
 import { CompletionProvider } from "./providers/CompletionProvider";
 import { DefinitionProvider } from "./providers/DefinitionProvider";
 import { HoverProvider } from "./providers/HoverProvider";
+import { CsharpHoverProvider } from "./providers/CsharpHoverProvider";
 import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
 import { StyleDiagnostics } from "./providers/StyleDiagnostics";
 import { StyleCodeActionProvider } from "./providers/StyleCodeActionProvider";
@@ -323,6 +324,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.languages.registerHoverProvider(
 				jsSelector,
 				new HoverProvider(index)
+			),
+			vscode.languages.registerHoverProvider(
+				csharpSelector,
+				new CsharpHoverProvider()
 			),
 			vscode.languages.registerCodeActionsProvider(
 				jsSelector,

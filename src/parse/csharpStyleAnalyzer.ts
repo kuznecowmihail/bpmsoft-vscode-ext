@@ -1977,7 +1977,7 @@ function emptyMods(): ModifierSet {
 	};
 }
 
-function tokenize(source: string): { tokens: Token[]; comments: CommentRange[] } {
+export function tokenize(source: string): { tokens: Token[]; comments: CommentRange[] } {
 	const tokens: Token[] = [];
 	const comments: CommentRange[] = [];
 	const n = source.length;
@@ -2085,6 +2085,69 @@ function tokenize(source: string): { tokens: Token[]; comments: CommentRange[] }
 		i += multi.value.length;
 	}
 	return { tokens, comments };
+}
+
+export interface CsharpStringLiteralAt {
+	/** Decoded content — quotes/prefix stripped, escapes resolved. */
+	value: string;
+	start: number;
+	end: number;
+}
+
+/** The plain-string-literal content at `offset`, tokenizer-based so verbatim
+ * (`@"..."`) and interpolated (`$"..."`) prefixes and escape sequences are
+ * handled correctly rather than guessed at with a regex. `undefined` for a
+ * char literal (`'x'`), an interpolated string with a real `{expr}` hole (no
+ * static value to report), or when `offset` isn't inside any string literal
+ * at all. Used to resolve a C# localization-key argument like
+ * `GetLocalizableStringValue(userConnection, "SomeKey")` back to its actual
+ * translated text — see `localizationLookup.ts`. */
+export function csharpStringLiteralAt(source: string, offset: number): CsharpStringLiteralAt | undefined {
+	const { tokens } = tokenize(source);
+	for (const tok of tokens) {
+		if (tok.kind !== "str" || offset < tok.start || offset > tok.end) {
+			continue;
+		}
+		if (tok.value.startsWith("'")) {
+			return undefined;
+		}
+		const value = decodeCsharpStringLiteral(tok.value);
+		return value === undefined ? undefined : { value, start: tok.start, end: tok.end };
+	}
+	return undefined;
+}
+
+const ESCAPE_CHARS: Record<string, string> = {
+	n: "\n", r: "\r", t: "\t", "0": "\0", a: "\x07", b: "\b", f: "\f", v: "\v"
+};
+
+function decodeCsharpStringLiteral(raw: string): string | undefined {
+	let i = 0;
+	let interpolated = false;
+	let verbatim = false;
+	while (raw[i] === "$" || raw[i] === "@") {
+		if (raw[i] === "$") {
+			interpolated = true;
+		} else {
+			verbatim = true;
+		}
+		i++;
+	}
+	if (raw[i] !== '"' || raw.length - i < 2 || !raw.endsWith('"')) {
+		return undefined;
+	}
+	let body = raw.slice(i + 1, -1);
+	if (interpolated) {
+		if (/\{(?!\{)/.test(body) || /(?<!\})\}(?!\})/.test(body)) {
+			// A real interpolation hole - no static value to show.
+			return undefined;
+		}
+		body = body.replace(/\{\{/g, "{").replace(/\}\}/g, "}");
+	}
+	if (verbatim) {
+		return body.replace(/""/g, '"');
+	}
+	return body.replace(/\\([\\"'0abfnrtv])/g, (_, c: string) => ESCAPE_CHARS[c] ?? c);
 }
 
 function matchPunct(source: string, i: number): { value: string } {
