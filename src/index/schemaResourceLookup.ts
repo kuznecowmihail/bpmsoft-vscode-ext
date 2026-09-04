@@ -24,6 +24,39 @@ export function findResourceDirs(schemaPath: string, schemaName: string): string
 		.map((e) => path.join(resourcesRoot, e.name));
 }
 
+/** Reverse of `findResourceDirs`: given a `Resources/{SchemaName}.{Suffix}/
+ * resource.{culture}.xml` path, resolves back to that schema's own
+ * `Schemas/{SchemaName}/descriptor.json` — used so a resource-file edit
+ * (which several naming checks read, e.g. a missing RU/EN Title, or a
+ * Process element's own caption) can re-trigger the naming check for the
+ * schema it belongs to, not just invalidate its own path (which nothing
+ * else keys findings on). Matched the same way `findResourceDirs` matches
+ * forward — by trying each real `Schemas/*` dir name as a dot-anchored
+ * prefix of the resource folder name — rather than naively splitting on the
+ * first dot, since a wrong guess there would just silently miss the schema
+ * instead of erroring. `undefined` if the path isn't under a package's
+ * `Resources/` at all, or no matching schema/descriptor exists on disk. */
+export function findOwningSchemaDescriptor(resourceFilePath: string): string | undefined {
+	const normalized = resourceFilePath.replace(/\\/g, "/");
+	const match = /^(.*\/Pkg\/[^/]+)\/Resources\/([^/]+)\/resource\.[^/]+\.xml$/i.exec(normalized);
+	if (!match) {
+		return undefined;
+	}
+	const pkgRoot = match[1].replace(/\//g, path.sep);
+	const resourceFolderName = match[2];
+	const schemasRoot = path.join(pkgRoot, "Schemas");
+	for (const entry of readDirSafe(schemasRoot)) {
+		if (!entry.isDirectory() || !resourceFolderName.startsWith(`${entry.name}.`)) {
+			continue;
+		}
+		const descriptorPath = path.join(schemasRoot, entry.name, "descriptor.json");
+		if (fs.existsSync(descriptorPath)) {
+			return descriptorPath;
+		}
+	}
+	return undefined;
+}
+
 /** `.../Schemas/{SchemaName}` for a file somewhere under a schema's own
  * folder (e.g. `.../Schemas/LeadPageV2/LeadPageV2.js`), or `undefined` if
  * `filePath` isn't under a `Schemas/{Name}/` folder at all. */

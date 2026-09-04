@@ -19,6 +19,7 @@ import { SqlFormattingProvider } from "./providers/SqlFormattingProvider";
 import { NamingDiagnostics, isNamingDiagnosticsTarget } from "./providers/NamingDiagnostics";
 import { NamingIssuesTreeProvider } from "./providers/NamingIssuesTreeProvider";
 import { NamingIssuesIndex } from "./index/NamingIssuesIndex";
+import { findOwningSchemaDescriptor } from "./index/schemaResourceLookup";
 import { PackagesTreeProvider } from "./providers/PackagesTreeProvider";
 import { NamingDecorationProvider } from "./providers/NamingDecorationProvider";
 import { ViewModelOutlineProvider } from "./providers/ViewModelOutlineProvider";
@@ -360,8 +361,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				}
 			}),
 			vscode.workspace.onDidSaveTextDocument((document) => {
-				if (isNamingDiagnosticsTarget(document.uri.fsPath)) {
-					void namingIndex.refreshFile(document.uri.fsPath);
+				const fsPath = document.uri.fsPath;
+				if (isNamingDiagnosticsTarget(fsPath)) {
+					void namingIndex.refreshFile(fsPath);
+					return;
+				}
+				const normalized = fsPath.replace(/\\/g, "/");
+				if (/\/metadata\.json$/i.test(normalized)) {
+					void namingIndex.refreshFile(path.join(path.dirname(fsPath), "descriptor.json"));
+				} else if (/\/resource\.[^/]+\.xml$/i.test(normalized)) {
+					const ownerDescriptor = findOwningSchemaDescriptor(fsPath);
+					if (ownerDescriptor) {
+						void namingIndex.refreshFile(ownerDescriptor);
+					}
 				}
 			}),
 			vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -476,10 +488,25 @@ function onWatchedFile(uri: vscode.Uri, deleted: boolean): void {
 	if (isNamingDiagnosticsTarget(uri.fsPath)) {
 		void namingIndex.refreshFile(uri.fsPath);
 	}
-	if (
-		/\/metadata\.json$/i.test(normalized) ||
-		/\/resource\.[^/]+\.xml$/i.test(normalized)
-	) {
+	if (/\/metadata\.json$/i.test(normalized)) {
+		// A sibling of the schema's own descriptor.json, in the same
+		// Schemas/{Name}/ folder — several checks read it directly (entity
+		// columns, a Process diagram's elements, a UserTask's own
+		// parameters), so it needs to re-trigger that schema's naming check
+		// too, not just invalidate the SymbolIndex's cached entity/columns.
+		void namingIndex.refreshFile(path.join(path.dirname(uri.fsPath), "descriptor.json"));
+		index.invalidateEntity(uri.fsPath);
+		return;
+	}
+	if (/\/resource\.[^/]+\.xml$/i.test(normalized)) {
+		// Same idea, one level removed: a resource file lives in a sibling
+		// Resources/{Name}.{Suffix}/ folder, not next to descriptor.json, so
+		// resolving the owning schema needs an actual lookup rather than a
+		// plain path.dirname.
+		const ownerDescriptor = findOwningSchemaDescriptor(uri.fsPath);
+		if (ownerDescriptor) {
+			void namingIndex.refreshFile(ownerDescriptor);
+		}
 		index.invalidateEntity(uri.fsPath);
 		return;
 	}
