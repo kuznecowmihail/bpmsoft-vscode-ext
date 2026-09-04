@@ -26,7 +26,7 @@
 | `BPMSoft.` | Enums (`SysValue`, `DataValueType`, …), классы, `configuration.Structures.*` из **этого** проекта (`conf/content`) |
 | `Ext.` | `isEmpty`, `String`, `Array`, … (+ разбор `Resources/ui/ExtJs`) |
 | Идентификатор (`BPM…`) | `BPMSoft`, `Ext`, `define` |
-| Внутри `methods: { }` или тела `Ext.define` | Сниппеты **override** родительских методов (`@inheritdoc` + `@overriden`) |
+| Внутри `methods: { }` или тела `Ext.define` | Сниппеты **override** родительских методов (`@inheritdoc` + `@override`) |
 
 Индексированные подсказки поднимаются выше word/history (см. `bpmsoft.preferIndexedCompletions`).
 

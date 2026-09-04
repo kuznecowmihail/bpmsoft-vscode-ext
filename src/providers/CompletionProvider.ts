@@ -537,7 +537,7 @@ export class CompletionProvider implements vscode.CompletionItemProvider {
 				item.range = range;
 				const doc = [
 					`@inheritdoc ${m.owner}#${m.name}`,
-					"@overriden",
+					"@override",
 					...(m.documentation ? ["", m.documentation] : [])
 				].join("\n");
 				item.documentation = new vscode.MarkdownString(doc);

@@ -2339,7 +2339,7 @@ const snippet = formatOverrideSnippet(
 );
 if (
 	!snippet.includes("@inheritdoc BPMSoft.BasePageV2#onEntityInitialized") ||
-	!snippet.includes("@overriden") ||
+	!snippet.includes("@override") ||
 	!snippet.includes("onEntityInitialized: function () {") ||
 	snippet.split("\n").some((line, i) => i > 0 && line.startsWith("\t\t"))
 ) {
