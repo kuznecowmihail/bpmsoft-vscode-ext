@@ -1,10 +1,27 @@
 /**
- * Small helpers shared by several `*NamingAnalyzer.ts` modules (Process,
- * ProcessUserTask, now C#) that all need to reason about a PascalCase code
- * one capitalized segment at a time — splitting it, and flagging a
- * temporary/placeholder-looking segment (`New`/`Test`/`Temp`/`Copy`, a
- * self-made `V2`-style version marker) baked into it.
+ * Small helpers shared by every `*NamingAnalyzer.ts` module (Process,
+ * ProcessUserTask, C#, Client schema, Entity, Data, SQL) — the common
+ * `NamingIssue` result shape, PascalCase-segment reasoning (splitting a code
+ * one capitalized segment at a time, flagging a temporary/placeholder-looking
+ * segment baked into it), a shared ru-RU/en-US title-coverage check, and
+ * recovering a finding's subject name from its own message text.
  */
+
+/** One naming-guideline violation — every `check*Naming`/`check*Coverage`
+ * function in this package returns `NamingIssue[]`. */
+export interface NamingIssue {
+	message: string;
+}
+
+/** A `NamingIssue` anchored to a `[start, end)` source offset range — used by
+ * `checkCsharpSchemaNaming`, the one analyzer that computes its own
+ * diagnostic position itself instead of leaving that to the caller (every
+ * other `*NamingAnalyzer.ts` module works off a schema's registered Name,
+ * with no source text of its own to anchor a range in). */
+export interface PositionedNamingIssue extends NamingIssue {
+	start: number;
+	end: number;
+}
 
 /** Splits a PascalCase code into its capitalized segments (`"NauApprovalProcessV2"`
  * → `["Nau", "Approval", "Process", "V2"]`) — digits after the capital are
@@ -35,4 +52,24 @@ export function findTemporaryDesignationSegment(name: string): string | undefine
  * dedicated field through every push site. */
 export function extractNamingSubject(message: string): string | undefined {
 	return message.match(/[«"]([^»"]+)[»"]/)?.[1];
+}
+
+/** Whether a subject (Process/UserTask/Object/...) has its own ru-RU/en-US
+ * `Caption` — the same missing-title shape every schema type with a
+ * localized title needs. `label` is the finding-message word for the
+ * subject kind (`"Process"`/`"UserTask"`/`"Object"`/...). */
+export function checkCaptionCoverage(
+	label: string,
+	name: string,
+	hasRuCaption: boolean,
+	hasEnCaption: boolean
+): NamingIssue[] {
+	const issues: NamingIssue[] = [];
+	if (!hasRuCaption) {
+		issues.push({ message: `${label} "${name}": missing a Russian title (ru-RU Caption)` });
+	}
+	if (!hasEnCaption) {
+		issues.push({ message: `${label} "${name}": missing an English title (en-US Caption)` });
+	}
+	return issues;
 }

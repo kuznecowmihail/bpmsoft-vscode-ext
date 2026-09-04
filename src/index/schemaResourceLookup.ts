@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { readFileSafe } from "../fsUtils";
 
 function readDirSafe(dirPath: string): fs.Dirent[] {
 	try {
@@ -94,6 +95,23 @@ export function resolvePackageItem(filePath: string): PackageItemRef | undefined
 		itemName: match[4],
 		itemDir: match[1].replace(/\//g, path.sep)
 	};
+}
+
+/** A Module-type client schema's own `{Name}.js` (its code) and, if present,
+ * `{Name}.less` (its styles) — siblings of `descriptorPath` in the same
+ * `Schemas/{Name}/` folder. `undefined` js means the schema's own source
+ * couldn't be read (e.g. deleted mid-scan) — the caller skips module checks
+ * entirely in that case rather than guessing. */
+export function readModuleSource(
+	descriptorPath: string,
+	schemaName: string
+): { js: string; less?: string } | undefined {
+	const dir = path.dirname(descriptorPath);
+	const js = readFileSafe(path.join(dir, `${schemaName}.js`));
+	if (js === undefined) {
+		return undefined;
+	}
+	return { js, less: readFileSafe(path.join(dir, `${schemaName}.less`)) };
 }
 
 /** All real files that make up a schema: its own folder's files (recursively,
