@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as acorn from "acorn";
 import * as walk from "acorn-walk";
-import { PlatformStubMember, MemberKind } from "../index/types";
+import { PlatformStubMember, MemberKind } from "../parse/types";
 import { getStaticPlatformStubs } from "./bpmsoftPlatform";
 import {
 	resolveAppLayouts,

@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as acorn from "acorn";
 import * as walk from "acorn-walk";
-import { IndexedMember, MemberKind, SourcePosition } from "../index/types";
+import { IndexedMember, MemberKind, SourcePosition } from "../parse/types";
 import { resolveAppLayouts, collectResourceRoots, uniquePaths } from "../index/workspaceLayout";
 import { resolveFactoryExportObject } from "../parse/amdAst";
 import { AnyNode, posFromNode, leadingComment } from "../parse/jsAst";

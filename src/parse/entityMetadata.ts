@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { IndexedMember, SourcePosition } from "../index/types";
+import { IndexedMember, SourcePosition } from "./types";
 
 const D2_BLOCK_RE = /^\+ MetaData\.Schema\.D2\s+\{/gm;
 const COLUMN_NAME_RE = /^[A-Za-z_][\w]*$/;

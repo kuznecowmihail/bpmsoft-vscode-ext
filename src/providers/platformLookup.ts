@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedModule } from "../index/types";
+import { IndexedModule } from "../parse/types";
 
 export function isPlatformPrefix(prefix: string): boolean {
 	return (

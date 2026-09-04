@@ -4,7 +4,7 @@ import {
 	IndexedMember,
 	IndexedModule,
 	memberDedupeKey
-} from "../index/types";
+} from "./types";
 import { AnyNode, parseJs } from "./jsAst";
 import {
 	isExtDefineCall,

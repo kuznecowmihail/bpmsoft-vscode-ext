@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { PlatformStubMember, MemberKind } from "../index/types";
+import { PlatformStubMember, MemberKind } from "../parse/types";
 import { resolveAppLayouts, collectResourceRoots } from "../index/workspaceLayout";
 import { cloneStub, mergeStubFirstWins } from "./stubTree";
 

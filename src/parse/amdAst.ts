@@ -7,7 +7,7 @@ import {
 	MemberKind,
 	SchemaMessageDirection,
 	memberDedupeKey
-} from "../index/types";
+} from "./types";
 import { AnyNode, childNodes, posFromNode, leadingComment } from "./jsAst";
 
 export const IDENT_RE = /^[A-Za-z_$][\w$]*$/;

@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as acorn from "acorn";
 import * as walk from "acorn-walk";
-import { IndexedSchemaMessage, SchemaMessageDirection } from "../index/types";
+import { IndexedSchemaMessage, SchemaMessageDirection } from "../parse/types";
 import { resolveAppLayouts } from "../index/workspaceLayout";
 import { AnyNode, leadingComment, posFromNode } from "../parse/jsAst";
 type CoreAction = "publish" | "subscribe";

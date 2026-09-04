@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember } from "../index/types";
+import { IndexedMember } from "../parse/types";
 import { isJsFile } from "./jsDocuments";
 import { findResourceDirs } from "../index/schemaResourceLookup";
 
