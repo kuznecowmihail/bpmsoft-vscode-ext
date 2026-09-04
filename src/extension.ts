@@ -22,6 +22,7 @@ import { NamingIssuesIndex } from "./index/NamingIssuesIndex";
 import { PackagesTreeProvider } from "./providers/PackagesTreeProvider";
 import { NamingDecorationProvider } from "./providers/NamingDecorationProvider";
 import { ViewModelOutlineProvider } from "./providers/ViewModelOutlineProvider";
+import { GitFlowStatusBar } from "./providers/GitFlowStatusBar";
 import { PlainOutlineProvider, PlainOutlineSortMode } from "./providers/PlainOutlineProvider";
 import {
 	SchemaHistoryTreeProvider,
@@ -155,6 +156,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		];
 
 		const completionProvider = new BpmsoftCompletionProvider(index);
+
+		const gitFlowCandidateRoots = layouts
+			.map((l) => l.pkgRoot || l.configurationRoot || l.appRoot || l.workspaceRoot)
+			.filter((p): p is string => Boolean(p));
+		const gitFlowStatusBar = new GitFlowStatusBar(gitFlowCandidateRoots);
 
 		context.subscriptions.push(
 			diagnostics,
@@ -354,6 +360,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				outlineTree.refresh();
 				void plainOutlineTree.refresh();
 				schemaHistoryTree.refresh();
+				void gitFlowStatusBar.refresh();
 				if (editor) {
 					styleDiagnostics.refresh(editor.document);
 					if (editor.document.languageId === "csharp") {
@@ -365,6 +372,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			packagesTreeView.onDidChangeVisibility((e) => {
 				if (e.visible) {
 					revealActiveFileInPackages();
+				}
+			}),
+			gitFlowStatusBar,
+			// Branch switches usually happen via the integrated terminal or an
+			// external git client, not through anything this extension
+			// observes directly — re-checking whenever the window regains
+			// focus catches those without needing a raw `.git/HEAD` watcher.
+			vscode.window.onDidChangeWindowState((state) => {
+				if (state.focused) {
+					void gitFlowStatusBar.refresh();
 				}
 			}),
 			vscode.workspace.onDidCloseTextDocument((document) => {
@@ -392,6 +409,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				if (e.affectsConfiguration("editor.defaultFormatter")) {
 					formatterTree.refresh();
 				}
+				if (
+					e.affectsConfiguration("bpmsoft.gitFlowDiagnostics") ||
+					e.affectsConfiguration("bpmsoft.gitFlow")
+				) {
+					void gitFlowStatusBar.refresh();
+				}
 			})
 		);
 
@@ -402,6 +425,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		outlineTree.refresh();
 		void plainOutlineTree.refresh();
 		schemaHistoryTree.refresh();
+		void gitFlowStatusBar.refresh();
 
 		void preferIndexedCompletions();
 		void rebuildWithProgress();

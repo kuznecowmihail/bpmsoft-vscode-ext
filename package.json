@@ -321,6 +321,26 @@
           "type": "string",
           "default": "",
           "description": "Comma-separated package/schema name prefixes to require (e.g. \"Nau\" or \"Nau,Go\" for multiple streams). Empty (default) disables the prefix check — there's no one universal prefix to assume."
+        },
+        "bpmsoft.gitFlowDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check the current git branch against the team's Git Flow model (main/develop/sprint/x.x.x/release/x.x.x/feature/bugfix) and show violations in the status bar. Covers: branch name pattern, main never carrying commits absent from develop, and (see bpmsoft.gitFlow.checkBranchParent) feature/bugfix branched from the right parent. Can't check step *order* — that's not recoverable from git history alone."
+        },
+        "bpmsoft.gitFlow.mainBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Name of the production branch (main/master/…)."
+        },
+        "bpmsoft.gitFlow.developBranch": {
+          "type": "string",
+          "default": "develop",
+          "description": "Name of the integration branch."
+        },
+        "bpmsoft.gitFlow.checkBranchParent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Heuristically check that feature/* was branched from a sprint/* branch and bugfix/* from a release/* branch, not straight off develop/main — based on merge-base analysis of git history, so it can false-positive on a branch that was created correctly but never rebased/updated from its parent. Turn off if it's too noisy; the other bpmsoft.gitFlowDiagnostics checks are unaffected."
         }
       }
     },
