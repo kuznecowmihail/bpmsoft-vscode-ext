@@ -8,17 +8,20 @@ import {
 	parseSqlScriptDescriptorName
 } from "../index/schemaStructureParse";
 import { findSchemaDir } from "../index/schemaResourceLookup";
-import { checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
+import { ClientSchemaNamingSettings, checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
 import { checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
 import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
 import { parseDataSchemaDescriptor } from "../parse/dataSchemaMetadata";
 import { checkDataSchemaCodeNaming } from "../parse/dataSchemaNamingAnalyzer";
+import { extractNamingSubject } from "../parse/namingCommon";
 import { SymbolIndex } from "../index/SymbolIndex";
 import {
+	clientSchemaNamingCheckModuleSuffix,
 	csharpNamingCheckRoleSuffix,
 	csharpNamingCheckSingleClassPerSchema,
 	csharpNamingRoleSuffixes,
 	namingDiagnosticsEnabled,
+	namingIgnoredNames,
 	namingPrefixes
 } from "../config";
 import { clearDebounceTimers, debounceDocument } from "./jsDocuments";
@@ -86,7 +89,14 @@ export class NamingDiagnostics implements vscode.Disposable {
 					: normalized.endsWith(".cs")
 						? this.checkCsharpSchema(document)
 						: this.checkSchemaDescriptor(document);
-			this.collection.set(document.uri, issues.map((issue) => toDiagnostic(document, issue)));
+			const ignored = new Set(namingIgnoredNames());
+			const filtered = ignored.size
+				? issues.filter((issue) => {
+						const subject = extractNamingSubject(issue.message);
+						return !subject || !ignored.has(subject);
+					})
+				: issues;
+			this.collection.set(document.uri, filtered.map((issue) => toDiagnostic(document, issue)));
 		} catch {
 			this.collection.delete(document.uri);
 		}
@@ -118,11 +128,18 @@ export class NamingDiagnostics implements vscode.Disposable {
 			return [];
 		}
 		const schemaType = this.index.hierarchy.resolveSchemaType(schemaName);
+		const moduleSource = schemaType === "MODULE" ? readModuleSource(document.uri.fsPath, schemaName) : undefined;
+		const settings: ClientSchemaNamingSettings = {
+			prefixes: namingPrefixes(),
+			checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
+		};
 		const pos = locateJsonNameValue(text, schemaName);
-		return checkClientSchemaNaming(schemaName, schemaType, namingPrefixes(), parentName).map((issue) => ({
-			...issue,
-			...pos
-		}));
+		return checkClientSchemaNaming(schemaName, schemaType, settings, parentName, moduleSource).map(
+			(issue) => ({
+				...issue,
+				...pos
+			})
+		);
 	}
 
 	private checkSqlDescriptor(document: vscode.TextDocument): PositionedIssue[] {
@@ -186,6 +203,28 @@ function csharpSchemaDescriptorInfo(filePath: string): DescriptorInfo | undefine
 	try {
 		const descriptorText = fs.readFileSync(path.join(schema.schemaDir, "descriptor.json"), "utf8");
 		return parseDescriptorInfo(descriptorText);
+	} catch {
+		return undefined;
+	}
+}
+
+/** A Module-type client schema's own `{Name}.js`/`{Name}.less` — siblings of
+ * `descriptorPath` in the same `Schemas/{Name}/` folder. Mirrors
+ * `NamingIssuesIndex.ts`'s own `readModuleSource`. */
+function readModuleSource(
+	descriptorPath: string,
+	schemaName: string
+): { js: string; less?: string } | undefined {
+	const dir = path.dirname(descriptorPath);
+	try {
+		const js = fs.readFileSync(path.join(dir, `${schemaName}.js`), "utf8");
+		let less: string | undefined;
+		try {
+			less = fs.readFileSync(path.join(dir, `${schemaName}.less`), "utf8");
+		} catch {
+			less = undefined;
+		}
+		return { js, less };
 	} catch {
 		return undefined;
 	}

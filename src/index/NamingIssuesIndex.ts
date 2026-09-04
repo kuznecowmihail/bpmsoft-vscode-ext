@@ -9,7 +9,8 @@ import {
 	parseSqlScriptDescriptorName
 } from "./schemaStructureParse";
 import { findResourceDirs, findSchemaDir } from "./schemaResourceLookup";
-import { checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
+import { ClientSchemaNamingSettings, checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
+import { extractNamingSubject } from "../parse/namingCommon";
 import { CsharpNamingSettings, checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
 import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
 import {
@@ -51,6 +52,7 @@ import {
 } from "../parse/dataSchemaNamingAnalyzer";
 import { SymbolIndex } from "./SymbolIndex";
 import {
+	clientSchemaNamingCheckModuleSuffix,
 	csharpNamingCheckRoleSuffix,
 	csharpNamingCheckSingleClassPerSchema,
 	csharpNamingDiagnosticsEnabled,
@@ -62,6 +64,7 @@ import {
 	entityNamingBooleanPrefixes,
 	entityNamingSingularExceptions,
 	namingDiagnosticsEnabled,
+	namingIgnoredNames,
 	namingPrefixes,
 	processNamingDiagnosticsEnabled,
 	processUserTaskActionVerbs,
@@ -76,6 +79,24 @@ export interface NamingFinding {
 	message: string;
 	filePath: string;
 	position: vscode.Position;
+}
+
+/** Drops any finding whose subject name (extracted from its own message —
+ * see `extractNamingSubject`) is in `bpmsoft.naming.ignoredNames` — a
+ * confirmed false positive the user marked via the "Пометить как ложное
+ * срабатывание" quick action. Applied once, centrally, at the end of every
+ * path that produces a finished `NamingFinding[]`, rather than threading an
+ * ignore-check into each individual check function. */
+function filterIgnoredNames(findings: NamingFinding[]): NamingFinding[] {
+	const ignored = namingIgnoredNames();
+	if (!ignored.length) {
+		return findings;
+	}
+	const ignoredSet = new Set(ignored);
+	return findings.filter((finding) => {
+		const subject = extractNamingSubject(finding.message);
+		return !subject || !ignoredSet.has(subject);
+	});
 }
 
 /**
@@ -103,7 +124,9 @@ export class NamingIssuesIndex {
 	 * age check (see `checkTempScriptAge`) needs `git log`, unlike everything
 	 * else here which is plain file I/O. */
 	async refresh(): Promise<void> {
-		this._findings = namingDiagnosticsEnabled() ? await this.scanWorkspace() : [];
+		this._findings = namingDiagnosticsEnabled()
+			? filterIgnoredNames(await this.scanWorkspace())
+			: [];
 		this.changeEmitter.fire();
 	}
 
@@ -118,7 +141,7 @@ export class NamingIssuesIndex {
 		if (!namingDiagnosticsEnabled()) {
 			return;
 		}
-		const fresh = await this.findingsForFile(filePath, namingPrefixes());
+		const fresh = filterIgnoredNames(await this.findingsForFile(filePath, namingPrefixes()));
 		const normPath = path.normalize(filePath);
 		this._findings = [
 			...this._findings.filter((f) => path.normalize(f.filePath) !== normPath),
@@ -168,6 +191,10 @@ export class NamingIssuesIndex {
 			roleSuffixes: csharpNamingRoleSuffixes(),
 			checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
 		};
+		const clientSchemaSettings: ClientSchemaNamingSettings = {
+			prefixes,
+			checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
+		};
 		const out: NamingFinding[] = [];
 		const entityOccurrences: EntityCodeOccurrence[] = [];
 		const sysSettingsOccurrences: SysSettingsOccurrence[] = [];
@@ -212,7 +239,7 @@ export class NamingIssuesIndex {
 					out.push(...this.findingsForProcessUserTaskSchema(filePath, text, info, userTaskSettings));
 					continue;
 				}
-				out.push(...this.findingsForClientSchemaText(filePath, text, prefixes));
+				out.push(...this.findingsForClientSchemaText(filePath, text, clientSchemaSettings));
 			}
 			if (csharpDiagnosticsOn) {
 				const csharpFiles = walkFiles(
@@ -340,7 +367,10 @@ export class NamingIssuesIndex {
 					checkParameterDirectionSuffix: processUserTaskCheckParameterDirectionSuffix()
 				});
 			}
-			return this.findingsForClientSchemaText(filePath, text, prefixes);
+			return this.findingsForClientSchemaText(filePath, text, {
+				prefixes,
+				checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
+			});
 		}
 		if (/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized)) {
 			if (!csharpNamingDiagnosticsEnabled()) {
@@ -366,7 +396,11 @@ export class NamingIssuesIndex {
 		return [];
 	}
 
-	private findingsForClientSchemaText(filePath: string, text: string, prefixes: string[]): NamingFinding[] {
+	private findingsForClientSchemaText(
+		filePath: string,
+		text: string,
+		settings: ClientSchemaNamingSettings
+	): NamingFinding[] {
 		const info = parseDescriptorInfo(text);
 		const schemaName = info?.name || path.basename(path.dirname(filePath));
 		if (!schemaName) {
@@ -379,13 +413,16 @@ export class NamingIssuesIndex {
 			return [];
 		}
 		const schemaType = this.index.hierarchy.resolveSchemaType(schemaName);
-		return checkClientSchemaNaming(schemaName, schemaType, prefixes, parentName).map((issue) => ({
-			packageName: packageFromPath(filePath),
-			label: schemaName,
-			message: issue.message,
-			filePath,
-			position: offsetToPosition(text, locateJsonNameOffset(text, schemaName))
-		}));
+		const moduleSource = schemaType === "MODULE" ? readModuleSource(filePath, schemaName) : undefined;
+		return checkClientSchemaNaming(schemaName, schemaType, settings, parentName, moduleSource).map(
+			(issue) => ({
+				packageName: packageFromPath(filePath),
+				label: schemaName,
+				message: issue.message,
+				filePath,
+				position: offsetToPosition(text, locateJsonNameOffset(text, schemaName))
+			})
+		);
 	}
 
 	/**
@@ -888,6 +925,23 @@ function readFileSafe(filePath: string): string | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+/** A Module-type client schema's own `{Name}.js` (its code) and, if present,
+ * `{Name}.less` (its styles) — siblings of `descriptorPath` in the same
+ * `Schemas/{Name}/` folder. `undefined` js means the schema's own source
+ * couldn't be read (e.g. deleted mid-scan) — the caller skips module checks
+ * entirely in that case rather than guessing. */
+function readModuleSource(
+	descriptorPath: string,
+	schemaName: string
+): { js: string; less?: string } | undefined {
+	const dir = path.dirname(descriptorPath);
+	const js = readFileSafe(path.join(dir, `${schemaName}.js`));
+	if (js === undefined) {
+		return undefined;
+	}
+	return { js, less: readFileSafe(path.join(dir, `${schemaName}.less`)) };
 }
 
 /** `<Item Name="Caption" Value="..." />` — the entity's own title, at the

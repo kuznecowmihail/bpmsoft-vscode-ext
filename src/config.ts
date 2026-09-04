@@ -166,3 +166,24 @@ export function processUserTaskCheckParameterDirectionSuffix(): boolean {
 export function sqlTempScriptMaxAgeDays(): number {
 	return vscode.workspace.getConfiguration("bpmsoft").get<number>("sqlTempScriptMaxAgeDays", 30);
 }
+
+/** Off by default — see `ClientSchemaNamingSettings.checkModuleSuffix`'s own
+ * doc (`schemaNamingAnalyzer.ts`) for the real noise-rate data behind that
+ * choice. */
+export function clientSchemaNamingCheckModuleSuffix(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("clientSchemaNaming.checkModuleSuffix", false);
+}
+
+/** Schema/process/data/class names excluded from every naming-guidelines.md
+ * check — for a confirmed false positive (a check that's structurally
+ * correct but doesn't fit this particular real name, e.g. "Old" used as a
+ * legitimate business qualifier rather than a stale-code marker). Set via
+ * the "Пометить как ложное срабатывание" quick action on a naming finding,
+ * or edited directly. */
+export function namingIgnoredNames(): string[] {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<string[]>("naming.ignoredNames", []);
+}

@@ -17,8 +17,10 @@ import { JsFormattingProvider } from "./providers/JsFormattingProvider";
 import { CsharpFormattingProvider } from "./providers/CsharpFormattingProvider";
 import { SqlFormattingProvider } from "./providers/SqlFormattingProvider";
 import { NamingDiagnostics, isNamingDiagnosticsTarget } from "./providers/NamingDiagnostics";
+import { NamingCodeActionProvider } from "./providers/NamingCodeActionProvider";
 import { NamingIssuesTreeProvider } from "./providers/NamingIssuesTreeProvider";
-import { NamingIssuesIndex } from "./index/NamingIssuesIndex";
+import { NamingFinding, NamingIssuesIndex } from "./index/NamingIssuesIndex";
+import { extractNamingSubject } from "./parse/namingCommon";
 import { findOwningSchemaDescriptor } from "./index/schemaResourceLookup";
 import { PackagesTreeProvider } from "./providers/PackagesTreeProvider";
 import { NamingDecorationProvider } from "./providers/NamingDecorationProvider";
@@ -160,6 +162,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		const csharpSelector: vscode.DocumentSelector = [
 			{ language: "csharp" },
 			{ pattern: "**/*.cs", scheme: "file" }
+		];
+		// Everything NamingDiagnostics puts squiggles on that isn't JS/C# —
+		// the JSON descriptor.json files for client/SQL/Data schemas.
+		const namingJsonSelector: vscode.DocumentSelector = [
+			{ pattern: "**/Schemas/**/descriptor.json", scheme: "file" },
+			{ pattern: "**/SqlScripts/**/descriptor.json", scheme: "file" },
+			{ pattern: "**/Data/**/descriptor.json", scheme: "file" }
 		];
 
 		const completionProvider = new BpmsoftCompletionProvider(index);
@@ -328,6 +337,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				new StyleCodeActionProvider(),
 				{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 			),
+			vscode.languages.registerCodeActionsProvider(
+				[...csharpSelector, ...namingJsonSelector],
+				new NamingCodeActionProvider(),
+				{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+			),
 			vscode.languages.registerDocumentFormattingEditProvider(
 				jsSelector,
 				new JsFormattingProvider()
@@ -343,6 +357,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand("bpmsoft.rebuildIndex", async () => {
 				await rebuildWithProgress();
 			}),
+			vscode.commands.registerCommand(
+				"bpmsoft.naming.markFalsePositive",
+				async (arg: string | { finding?: NamingFinding } | undefined) => {
+					const name =
+						typeof arg === "string"
+							? arg
+							: arg?.finding
+								? extractNamingSubject(arg.finding.message)
+								: undefined;
+					if (!name) {
+						void vscode.window.showWarningMessage(
+							"Не удалось определить имя для этой находки."
+						);
+						return;
+					}
+					const config = vscode.workspace.getConfiguration("bpmsoft");
+					const current = config.get<string[]>("naming.ignoredNames", []);
+					if (current.includes(name)) {
+						return;
+					}
+					await config.update(
+						"naming.ignoredNames",
+						[...current, name],
+						vscode.ConfigurationTarget.Workspace
+					);
+					void vscode.window.showInformationMessage(
+						`«${name}» помечено как ложное срабатывание — проверки нейминга больше не будут показывать находки для этого имени.`
+					);
+				}
+			),
 			vscode.commands.registerCommand(
 				CREATE_MEMBER_COMMAND,
 				(args: CreateMemberArgs) => executeCreateMember(args, diagnostics)
@@ -367,7 +411,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					return;
 				}
 				const normalized = fsPath.replace(/\\/g, "/");
-				if (/\/metadata\.json$/i.test(normalized)) {
+				if (/\/metadata\.json$/i.test(normalized) || /\/schemas\/[^/]+\/[^/]+\.less$/i.test(normalized)) {
 					void namingIndex.refreshFile(path.join(path.dirname(fsPath), "descriptor.json"));
 				} else if (/\/resource\.[^/]+\.xml$/i.test(normalized)) {
 					const ownerDescriptor = findOwningSchemaDescriptor(fsPath);
@@ -431,7 +475,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				}
 				if (
 					e.affectsConfiguration("bpmsoft.namingDiagnostics") ||
-					e.affectsConfiguration("bpmsoft.namingPrefixes")
+					e.affectsConfiguration("bpmsoft.namingPrefixes") ||
+					e.affectsConfiguration("bpmsoft.naming.ignoredNames") ||
+					e.affectsConfiguration("bpmsoft.clientSchemaNaming.checkModuleSuffix")
 				) {
 					namingDiagnostics.refreshOpenDocuments();
 					void namingIndex.refresh();
@@ -498,6 +544,14 @@ function onWatchedFile(uri: vscode.Uri, deleted: boolean): void {
 		index.invalidateEntity(uri.fsPath);
 		return;
 	}
+	if (/\/schemas\/[^/]+\/[^/]+\.less$/i.test(normalized)) {
+		// Same folder as descriptor.json — the Module-type CSS-schema check
+		// (near-empty .js + real .less) needs to re-run whenever the .less
+		// content itself changes, even though .less isn't a naming target on
+		// its own.
+		void namingIndex.refreshFile(path.join(path.dirname(uri.fsPath), "descriptor.json"));
+		return;
+	}
 	if (/\/resource\.[^/]+\.xml$/i.test(normalized)) {
 		// Same idea, one level removed: a resource file lives in a sibling
 		// Resources/{Name}.{Suffix}/ folder, not next to descriptor.json, so
@@ -537,6 +591,7 @@ function registerWatchers(
 		"**/Resources/ui/BPMSoft/**/*.js",
 		"**/Pkg/**/Schemas/**/descriptor.json",
 		"**/Pkg/**/Schemas/**/*.cs",
+		"**/Pkg/**/Schemas/**/*.less",
 		"**/Pkg/**/SqlScripts/**/descriptor.json",
 		"**/Pkg/**/Data/**/descriptor.json"
 	];

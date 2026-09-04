@@ -49,6 +49,11 @@
         "category": "BPMSoft"
       },
       {
+        "command": "bpmsoft.naming.markFalsePositive",
+        "title": "Пометить как ложное срабатывание (игнорировать это имя во всех проверках нейминга)",
+        "category": "BPMSoft"
+      },
+      {
         "command": "bpmsoft.setDefaultFormatter",
         "title": "Set as Default Formatter (JS/C#/SQL)",
         "category": "BPMSoft"
@@ -256,6 +261,11 @@
           "command": "bpmsoft.schemaHistory.openCommit",
           "when": "view == bpmsoftSchemaHistory && viewItem == bpmsoftHistoryCommit",
           "group": "inline"
+        },
+        {
+          "command": "bpmsoft.naming.markFalsePositive",
+          "when": "view == bpmsoftNamingIssues && viewItem == bpmsoftNamingFinding",
+          "group": "inline"
         }
       ]
     },
@@ -315,7 +325,7 @@
         "bpmsoft.namingDiagnostics": {
           "type": "boolean",
           "default": true,
-          "description": "Check client schema / C# schema / SQL script names against naming-guidelines.md (type-appropriate suffix, e.g. Section/SectionV2, Page/PageV2, Detail/DetailV2, and — only where the platform gives an unambiguous marker — Service/EventListener for C#). Surfaced both as squiggles on open descriptor.json/.cs files and in the 'BPMSoft: Naming Issues' view."
+          "description": "Check client schema / C# schema / SQL script names against naming-guidelines.md §3/§4 (type-appropriate suffix — Section/SectionV2, Page/PageV2/MiniPage/ModalPage, Detail/DetailV2 — only enforced when the schema's own immediate parent is itself part of that family, e.g. BasePageV2/BaseSectionV2/BaseGridDetailV2; a rootless/unrelated-parent view model is exempt; for Module-type schemas, the module's own registered define()/Ext.define() name must match the schema Code, and a structurally-CSS module (empty .js, real .less) must be suffixed exactly Css; a wizard-injected numeric tail and New/Test/Temp/Copy in the business name are flagged too; and — only where the platform gives an unambiguous marker — Service/EventListener for C#). Surfaced both as squiggles on open descriptor.json/.js/.cs files and in the 'BPMSoft: Naming Issues' view."
         },
         "bpmsoft.namingPrefixes": {
           "type": "string",
@@ -431,6 +441,17 @@
           "type": "boolean",
           "default": false,
           "description": "Flag a C# schema file that declares more than one top-level class. Off by default — naming-guidelines.md's own 'один основной класс — одна схема' rule has an explicit exception for a data object model, and ~26-27% of real Source Code schemas across two installs are legitimately multi-class (request/response DTOs alongside the main class) — this can't be told apart from a genuinely crammed-together schema automatically, so it's a team preference to opt into, not a default-on check."
+        },
+        "bpmsoft.clientSchemaNaming.checkModuleSuffix": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag a Module-type client schema (SchemaType: Module, not already recognized as Mixin/Css) whose Code doesn't end in Module or Mixin. Off by default — confirmed 74-84% of real Module-type schemas across two installs legitimately use neither (Helper/Constants/Container/Override/Design/...), the same open-role-vocabulary situation as bpmsoft.csharpNaming.checkRoleSuffix."
+        },
+        "bpmsoft.naming.ignoredNames": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Schema/process/data/class names excluded from every naming-guidelines.md check (client schema, Process, UserTask, Data, C#, SQL, Entity) — for a confirmed false positive that's structurally correct but doesn't fit this particular real name (e.g. 'Old' used as a legitimate business qualifier, not a stale-code marker). Set via the 'Пометить как ложное срабатывание' action on a naming finding (Naming Issues tree, or the quick fix on the squiggly), or edited directly."
         }
       }
     },

@@ -28,6 +28,7 @@ export class NamingIssuesTreeProvider implements vscode.TreeDataProvider<TreeNod
 		item.description = finding.message;
 		item.tooltip = finding.message;
 		item.iconPath = new vscode.ThemeIcon("warning");
+		item.contextValue = "bpmsoftNamingFinding";
 		item.command = {
 			command: "vscode.open",
 			title: "Открыть",
