@@ -72,6 +72,11 @@ export class SchemaHierarchyResolver {
 	private platformExtendCache = new Map<string, string | null>();
 	private descriptorParentCache = new Map<string, string | null>();
 	private entityNames: string[] = [];
+	/** `Pkg/*` package dir listing — static per workspace, but was being
+	 * re-`readdirSync`'d from scratch on every call from several methods
+	 * (readPkgSchemaType, resolveEntityPkgResourceDirs, collectEntityNames),
+	 * which adds up fast across thousands of schemas. */
+	private pkgDirsCache: string[] | undefined;
 
 	setWorkspaceRoots(roots: string[]): void {
 		this.clear();
@@ -112,6 +117,7 @@ export class SchemaHierarchyResolver {
 	clear(): void {
 		this.confContentDirs = [];
 		this.configurationRoots = [];
+		this.pkgDirsCache = undefined;
 		this.structureCache.clear();
 		this.schemaTypeCache.clear();
 		this.platformExtendCache.clear();
@@ -178,6 +184,9 @@ export class SchemaHierarchyResolver {
 	}
 
 	private pkgPackageDirs(): string[] {
+		if (this.pkgDirsCache) {
+			return this.pkgDirsCache;
+		}
 		const out: string[] = [];
 		for (const root of this.configurationRoots) {
 			const pkgRoot = path.join(root, "Pkg");
@@ -194,6 +203,7 @@ export class SchemaHierarchyResolver {
 				out.push(path.join(pkgRoot, pkg));
 			}
 		}
+		this.pkgDirsCache = out;
 		return out;
 	}
 

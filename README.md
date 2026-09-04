@@ -142,6 +142,49 @@ Hover по тем же конструкциям: вид члена, докуме
 
 Файлы схем/UI переиндексируются и по watcher’ам (создание / изменение / удаление).
 
+## BPMSoft Explorer
+
+Отдельный контейнер в Activity Bar (значок BPMSoft) — альтернатива стандартным Explorer / Outline / Timeline с пониманием специфики BPMSoft-схем, которого у стандартных панелей VS Code нет.
+
+### Packages
+
+Дерево пакетов workspace: `Data` / `Files` / `Resources` / `Schemas` / `SqlScripts` / `Assemblies`. Подгружается лениво (по разворачиванию узла, не сканирует всё сразу). Иконка схемы — по её реальному типу (`ManagerName` из `descriptor.json`, для `ClientUnitSchemaManager` — ещё и по `SchemaType`: Page / Section / Detail / Module / …). Пакеты, в которых из содержимого есть только `Files` (типичный признак «коробочного», не кастомизированного пакета), показываются приглушённым цветом. Проблемы именования (см. Naming Issues) подсвечиваются прямо в дереве, включая «всплытие» предупреждения вверх до уровня пакета.
+
+### ViewModel Outline
+
+Свой Outline для активной **модели представления** — сознательно только для неё: показывает дерево, только если открытый JS-файл — настоящая view-model-схема (Page / Section / Detail и их варианты, по `SchemaType`); для Module-схем, миксинов, констант и не-JS файлов дерево пустое (для них — соседняя вкладка **Outline**, см. ниже). В отличие от стандартного `this.`-автодополнения показывает не только собственные члены схемы, но и разбирает специфичные для BPMSoft секции конфига:
+
+- **Атрибуты / Свои методы / Унаследованные методы / Миксины / Модель данных (`entitySchema`)**.
+- **Diff** — настоящее дерево (`insert` / `merge` / `remove` / `move`), а не плоский список: `insert` вкладывается в `parentName`, `remove` с `properties` корректно распознаётся как удаление конкретных свойств, а не всего элемента. У каждого элемента — «Заполненные свойства/события» и **«Доступные, но не заполненные»**: реальный список конфигов, которые понимает платформенный control — резолвится через `itemType` (диспетчер `ViewGeneratorV2.generateStandardItem` → реальный `Ext.define`-класс в `Resources/ui/BPMSoft/controls/**`) либо, если `itemType` нет (обычное поле с `bindTo`), через `dataValueType` связанного атрибута (`generateEditControl`). Ограничение: список — только собственные свойства класса контрола, без обхода цепочки `extend`.
+- **Бизнес-правила** — `rules` (ручные) и `businessRules` (из дизайнера) слиты так же, как их сливает платформа в рантайме; плюс **«Доступные свойства (BINDPARAMETER)»** — какие из `VISIBLE`/`ENABLED`/`REQUIRED`/`READONLY` для атрибута ещё не заняты.
+- **Правила: мульти-действия**, **Детали**, **Встроенные модули**, **Доп. модели данных** (`dataModels`).
+- **«Связано»** — атрибуты, детали, доп. модели данных, бизнес-правила и diff-элементы со общим `bindTo`/именем атрибута, а также diff-элементы (`DETAIL`/`MODULE`) со своей записью в `details{}`/`modules{}` по совпадению `name` — показываются друг у друга как кросс-ссылки, с переходом по клику.
+- Развёрнутость узлов запоминается по каждому файлу отдельно (переключение между открытыми файлами не сбрасывает её). Toolbar: **Collapse All**, «…» → **Follow Cursor** (приближённо — данные это точки в файле, не диапазоны, подсвечивается ближайший элемент, не точное вхождение курсора).
+
+### Outline
+
+Простое зеркало стандартного Outline (через `vscode.executeDocumentSymbolProvider` — то же дерево символов, для любого языка с поддержкой символов, не только JS). Существует потому, что нативный Outline — системная панель, её нельзя перенести в свой контейнер. Toolbar: **Collapse All**, «…» → **Follow Cursor** (точный, по диапазону символа), **Filter on Type**, **Sort By** (Позиция / Имя / Категория).
+
+### Timeline
+
+История схемы (не одного файла — файл схемы + связанные ресурсы) из двух источников сразу: `git log` и стандартный VS Code Local History, смерджено по времени в одну ленту. У git-коммитов — насыщенный tooltip (автор, дата, полное сообщение, +/- статистика), diff по клику, «открыть коммит целиком». Toolbar: pin/unpin текущего файла, refresh, фильтр источников (git / local history), Local History: найти запись для восстановления.
+
+### Open Schemas
+
+Открытые вкладки редактора, сгруппированные по схеме (а не по файлу — у одной схемы обычно несколько файлов: `.js`, `.less`, `metadata.json`).
+
+### Naming Issues
+
+Схемы / SQL-скрипты, чьё имя не соответствует `naming-guidelines.md` (суффиксы `Page`/`PageV2`, `Section`/`SectionV2`, `Detail`/`DetailV2`, C# `Service`/`EventListener` — там, где платформа даёт однозначный маркер). Отдельный список + те же находки декорациями прямо в дереве Packages. Настраивается через `bpmsoft.namingDiagnostics` / `bpmsoft.namingPrefixes`.
+
+## BPMSoft Settings
+
+Второй контейнер в Activity Bar, для настроек и утилит расширения.
+
+### Formatting
+
+Форматирование JS / C# / SQL-скриптов (Prettier + свои фиксы стиля для JS, авто-фиксы отступов/скобок для C#, `sql-formatter` для `Pkg/*/SqlScripts/*.sql`) через стандартный Format Document (`Shift+Alt+F`, `editor.formatOnSave`). Управляется `bpmsoft.formatting.enabled`.
+
 ## Откуда берётся `this.`
 
 Используется `conf/content/{Schema}.js`:
@@ -213,11 +256,11 @@ npm run watch
 npm run smoke   # нужен ../crm-volumes/bpmsoftdevelopment или BPMSOFT_APP_ROOT
 ```
 
-**F5** — Extension Development Host (в `.vscode/launch.json` сейчас `crm-infrastructure/crm-volumes/suppliers2_190`).
+**F5** — Extension Development Host (тестовая папка задана в `.vscode/launch.json`).
 
 ## Сборка / установка
 
 ```bash
 npm run package
-# Установить VSIX: bpmsoft-intellisense-0.7.0.vsix
+# Установить VSIX: bpmsoft-intellisense-<version>.vsix (версия — из package.json)
 ```

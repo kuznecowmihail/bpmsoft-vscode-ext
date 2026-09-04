@@ -1,0 +1,172 @@
+import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
+import {
+	parseDescriptorInfo,
+	parseDescriptorParent,
+	parseSqlScriptDescriptorName
+} from "../index/schemaStructureParse";
+import { findSchemaDir } from "../index/schemaResourceLookup";
+import { checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
+import { checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
+import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
+import { SymbolIndex } from "../index/SymbolIndex";
+import { namingDiagnosticsEnabled, namingPrefixes } from "../config";
+import { clearDebounceTimers, debounceDocument } from "./jsDocuments";
+
+export const NAMING_DIAG_SOURCE = "bpmsoft-naming";
+
+interface PositionedIssue {
+	message: string;
+	start: number;
+	end: number;
+}
+
+export function isNamingDiagnosticsTarget(fsPath: string): boolean {
+	const normalized = fsPath.replace(/\\/g, "/");
+	return (
+		/\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(normalized) ||
+		/\/Schemas\/[^/]+\/descriptor\.json$/i.test(normalized) ||
+		(/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized))
+	);
+}
+
+export class NamingDiagnostics implements vscode.Disposable {
+	private readonly collection: vscode.DiagnosticCollection;
+	private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+	constructor(private readonly index: SymbolIndex) {
+		this.collection = vscode.languages.createDiagnosticCollection("bpmsoft-naming");
+	}
+
+	dispose(): void {
+		this.clearAll();
+		this.collection.dispose();
+	}
+
+	clearAll(): void {
+		clearDebounceTimers(this.timers);
+		this.collection.clear();
+	}
+
+	schedule(document: vscode.TextDocument): void {
+		debounceDocument(
+			this.timers,
+			document,
+			(doc) => this.refresh(doc),
+			300,
+			(doc) => isNamingDiagnosticsTarget(doc.uri.fsPath)
+		);
+	}
+
+	refresh(document: vscode.TextDocument): void {
+		if (!isNamingDiagnosticsTarget(document.uri.fsPath)) {
+			return;
+		}
+		if (!namingDiagnosticsEnabled()) {
+			this.collection.delete(document.uri);
+			return;
+		}
+		try {
+			const normalized = document.uri.fsPath.replace(/\\/g, "/");
+			const issues = /\/SqlScripts\//i.test(normalized)
+				? this.checkSqlDescriptor(document)
+				: normalized.endsWith(".cs")
+					? this.checkCsharpSchema(document)
+					: this.checkSchemaDescriptor(document);
+			this.collection.set(document.uri, issues.map((issue) => toDiagnostic(document, issue)));
+		} catch {
+			this.collection.delete(document.uri);
+		}
+	}
+
+	refreshOpenDocuments(): void {
+		for (const document of vscode.workspace.textDocuments) {
+			this.refresh(document);
+		}
+	}
+
+	clear(uri: vscode.Uri): void {
+		this.collection.delete(uri);
+	}
+
+	private checkSchemaDescriptor(document: vscode.TextDocument): PositionedIssue[] {
+		const text = document.getText();
+		const info = parseDescriptorInfo(text);
+		const schemaName = info?.name || path.basename(path.dirname(document.uri.fsPath));
+		if (!schemaName) {
+			return [];
+		}
+		// Parent.Name === own Name means this schema is a same-name
+		// override/extension of a schema from another (often stock) package
+		// — the name itself wasn't chosen here, so naming it isn't this
+		// package's call to get right or wrong.
+		const parentName = parseDescriptorParent(text);
+		if (parentName === schemaName) {
+			return [];
+		}
+		const schemaType = this.index.hierarchy.resolveSchemaType(schemaName);
+		const pos = locateJsonNameValue(text, schemaName);
+		return checkClientSchemaNaming(schemaName, schemaType, namingPrefixes(), parentName).map((issue) => ({
+			...issue,
+			...pos
+		}));
+	}
+
+	private checkSqlDescriptor(document: vscode.TextDocument): PositionedIssue[] {
+		const text = document.getText();
+		const scriptName = parseSqlScriptDescriptorName(text);
+		if (!scriptName) {
+			return [];
+		}
+		const pos = locateJsonNameValue(text, scriptName);
+		return checkSqlScriptNaming(scriptName).map((issue) => ({ ...issue, ...pos }));
+	}
+
+	private checkCsharpSchema(document: vscode.TextDocument): PositionedIssue[] {
+		const schemaName = csharpSchemaDescriptorName(document.uri.fsPath);
+		return checkCsharpSchemaNaming(document.getText(), namingPrefixes(), schemaName);
+	}
+}
+
+/** The schema's registered name, from `descriptor.json` in the same
+ * `Schemas/{Name}/` folder as `filePath` (a .cs file) — the authoritative
+ * source naming-guidelines.md checks are meant to validate against, same as
+ * for JS/SQL schemas. `undefined` if the descriptor is missing/unreadable,
+ * letting the caller fall back to the source-extracted class name. */
+function csharpSchemaDescriptorName(filePath: string): string | undefined {
+	const schema = findSchemaDir(filePath);
+	if (!schema) {
+		return undefined;
+	}
+	try {
+		const descriptorText = fs.readFileSync(path.join(schema.schemaDir, "descriptor.json"), "utf8");
+		return parseDescriptorInfo(descriptorText)?.name;
+	} catch {
+		return undefined;
+	}
+}
+
+function locateJsonNameValue(text: string, name: string): { start: number; end: number } {
+	const re = new RegExp(`"Name"\\s*:\\s*"${escapeRegExp(name)}"`);
+	const match = re.exec(text);
+	if (match) {
+		const valueStart = match.index + match[0].lastIndexOf(`"${name}"`) + 1;
+		return { start: valueStart, end: valueStart + name.length };
+	}
+	return { start: 0, end: Math.min(text.length, 1) };
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function toDiagnostic(document: vscode.TextDocument, issue: PositionedIssue): vscode.Diagnostic {
+	const diag = new vscode.Diagnostic(
+		new vscode.Range(document.positionAt(issue.start), document.positionAt(issue.end)),
+		issue.message,
+		vscode.DiagnosticSeverity.Warning
+	);
+	diag.source = NAMING_DIAG_SOURCE;
+	return diag;
+}

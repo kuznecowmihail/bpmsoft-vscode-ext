@@ -144,3 +144,44 @@ export function parseDescriptorParent(source: string): string | undefined {
 	}
 	return undefined;
 }
+
+export interface DescriptorInfo {
+	name?: string;
+	managerName?: string;
+}
+
+/**
+ * Own Name/ManagerName from a client schema descriptor.json (as opposed to
+ * `parseDescriptorParent`, which reads the *parent's* name).
+ */
+export function parseDescriptorInfo(source: string): DescriptorInfo | undefined {
+	try {
+		const json = JSON.parse(source.replace(/^\uFEFF/, ""));
+		const root = json?.Descriptor && typeof json.Descriptor === "object"
+			? json.Descriptor
+			: json;
+		const name = typeof root?.Name === "string" ? root.Name : undefined;
+		const managerName = typeof root?.ManagerName === "string" ? root.ManagerName : undefined;
+		if (!name && !managerName) {
+			return undefined;
+		}
+		return { name, managerName };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * `SqlScript.Name` from a `Pkg/{package}/SqlScripts/{name}/descriptor.json`
+ * file \u2014 a different root key (`SqlScript`, not `Descriptor`) from client
+ * schemas.
+ */
+export function parseSqlScriptDescriptorName(source: string): string | undefined {
+	try {
+		const json = JSON.parse(source.replace(/^\uFEFF/, ""));
+		const name = json?.SqlScript?.Name;
+		return typeof name === "string" && name ? name : undefined;
+	} catch {
+		return undefined;
+	}
+}

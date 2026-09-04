@@ -4,6 +4,7 @@ import {
 	NO_ENTITY_COLUMN_SCHEMA_TYPES,
 	SchemaHierarchyResolver
 } from "./schemaHierarchy";
+import { ViewControlsIndex } from "./ViewControlsIndex";
 import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
 import {
 	entityColumnDocumentation,
@@ -41,6 +42,19 @@ export class SymbolIndex {
 	private entityCache = new Map<string, IndexedModule | null>();
 	private mixinKeyToHostPaths = new Map<string, Set<string>>();
 	readonly hierarchy = new SchemaHierarchyResolver();
+	readonly viewControls = new ViewControlsIndex();
+
+	/** `resolveThisMembers` walks a schema's full owner chain (parents +
+	 * mixins + entity columns + …) — for a deep hierarchy this is real work
+	 * (tens of ms), and it's called repeatedly for the *same* file on every
+	 * hover/completion/Outline-refresh while the user is just reading code,
+	 * not editing it. Cache per file, invalidated by a generation counter
+	 * bumped on any module change — coarser than per-file invalidation
+	 * (any edit anywhere invalidates the whole cache), but edits are rare
+	 * relative to how often the same open file gets re-queried, and it keeps
+	 * the invalidation trivially correct (no dependency graph to track). */
+	private modulesGeneration = 0;
+	private thisMembersCache = new Map<string, { generation: number; members: IndexedMember[] }>();
 
 	setPlatformStubs(members: PlatformStubMember[]): void {
 		this.platformRoot = members;
@@ -65,6 +79,7 @@ export class SymbolIndex {
 	setWorkspaceRoots(roots: string[]): void {
 		this.workspaceRoots = roots;
 		this.hierarchy.setWorkspaceRoots(roots);
+		this.viewControls.setWorkspaceRoots(roots);
 		this.entityCache.clear();
 	}
 
@@ -74,6 +89,8 @@ export class SymbolIndex {
 		this.alternateToModules.clear();
 		this.entityCache.clear();
 		this.mixinKeyToHostPaths.clear();
+		this.thisMembersCache.clear();
+		this.modulesGeneration++;
 	}
 
 	/** Drop every in-memory index (modules, stubs, hierarchy). */
@@ -109,6 +126,7 @@ export class SymbolIndex {
 
 	upsertModule(mod: IndexedModule): void {
 		this.removeByPath(mod.filePath);
+		this.modulesGeneration++;
 		this.modulesByPath.set(mod.filePath, mod);
 		this.pushNamed(this.modulesByName, mod.name, mod);
 		if (mod.className && mod.className !== mod.name) {
@@ -131,6 +149,7 @@ export class SymbolIndex {
 		if (!prev) {
 			return;
 		}
+		this.modulesGeneration++;
 		this.unindexMixinHost(prev);
 		this.modulesByPath.delete(filePath);
 		this.pullNamed(this.modulesByName, prev.name, filePath);
@@ -376,6 +395,12 @@ export class SymbolIndex {
 	 * Ext modules: own file + override/extend chain.
 	 */
 	resolveThisMembers(filePath: string): IndexedMember[] {
+		const cacheKey = normalizeFilePath(filePath);
+		const cached = this.thisMembersCache.get(cacheKey);
+		if (cached && cached.generation === this.modulesGeneration) {
+			return cached.members;
+		}
+
 		const mod = this.ensureModule(filePath);
 		if (!mod) {
 			return [];
@@ -395,6 +420,7 @@ export class SymbolIndex {
 			this.pushUnseen(result, seen, member);
 		}
 		this.appendRuntimeThisMembers(result, seen);
+		this.thisMembersCache.set(cacheKey, { generation: this.modulesGeneration, members: result });
 		return result;
 	}
 
@@ -1078,6 +1104,24 @@ export class SymbolIndex {
 			.find((name): name is string => Boolean(name));
 	}
 
+	/** Whether there's any actual evidence this chain is entity-bound at
+	 * all — an `entitySchemaName` somewhere in it, or a mixin card host that
+	 * has one — as opposed to `getEntityModuleForChain` simply failing to
+	 * *resolve* a name that is present. Used to tell "entity name present but
+	 * its conf/content module couldn't be found" (still worth a generic
+	 * `BaseEntitySchema`-shaped fallback) apart from "no entity relationship
+	 * whatsoever" (should show nothing). */
+	private chainHasEntityReference(owners: IndexedModule[]): boolean {
+		if (this.entityNameFromChain(owners)) {
+			return true;
+		}
+		const current = owners[0];
+		if (!current) {
+			return false;
+		}
+		return this.collectCardHostEntityNames(current).length > 0;
+	}
+
 	private collectMixinCardHosts(mod: IndexedModule): IndexedModule[] {
 		return this.findMixinHostModules(mod).filter((host) =>
 			this.pageChainBindsEntityColumns(this.collectOwnerChain(host))
@@ -1366,12 +1410,37 @@ export class SymbolIndex {
 		if (!entityMod) {
 			return;
 		}
+		// Keyed once so a schema-level override that already won the name
+		// (e.g. a page's own `attributes.Country` that only tweaks
+		// `lookupListConfig`) can still be backfilled below instead of the
+		// real entity column's own fields being silently discarded.
+		const byKey = new Map<string, IndexedMember>();
+		for (const m of result) {
+			byKey.set(memberDedupeKey(m), m);
+		}
 		for (const member of entityMod.members) {
-			this.pushUnseen(result, seen, {
+			const withMeta: IndexedMember = {
 				...member,
 				detail: member.detail || `entity ${entityMod.name}`,
 				filePath: member.filePath || entityMod.filePath
-			});
+			};
+			const key = memberDedupeKey(withMeta);
+			if (seen.has(key)) {
+				// A schema-level attribute override of this same name
+				// already won — but if it didn't restate `dataValueType`
+				// (the common case: the override only changes display
+				// config, not the underlying column's type), backfill it
+				// from the real entity column rather than losing it
+				// entirely. Nothing else about the winning override is
+				// touched.
+				const existing = byKey.get(key);
+				if (existing && !existing.dataValueType && withMeta.dataValueType) {
+					existing.dataValueType = withMeta.dataValueType;
+				}
+				continue;
+			}
+			this.pushUnseen(result, seen, withMeta);
+			byKey.set(key, withMeta);
 		}
 	}
 
@@ -1385,6 +1454,18 @@ export class SymbolIndex {
 		seen: Set<string>
 	): void {
 		const entityMod = this.getEntityModuleForChain(owners);
+		if (!entityMod && !this.chainHasEntityReference(owners)) {
+			// Neither an entitySchemaName anywhere in the chain nor a
+			// mixin-bound card host — this file has nothing to do with an
+			// entity schema at all (e.g. a plain Ext UI control like
+			// BPMSoft.controls.Grid). Without this check,
+			// `entitySchemaObjectMembers(undefined)` still falls back to
+			// BaseEntitySchema's own generic members (whenever that class
+			// happens to be indexed anywhere in the workspace, which is
+			// almost always), so `this.entitySchema` showed up on literally
+			// every file regardless of any actual entity relationship.
+			return;
+		}
 		const children = this.entitySchemaObjectMembers(entityMod);
 		if (!children.length) {
 			return;

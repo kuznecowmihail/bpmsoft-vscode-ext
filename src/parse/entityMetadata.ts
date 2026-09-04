@@ -77,6 +77,65 @@ function isLookupColumn(obj: Record<string, unknown>): boolean {
 	return obj.S4 != null || obj.E17 != null || obj.E18 != null;
 }
 
+/**
+ * `S2` in a `MetaData.Schema.D2` column block is the column's own
+ * `DataValueType`, but stored as an opaque GUID (a foreign key into the
+ * platform's own data-type catalog), not a readable enum value — unlike a
+ * schema/entity `.js` source, where `dataValueType: BPMSoft.DataValueType.X`
+ * is right there as a symbolic constant. This table decodes it, confirmed
+ * against real column blocks (`GoTicket.metadata.json`'s `GoName` S2 →
+ * MaxSizeText, `GoStatus` S2 → Lookup, `GoKey` S2 → ShortText — all exact
+ * matches) plus the platform's own C# `DataValueTypeUId` constants (the
+ * source the exact GUID values below came from). Keys lowercase, no braces,
+ * matching how the metadata JSON actually stores them. Two C# constants
+ * (`DbObjectName`, `Binary`) have no corresponding entry in the client-side
+ * `BPMSoft.DataValueType` enum (`sysenums.js`) — kept under their own literal
+ * names so lookups still succeed, but they won't resolve to a control via
+ * `ViewControlsIndex` since nothing in `DATA_VALUE_TYPE_CLASS_NAMES` names
+ * them either.
+ */
+const DATA_VALUE_TYPE_GUID_NAMES: Record<string, string> = {
+	"90b65bf8-0ffc-4141-8779-2420877af907": "BOOLEAN",
+	"325a73b8-0f47-44a0-8412-7606f78003ac": "SHORT_TEXT",
+	"ddb3a1ee-07e8-4d62-b7a9-d0e618b00fbd": "MEDIUM_TEXT",
+	"5ca35f10-a101-4c67-a96a-383da6afacfc": "LONG_TEXT",
+	"c0f04627-4620-4bc0-84e5-9419dc8516b1": "MAXSIZE_TEXT",
+	"8b3f29bb-ea14-4ce5-a5c5-293a929b6ba2": "TEXT",
+	"3509b9dd-2c90-4540-b82e-8f6ae85d8248": "SECURE_TEXT",
+	"ecbcce18-2a17-4ead-829a-9d02fa9578a4": "HASH_TEXT",
+	"0eaaa70f-2a5a-444e-bdf1-98b37895c820": "DB_OBJECT_NAME",
+	"95c6e6c4-2cc8-46be-a1cb-96f942655f86": "LOCALIZABLE_STRING",
+	"6b6b74e2-820d-490e-a017-2b73d4ccf2b0": "INTEGER",
+	"57ee4c31-5ec4-45fa-b95d-3a2868aa89a8": "FLOAT",
+	"07ba84ce-0bf7-44b4-9f2c-7b15032eb98c": "FLOAT1",
+	"5cc8060d-6d10-4773-89fc-8c12d6f659a6": "FLOAT2",
+	"3f62414e-6c25-4182-bcef-a73c9e396f31": "FLOAT3",
+	"ff22e049-4d16-46ee-a529-92d8808932dc": "FLOAT4",
+	"a4aaf398-3531-4a0d-9d75-a587f5b5b59e": "FLOAT8",
+	"969093e2-2b4e-463b-883a-3d3b8c61f0cd": "MONEY",
+	"b295071f-7ea9-4e62-8d1a-919bf3732ff2": "LOOKUP",
+	"23018567-a13c-4320-8687-fd6f9e3699bd": "GUID",
+	"d21e9ef4-c064-4012-b286-fa1a8171da44": "DATE_TIME",
+	"603d4960-a1a2-45e9-b232-206a54421b01": "DATE",
+	"b7342b7a-5dde-40de-aa7c-24d2a57b3202": "BINARY",
+	"04cc757b-8f06-482c-8a1a-0c0e171d2410": "TIME",
+	"51fb23ba-3eb2-11e2-b7d5-b0c76188709b": "ENTITY_COLLECTION",
+	"b53eaa2a-4bb7-4a6b-9f4f-58ccab293e31": "ENTITY_COLUMN_MAPPING_COLLECTION",
+	"cffc4762-c5c7-44bc-8cc6-cb55aba6e06b": "LOCALIZABLE_PARAMETER_VALUES_LIST",
+	"394e160f-c8e0-46fa-9c0d-75d97e9e9169": "METADATA_TEXT",
+	"4b51a8b5-1ee9-4437-9d58-f35e083cbcdf": "OBJECT_LIST",
+	"651ec16f-d140-46db-b9e2-825c985a8ac2": "COMPOSITE_OBJECT_LIST",
+	"a33c9252-d401-453e-949d-169157067ed9": "FILE_LOCATOR"
+};
+
+function decodeDataValueType(s2: unknown): string | undefined {
+	if (typeof s2 !== "string") {
+		return undefined;
+	}
+	const name = DATA_VALUE_TYPE_GUID_NAMES[s2.toLowerCase()];
+	return name ? `BPMSoft.DataValueType.${name}` : undefined;
+}
+
 function a2ValueOffset(json: string): number {
 	const key = json.search(/"A2"\s*:/);
 	if (key < 0) {
@@ -123,7 +182,8 @@ export function parsePkgEntityColumns(
 			filePath,
 			position: offsetToPosition(source, braceStart + a2ValueOffset(json)),
 			children: lookup ? lookupChildren() : undefined,
-			detail: lookup ? "entity lookup" : "entity"
+			detail: lookup ? "entity lookup" : "entity",
+			dataValueType: decodeDataValueType(obj.S2)
 		});
 	}
 	return members;
