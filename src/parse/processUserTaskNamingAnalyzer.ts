@@ -1,4 +1,5 @@
 import { hasTechnicalAffix, stripPrefix } from "./entityNamingAnalyzer";
+import { pascalCaseSegments } from "./namingCommon";
 
 export interface NamingIssue {
 	message: string;
@@ -19,13 +20,6 @@ export interface ProcessUserTaskNamingSettings {
 	 * flags nearly every multi-parameter UserTask. Off unless explicitly
 	 * turned on (`bpmsoft.processUserTask.checkParameterDirectionSuffix`). */
 	checkParameterDirectionSuffix: boolean;
-}
-
-/** Splits a PascalCase code into its capitalized segments — same approach as
- * `processNamingAnalyzer.ts`'s own (unexported) helper; small enough that a
- * shared module isn't worth it yet. */
-function pascalCaseSegments(name: string): string[] {
-	return name.match(/[A-Z][a-z0-9]*/g) || [name];
 }
 
 /**

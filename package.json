@@ -411,6 +411,11 @@
           "type": "boolean",
           "default": true,
           "description": "Check Data package items (naming-guidelines.md §5 'Данные') against their own descriptor.json/data.json: Code (PascalCase, must start with its target table's own name — Descriptor.Schema.Name, e.g. Lookup_X/City_Main/SysSettings_X all reduce to the same {TableName}_... template), no raw GUID/hash segment in the code, and — the platform-risk check — every SysSettings data schema must have a matching SysSettingsValue and vice versa, matched by the real seeded row Id/foreign key, not by folder name. A SysSettings without a SysSettingsValue can 400 when read; the reverse can be a legitimate override of a stock setting's value, so is worded as a hint rather than a hard violation."
+        },
+        "bpmsoft.csharpNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check C# schema code (naming-guidelines.md §4 'Исходный код') against every .cs file under Schemas/ — not just SourceCodeSchemaManager schemas, matching the guideline's own 'and similar server-side artifacts' scope: the package prefix, Service/EventListener suffix (only checked when the class actually inherits BaseService/BaseEntityEventListener or carries [ServiceContract]/[EntityEventListener] — no reliable platform marker exists for Helper/Manager/Handler/Repository/Client/Job, so those roles' suffixes aren't verified), the schema's registered name matching an actual class in the file, no redundant 'SourceCode' suffix, no temporary designation (New/Test/Temp/Copy/V2), and no chained/mixed role suffixes (e.g. ...ServiceHelper). ru-RU/en-US Title coverage is checked separately, only for real SourceCodeSchemaManager schemas (a Process/UserTask/Entity's own .cs file already has its Title checked by that schema type's own check)."
         }
       }
     },

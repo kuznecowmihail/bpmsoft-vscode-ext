@@ -1,4 +1,5 @@
 import { ProcessElementCategory } from "./processElementsMetadata";
+import { findTemporaryDesignationSegment } from "./namingCommon";
 
 export interface NamingIssue {
 	message: string;
@@ -8,22 +9,6 @@ export interface ProcessNamingSettings {
 	/** Same `bpmsoft.namingPrefixes` used everywhere else — the guideline
 	 * treats the process code prefix as the same team/stream convention. */
 	prefixes: string[];
-}
-
-const TEMP_DESIGNATION_WORDS = ["New", "Test", "Temp", "Copy"];
-
-/** Splits a PascalCase code into its capitalized segments (`"NauApprovalProcessV2"`
- * → `["Nau", "Approval", "Process", "V2"]`) — digits after the capital are
- * kept with it so a trailing `"V2"`-style version marker comes out as one
- * segment, not split into `"V"` + `"2"`. */
-function pascalCaseSegments(name: string): string[] {
-	return name.match(/[A-Z][a-z0-9]*/g) || [name];
-}
-
-function findTemporaryDesignationSegment(name: string): string | undefined {
-	return pascalCaseSegments(name).find(
-		(segment) => TEMP_DESIGNATION_WORDS.includes(segment) || /^V\d+$/.test(segment)
-	);
 }
 
 const TEMP_WORD_RE = /\b(New|Test|Temp|Copy|V\d+)\b/;

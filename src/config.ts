@@ -112,6 +112,12 @@ export function processUserTaskActionVerbs(): string[] {
 	return commaList("processUserTask.actionVerbs", DEFAULT_ACTION_VERBS);
 }
 
+export function csharpNamingDiagnosticsEnabled(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("csharpNamingDiagnostics", true);
+}
+
 export function dataNamingDiagnosticsEnabled(): boolean {
 	return vscode.workspace
 		.getConfiguration("bpmsoft")

@@ -51,6 +51,7 @@ import {
 } from "../parse/dataSchemaNamingAnalyzer";
 import { SymbolIndex } from "./SymbolIndex";
 import {
+	csharpNamingDiagnosticsEnabled,
 	dataNamingDiagnosticsEnabled,
 	entityNamingCheckSingular,
 	entityNamingDateSuffixes,
@@ -157,6 +158,7 @@ export class NamingIssuesIndex {
 		};
 		const userTaskDiagnosticsOn = processUserTaskNamingDiagnosticsEnabled();
 		const dataDiagnosticsOn = dataNamingDiagnosticsEnabled();
+		const csharpDiagnosticsOn = csharpNamingDiagnosticsEnabled();
 		const out: NamingFinding[] = [];
 		const entityOccurrences: EntityCodeOccurrence[] = [];
 		const sysSettingsOccurrences: SysSettingsOccurrence[] = [];
@@ -203,13 +205,15 @@ export class NamingIssuesIndex {
 				}
 				out.push(...this.findingsForClientSchemaText(filePath, text, prefixes));
 			}
-			const csharpFiles = walkFiles(
-				layout.pkgRoot,
-				(name) => name.endsWith(".cs"),
-				(p) => /\/Schemas\//i.test(p.replace(/\\/g, "/"))
-			);
-			for (const filePath of csharpFiles) {
-				out.push(...this.findingsForCsharpSchema(filePath, prefixes));
+			if (csharpDiagnosticsOn) {
+				const csharpFiles = walkFiles(
+					layout.pkgRoot,
+					(name) => name.endsWith(".cs"),
+					(p) => /\/Schemas\//i.test(p.replace(/\\/g, "/"))
+				);
+				for (const filePath of csharpFiles) {
+					out.push(...this.findingsForCsharpSchema(filePath, prefixes));
+				}
 			}
 			const sqlScriptFiles = walkFiles(
 				layout.pkgRoot,
@@ -330,6 +334,9 @@ export class NamingIssuesIndex {
 			return this.findingsForClientSchemaText(filePath, text, prefixes);
 		}
 		if (/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized)) {
+			if (!csharpNamingDiagnosticsEnabled()) {
+				return [];
+			}
 			return this.findingsForCsharpSchema(filePath, prefixes);
 		}
 		if (/\/Data\/[^/]+\/descriptor\.json$/i.test(normalized)) {
@@ -649,19 +656,79 @@ export class NamingIssuesIndex {
 		return findings;
 	}
 
+	/**
+	 * Any `.cs` file under `Schemas/` — deliberately not narrowed to
+	 * `SourceCodeSchemaManager` schemas alone, matching naming-guidelines.md
+	 * §4's own scope ("Схемы типа «Исходный код» **и аналогичные серверные
+	 * артефакты**"): a Process/UserTask/Entity schema's own `.cs` file is
+	 * just as much "C# code" and gets the same Code-level checks (prefix,
+	 * class/schema-name correspondence, no `SourceCode`/temp-designation/
+	 * chained-suffix junk). The RU/EN Title-coverage check is the one
+	 * exception — it's gated to actual `SourceCodeSchemaManager` schemas,
+	 * since a Process/UserTask/Entity's own Title is already checked once,
+	 * against its *own* Resources suffix (`.Process`/`.ProcessUserTask`/
+	 * `.Entity`), by that schema type's own findings method; re-running it
+	 * here against a `.SourceCode` Resources folder that doesn't exist for
+	 * those schemas would just misreport "missing" every time.
+	 *
+	 * Also skips everything for a *substitution* — `Parent.Name === Name`,
+	 * confirmed real here too (e.g. a stock `Lead`/`Account` entity's own
+	 * `Lead.cs`/`Account.cs` custom-logic file, `ManagerName:
+	 * "EntitySchemaManager"`, no team prefix because the name itself is
+	 * inherited from the platform, not chosen in this package) — same
+	 * reasoning as every other schema type's own substitution guard.
+	 */
 	private findingsForCsharpSchema(filePath: string, prefixes: string[]): NamingFinding[] {
 		const text = readFileSafe(filePath);
 		if (text === undefined) {
 			return [];
 		}
-		const schemaName = csharpSchemaDescriptorName(filePath);
-		return checkCsharpSchemaNaming(text, prefixes, schemaName).map((issue) => ({
+		const schema = findSchemaDir(filePath);
+		const descriptorPath = schema ? path.join(schema.schemaDir, "descriptor.json") : undefined;
+		const descriptorText = descriptorPath ? readFileSafe(descriptorPath) : undefined;
+		const info = descriptorText ? parseDescriptorInfo(descriptorText) : undefined;
+		const schemaName = info?.name;
+		if (schemaName && descriptorText && parseDescriptorParent(descriptorText) === schemaName) {
+			return [];
+		}
+		const findings = checkCsharpSchemaNaming(text, prefixes, schemaName).map((issue) => ({
 			packageName: packageFromPath(filePath),
 			label: schemaName || path.basename(filePath, ".cs"),
 			message: issue.message,
 			filePath,
 			position: offsetToPosition(text, issue.start)
 		}));
+
+		if (info?.managerName === "SourceCodeSchemaManager" && schema && descriptorPath && descriptorText) {
+			const name = schemaName || schema.schemaName;
+			const namePosition = offsetToPosition(descriptorText, locateJsonNameOffset(descriptorText, name));
+			let hasRu = false;
+			let hasEn = false;
+			for (const dir of findResourceDirs(schema.schemaDir, name)) {
+				hasRu = hasRu || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.ru-RU.xml")));
+				hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
+			}
+			if (!hasRu) {
+				findings.push({
+					packageName: packageFromPath(descriptorPath),
+					label: name,
+					message: `Класс «${name}»: отсутствует заголовок на русском (ru-RU Caption)`,
+					filePath: descriptorPath,
+					position: namePosition
+				});
+			}
+			if (!hasEn) {
+				findings.push({
+					packageName: packageFromPath(descriptorPath),
+					label: name,
+					message: `Класс «${name}»: отсутствует заголовок на английском (en-US Caption)`,
+					filePath: descriptorPath,
+					position: namePosition
+				});
+			}
+		}
+
+		return findings;
 	}
 
 	private async findingsForSqlScript(
@@ -810,23 +877,6 @@ function hasNonEmptyCaption(xmlText: string | undefined): boolean {
 	}
 	const match = /<Item\s+Name="Caption"\s+Value="([^"]*)"\s*\/>/.exec(xmlText);
 	return !!match && match[1].trim().length > 0;
-}
-
-/** The schema's registered name, from `descriptor.json` in the same
- * `Schemas/{Name}/` folder as `filePath` (a .cs file) — the authoritative
- * source naming-guidelines.md checks are meant to validate against, same as
- * for JS/SQL schemas. `undefined` if the descriptor is missing/unreadable,
- * letting the caller fall back to the source-extracted class name. */
-function csharpSchemaDescriptorName(filePath: string): string | undefined {
-	const schema = findSchemaDir(filePath);
-	if (!schema) {
-		return undefined;
-	}
-	const descriptorText = readFileSafe(path.join(schema.schemaDir, "descriptor.json"));
-	if (!descriptorText) {
-		return undefined;
-	}
-	return parseDescriptorInfo(descriptorText)?.name;
 }
 
 function packageFromPath(filePath: string): string {
