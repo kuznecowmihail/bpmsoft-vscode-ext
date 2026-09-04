@@ -9,7 +9,7 @@ import { NamingIssuesIndex } from "../index/NamingIssuesIndex";
 import { findResourceDirs } from "../index/schemaResourceLookup";
 import { parsePkgPath } from "../index/pkgPath";
 import { isBoxedPackage } from "../index/packageOwnershipCheck";
-import { TopFolderKind, topFolderIcon, schemaIcon } from "./packageIcons";
+import { TopFolderKind, topFolderIcon, schemaIcon, PACKAGE_COLOR } from "./packageIcons";
 
 const TOP_FOLDER_ORDER: TopFolderKind[] = [
 	"Schemas",
@@ -194,7 +194,8 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 					: vscode.TreeItemCollapsibleState.Expanded
 			);
 			item.iconPath = new vscode.ThemeIcon(
-				node.label === BOXED_LABEL ? "archive" : "folder-library"
+				node.label === BOXED_LABEL ? "archive" : "folder-library",
+				node.label === BOXED_LABEL ? MUTED_COLOR : undefined
 			);
 			item.contextValue = "bpmsoftPackageCategory";
 			return item;
@@ -260,7 +261,7 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		const hasIssues = this.namingIndex.hasIssuesUnder(node.path);
 		item.iconPath = new vscode.ThemeIcon(
 			"package",
-			boxed ? MUTED_COLOR : hasIssues ? WARNING_COLOR : undefined
+			boxed ? MUTED_COLOR : hasIssues ? WARNING_COLOR : PACKAGE_COLOR
 		);
 		if (hasIssues) {
 			item.tooltip = "В этом пакете есть проблемы с неймингом";
@@ -301,7 +302,7 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 			item.iconPath = new vscode.ThemeIcon("server-process", WARNING_COLOR);
 			item.tooltip = findings.map((f) => f.message).join("\n");
 		} else {
-			item.iconPath = new vscode.ThemeIcon("server-process");
+			item.iconPath = topFolderIcon("SqlScripts");
 		}
 		return item;
 	}

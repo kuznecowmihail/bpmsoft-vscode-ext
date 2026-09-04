@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 
 export const SET_DEFAULT_FORMATTER_COMMAND = "bpmsoft.setDefaultFormatter";
 
+const CONFIGURED_COLOR = new vscode.ThemeColor("charts.green");
+
 interface FormatterLang {
 	languageId: string;
 	displayName: string;
@@ -44,7 +46,7 @@ export class FormatterSettingsTreeProvider implements vscode.TreeDataProvider<Fo
 			: current
 				? `сейчас: ${current}`
 				: "форматтер не задан";
-		item.iconPath = new vscode.ThemeIcon(isDefault ? "check" : "circle-large-outline");
+		item.iconPath = new vscode.ThemeIcon(isDefault ? "check" : "circle-large-outline", isDefault ? CONFIGURED_COLOR : undefined);
 		item.tooltip = isDefault
 			? "BPMSoft уже используется как форматтер по умолчанию для этого языка"
 			: "Нажмите, чтобы сделать BPMSoft форматтером по умолчанию для этого языка (настройка рабочей области)";

@@ -3,6 +3,8 @@ import { currentPackage, expectedMaintainers, namingPrefixes } from "../config";
 
 export const EDIT_PACKAGE_SETTING_COMMAND = "bpmsoft.packageSettings.edit";
 
+const CONFIGURED_COLOR = new vscode.ThemeColor("charts.green");
+
 interface PackageSettingField {
 	/** Also the `bpmsoft.<key>` configuration key — kept 1:1 so there's no
 	 * separate lookup table to keep in sync. */
@@ -63,7 +65,7 @@ export class PackageSettingsTreeProvider implements vscode.TreeDataProvider<Pack
 		const item = new vscode.TreeItem(field.label, vscode.TreeItemCollapsibleState.None);
 		item.description = value || "не задано";
 		item.tooltip = field.prompt;
-		item.iconPath = new vscode.ThemeIcon(value ? "check" : "circle-large-outline");
+		item.iconPath = new vscode.ThemeIcon(value ? "check" : "circle-large-outline", value ? CONFIGURED_COLOR : undefined);
 		item.command = {
 			command: EDIT_PACKAGE_SETTING_COMMAND,
 			title: "Изменить",

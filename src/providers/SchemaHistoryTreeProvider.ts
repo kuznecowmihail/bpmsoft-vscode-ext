@@ -50,6 +50,11 @@ export interface SourceFilter {
 // commit message's own content). Written as \x1e, not a raw control
 // character, since a literal 0x1E byte renders invisibly in most tools/diffs
 // and has been mistaken for an empty string before.
+/** Distinguishes the two entry sources at a glance — matches the
+ * git/local toggle in the view's own filter submenu. */
+const GIT_COMMIT_COLOR = new vscode.ThemeColor("charts.blue");
+const LOCAL_HISTORY_COLOR = new vscode.ThemeColor("charts.orange");
+
 const RECORD_SEP = "\x1e";
 // Unit Separator (0x1F) between header fields, and Group Separator (0x1D)
 // marking where the header ends and the --numstat file block begins — plain
@@ -251,7 +256,7 @@ export class SchemaHistoryTreeProvider implements vscode.TreeDataProvider<Histor
 		const item = new vscode.TreeItem(entry.subject || "(без сообщения)", vscode.TreeItemCollapsibleState.None);
 		item.description = `${entry.author}, ${entry.date}`;
 		item.tooltip = buildTooltip(entry, this.gitRoot);
-		item.iconPath = new vscode.ThemeIcon("git-commit");
+		item.iconPath = new vscode.ThemeIcon("git-commit", GIT_COMMIT_COLOR);
 		item.contextValue = "bpmsoftHistoryCommit";
 		if (this.gitRoot && this.activeFilePath) {
 			item.command = {
@@ -266,7 +271,7 @@ export class SchemaHistoryTreeProvider implements vscode.TreeDataProvider<Histor
 	private localHistoryTreeItem(entry: LocalHistoryEntry): vscode.TreeItem {
 		const item = new vscode.TreeItem(localHistoryLabel(entry), vscode.TreeItemCollapsibleState.None);
 		item.description = formatShortRelativeTime(entry.timestamp);
-		item.iconPath = new vscode.ThemeIcon("circle-outline");
+		item.iconPath = new vscode.ThemeIcon("circle-outline", LOCAL_HISTORY_COLOR);
 		item.contextValue = "bpmsoftLocalHistoryEntry";
 		item.tooltip = buildLocalHistoryTooltip(entry);
 		if (this.activeFilePath) {

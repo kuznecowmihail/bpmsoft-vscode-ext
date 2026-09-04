@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
 import { NamingFinding, NamingIssuesIndex } from "../index/NamingIssuesIndex";
+import { PACKAGE_COLOR } from "./packageIcons";
+
+const WARNING_COLOR = new vscode.ThemeColor("problemsWarningIcon.foreground");
 
 type TreeNode =
 	| { kind: "package"; name: string; findings: NamingFinding[] }
@@ -19,7 +22,7 @@ export class NamingIssuesTreeProvider implements vscode.TreeDataProvider<TreeNod
 				`${node.name} (${node.findings.length})`,
 				vscode.TreeItemCollapsibleState.Collapsed
 			);
-			item.iconPath = new vscode.ThemeIcon("package");
+			item.iconPath = new vscode.ThemeIcon("package", PACKAGE_COLOR);
 			item.contextValue = "bpmsoftNamingPackage";
 			return item;
 		}
@@ -27,7 +30,7 @@ export class NamingIssuesTreeProvider implements vscode.TreeDataProvider<TreeNod
 		const item = new vscode.TreeItem(finding.label, vscode.TreeItemCollapsibleState.None);
 		item.description = finding.message;
 		item.tooltip = finding.message;
-		item.iconPath = new vscode.ThemeIcon("warning");
+		item.iconPath = new vscode.ThemeIcon("warning", WARNING_COLOR);
 		item.contextValue = "bpmsoftNamingFinding";
 		item.command = {
 			command: "vscode.open",
