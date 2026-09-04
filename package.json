@@ -46,7 +46,8 @@
       {
         "command": "bpmsoft.rebuildIndex",
         "title": "Rebuild Index",
-        "category": "BPMSoft"
+        "category": "BPMSoft",
+        "icon": "$(sync)"
       },
       {
         "command": "bpmsoft.naming.markFalsePositive",
@@ -203,6 +204,11 @@
         {
           "submenu": "bpmsoft.plainOutline.actionsMenu",
           "when": "view == bpmsoftPlainOutline",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.rebuildIndex",
+          "when": "view == bpmsoftPackageSettings",
           "group": "navigation@1"
         }
       ],
