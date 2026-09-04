@@ -361,7 +361,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}),
 			vscode.workspace.onDidSaveTextDocument((document) => {
 				if (isNamingDiagnosticsTarget(document.uri.fsPath)) {
-					namingIndex.refreshFile(document.uri.fsPath);
+					void namingIndex.refreshFile(document.uri.fsPath);
 				}
 			}),
 			vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -422,7 +422,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					e.affectsConfiguration("bpmsoft.namingPrefixes")
 				) {
 					namingDiagnostics.refreshOpenDocuments();
-					namingIndex.refresh();
+					void namingIndex.refresh();
 				}
 				if (e.affectsConfiguration("editor.defaultFormatter")) {
 					formatterTree.refresh();
@@ -448,7 +448,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		registerWatchers(context, folders, layouts, packagesTree);
 		styleDiagnostics.refreshOpenDocuments();
 		namingDiagnostics.refreshOpenDocuments();
-		namingIndex.refresh();
+		void namingIndex.refresh();
 		outlineTree.refresh();
 		void plainOutlineTree.refresh();
 		schemaHistoryTree.refresh();
@@ -474,7 +474,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 function onWatchedFile(uri: vscode.Uri, deleted: boolean): void {
 	const normalized = uri.fsPath.replace(/\\/g, "/");
 	if (isNamingDiagnosticsTarget(uri.fsPath)) {
-		namingIndex.refreshFile(uri.fsPath);
+		void namingIndex.refreshFile(uri.fsPath);
 	}
 	if (
 		/\/metadata\.json$/i.test(normalized) ||
@@ -621,7 +621,7 @@ async function rebuildWithProgress(): Promise<void> {
 			diagnostics.refreshOpenDocuments();
 			styleDiagnostics.refreshOpenDocuments();
 			namingDiagnostics.refreshOpenDocuments();
-			namingIndex.refresh();
+			void namingIndex.refresh();
 			outlineTree.refresh();
 			void plainOutlineTree.refresh();
 			schemaHistoryTree.refresh();

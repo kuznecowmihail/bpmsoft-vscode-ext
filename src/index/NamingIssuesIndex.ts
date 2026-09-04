@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { execFile } from "child_process";
 import { resolveAppLayouts, walkFiles } from "./workspaceLayout";
 import {
 	parseDescriptorInfo,
@@ -29,7 +30,8 @@ import {
 	entityNamingBooleanPrefixes,
 	entityNamingSingularExceptions,
 	namingDiagnosticsEnabled,
-	namingPrefixes
+	namingPrefixes,
+	sqlTempScriptMaxAgeDays
 } from "../config";
 
 export interface NamingFinding {
@@ -61,9 +63,11 @@ export class NamingIssuesIndex {
 	 * re-parsed. Only worth paying for when something that could change *any*
 	 * file's verdict just happened (extension startup, index rebuild, the
 	 * naming config itself changing) — for a single file being saved/created/
-	 * deleted, use `refreshFile` instead. */
-	refresh(): void {
-		this._findings = namingDiagnosticsEnabled() ? this.scanWorkspace() : [];
+	 * deleted, use `refreshFile` instead. Async since the `_Temp` SQL script
+	 * age check (see `checkTempScriptAge`) needs `git log`, unlike everything
+	 * else here which is plain file I/O. */
+	async refresh(): Promise<void> {
+		this._findings = namingDiagnosticsEnabled() ? await this.scanWorkspace() : [];
 		this.changeEmitter.fire();
 	}
 
@@ -74,11 +78,11 @@ export class NamingIssuesIndex {
 	 * Works uniformly for modify/create/delete: any existing findings for
 	 * `filePath` are dropped first, then re-added only if the file still
 	 * exists and is still a naming-relevant target. */
-	refreshFile(filePath: string): void {
+	async refreshFile(filePath: string): Promise<void> {
 		if (!namingDiagnosticsEnabled()) {
 			return;
 		}
-		const fresh = this.findingsForFile(filePath, namingPrefixes());
+		const fresh = await this.findingsForFile(filePath, namingPrefixes());
 		const normPath = path.normalize(filePath);
 		this._findings = [
 			...this._findings.filter((f) => path.normalize(f.filePath) !== normPath),
@@ -99,10 +103,11 @@ export class NamingIssuesIndex {
 		return this._findings.some((f) => path.normalize(f.filePath).startsWith(normalized));
 	}
 
-	private scanWorkspace(): NamingFinding[] {
+	private async scanWorkspace(): Promise<NamingFinding[]> {
 		const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
 		const layouts = resolveAppLayouts(folders);
 		const prefixes = namingPrefixes();
+		const tempMaxAgeDays = sqlTempScriptMaxAgeDays();
 		const entitySettings: EntityNamingSettings = {
 			prefixes,
 			checkSingularName: entityNamingCheckSingular(),
@@ -154,8 +159,13 @@ export class NamingIssuesIndex {
 				(name) => name === "descriptor.json",
 				(p) => /\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
 			);
-			for (const filePath of sqlScriptFiles) {
-				out.push(...this.findingsForSqlScript(filePath));
+			const sqlFindings = await Promise.all(
+				sqlScriptFiles.map((filePath) =>
+					this.findingsForSqlScript(filePath, layout.pkgRoot, tempMaxAgeDays)
+				)
+			);
+			for (const findings of sqlFindings) {
+				out.push(...findings);
 			}
 		}
 		if (entityDiagnosticsOn) {
@@ -183,10 +193,10 @@ export class NamingIssuesIndex {
 	 * cross-package uniqueness check (needs every occurrence at once — not
 	 * worth a full rescan just to keep that one check current on every
 	 * keystroke; it settles again on the next full `refresh()`). */
-	private findingsForFile(filePath: string, prefixes: string[]): NamingFinding[] {
+	private async findingsForFile(filePath: string, prefixes: string[]): Promise<NamingFinding[]> {
 		const normalized = filePath.replace(/\\/g, "/");
 		if (/\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(normalized)) {
-			return this.findingsForSqlScript(filePath);
+			return this.findingsForSqlScript(filePath, pkgRootFromFilePath(filePath), sqlTempScriptMaxAgeDays());
 		}
 		if (/\/Schemas\/[^/]+\/descriptor\.json$/i.test(normalized)) {
 			const text = readFileSafe(filePath);
@@ -349,7 +359,11 @@ export class NamingIssuesIndex {
 		}));
 	}
 
-	private findingsForSqlScript(filePath: string): NamingFinding[] {
+	private async findingsForSqlScript(
+		filePath: string,
+		gitRoot: string | undefined,
+		tempMaxAgeDays: number
+	): Promise<NamingFinding[]> {
 		const text = readFileSafe(filePath);
 		if (text === undefined) {
 			return [];
@@ -358,14 +372,64 @@ export class NamingIssuesIndex {
 		if (!scriptName) {
 			return [];
 		}
-		return checkSqlScriptNaming(scriptName).map((issue) => ({
+		const findings = checkSqlScriptNaming(scriptName).map((issue) => ({
 			packageName: packageFromPath(filePath),
 			label: scriptName,
 			message: issue.message,
 			filePath,
 			position: offsetToPosition(text, locateJsonNameOffset(text, scriptName))
 		}));
+		if (scriptName.endsWith("_Temp") && gitRoot && tempMaxAgeDays > 0) {
+			const ageDays = await gitFileFirstAddedAgeDays(gitRoot, filePath);
+			if (ageDays !== undefined && ageDays > tempMaxAgeDays) {
+				findings.push({
+					packageName: packageFromPath(filePath),
+					label: scriptName,
+					message: `SQL-скрипт «${scriptName}»: временный скрипт (_Temp) в репозитории уже ${Math.floor(ageDays)} дн. — возможно, забыли удалить после релиза`,
+					filePath,
+					position: offsetToPosition(text, locateJsonNameOffset(text, scriptName))
+				});
+			}
+		}
+		return findings;
 	}
+}
+
+/** `.../Pkg/...` → `.../Pkg` — the git root, per the confirmed repo topology
+ * (the whole `Pkg` folder is one git repo). Used only by the single-file
+ * `findingsForFile` path; `scanWorkspace` already has `layout.pkgRoot` from
+ * its own loop. */
+function pkgRootFromFilePath(filePath: string): string | undefined {
+	const match = /^(.*\/Pkg)\//.exec(filePath.replace(/\\/g, "/"));
+	return match ? match[1].replace(/\//g, path.sep) : undefined;
+}
+
+/** Days since the commit that (most recently) added `filePath` — the
+ * closest proxy available for "how long has this `_Temp` script been
+ * sitting here" (naming-guidelines.md §6: `_Temp` scripts are meant to be
+ * deleted after their one-time run on target environments). Not
+ * authoritative — this extension has no visibility into what's actually
+ * been deployed where, so it's surfaced as a nudge ("possibly forgotten"),
+ * not a hard violation. `undefined` on any git failure (not a repo, file
+ * never committed, git not installed, …) — the caller treats that as
+ * "nothing to say", not an error. */
+function gitFileFirstAddedAgeDays(gitRoot: string, filePath: string): Promise<number | undefined> {
+	const relPath = path.relative(gitRoot, filePath).replace(/\\/g, "/");
+	return new Promise((resolve) => {
+		execFile(
+			"git",
+			["log", "--follow", "--diff-filter=A", "--format=%ct", "-1", "--", relPath],
+			{ cwd: gitRoot },
+			(error, stdout) => {
+				const epochSeconds = Number(stdout?.trim());
+				if (error || !Number.isFinite(epochSeconds) || epochSeconds <= 0) {
+					resolve(undefined);
+					return;
+				}
+				resolve((Date.now() - epochSeconds * 1000) / (1000 * 60 * 60 * 24));
+			}
+		);
+	});
 }
 
 function readFileSafe(filePath: string): string | undefined {

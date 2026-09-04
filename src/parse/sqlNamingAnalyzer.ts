@@ -27,18 +27,34 @@ const KNOWN_OPERATIONS = ["Create", "Alter", "Delete", "Update", "Insert", "Drop
  * only requires the segment right after the first `_` to *start* with a
  * known operation, not a second underscore.
  */
+/** Each `_`-separated segment on its own, e.g. "SysWorkplace"/"CreateFunc"/
+ * "NextNumber" — PascalCase (starts uppercase, letters/digits only), not
+ * the *whole* name (which is never actually PascalCase itself, being
+ * underscore-separated). Checked against 279 real scripts across two
+ * installs before wiring this in: only 2 violate it (`Go_create_fn_...`,
+ * `Go_create_tsp_...`, both a stray lowercase "create" segment) — a real,
+ * low-noise check, unlike the {Object}/{Operation} order below. */
+function findBadPascalCaseSegment(withoutTemp: string): string | undefined {
+	return withoutTemp.split("_").find((segment) => segment && !/^[A-Z][A-Za-z0-9]*$/.test(segment));
+}
+
 export function checkSqlScriptNaming(scriptName: string): NamingIssue[] {
+	const issues: NamingIssue[] = [];
 	const withoutTemp = scriptName.endsWith("_Temp")
 		? scriptName.slice(0, -"_Temp".length)
 		: scriptName;
 	const firstUnderscore = withoutTemp.indexOf("_");
 	const rest = firstUnderscore > 0 ? withoutTemp.slice(firstUnderscore + 1) : "";
 	if (firstUnderscore <= 0 || !KNOWN_OPERATIONS.some((op) => rest.startsWith(op))) {
-		return [
-			{
-				message: `SQL-скрипт «${scriptName}»: ожидается шаблон {Object}_{Operation}{Description}, Operation — одно из ${KNOWN_OPERATIONS.join("/")}`
-			}
-		];
+		issues.push({
+			message: `SQL-скрипт «${scriptName}»: ожидается шаблон {Object}_{Operation}{Description}, Operation — одно из ${KNOWN_OPERATIONS.join("/")}`
+		});
 	}
-	return [];
+	const badSegment = findBadPascalCaseSegment(withoutTemp);
+	if (badSegment !== undefined) {
+		issues.push({
+			message: `SQL-скрипт «${scriptName}»: сегмент «${badSegment}» должен быть в PascalCase`
+		});
+	}
+	return issues;
 }

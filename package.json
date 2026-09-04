@@ -381,6 +381,11 @@
           "type": "string",
           "default": "Is,Has,Can",
           "description": "Comma-separated acceptable verb/assertion prefixes for BOOLEAN column names (e.g. IsActive, HasAttachment, CanEdit)."
+        },
+        "bpmsoft.sqlTempScriptMaxAgeDays": {
+          "type": "number",
+          "default": 30,
+          "description": "naming-guidelines.md §6: a _Temp SQL script should be removed from the package after its one-time run on target environments. This extension can't know what's actually been deployed, so it's a nudge, not a hard check — a _Temp script older than this many days (by its git add date) gets flagged as 'possibly forgotten'. 0 disables it."
         }
       }
     },

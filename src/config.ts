@@ -89,3 +89,12 @@ export function entityNamingDateSuffixes(): string[] {
 export function entityNamingBooleanPrefixes(): string[] {
 	return commaList("entityNaming.booleanPrefixes", "Is,Has,Can");
 }
+
+/** A `_Temp` SQL script (naming-guidelines.md §6) is meant to be removed
+ * from the package after its one-time run on target environments — this is
+ * a nudge, not an authoritative check (no visibility into what's actually
+ * been deployed where), so it's phrased as "older than N days, worth a
+ * look" rather than a hard violation. `0` disables it. */
+export function sqlTempScriptMaxAgeDays(): number {
+	return vscode.workspace.getConfiguration("bpmsoft").get<number>("sqlTempScriptMaxAgeDays", 30);
+}
