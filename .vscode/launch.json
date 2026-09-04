@@ -6,8 +6,7 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
-        "${workspaceFolder}/../../docker/crm-infrastructure/crm-volumes/suppliers2_190_test"
+        "--extensionDevelopmentPath=${workspaceFolder}"
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"
