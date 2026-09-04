@@ -46,7 +46,9 @@ export function stripPrefix(name: string, prefixes: string[]): string {
 	return matched ? name.slice(matched.length) : name;
 }
 
-function hasTechnicalAffix(name: string): string | undefined {
+/** "Tbl"/"Entity"/"Field" as a prefix or suffix — shared with
+ * `processUserTaskNamingAnalyzer.ts`'s parameter check, same rationale. */
+export function hasTechnicalAffix(name: string): string | undefined {
 	return TECHNICAL_AFFIXES.find((affix) => name.startsWith(affix) || name.endsWith(affix));
 }
 

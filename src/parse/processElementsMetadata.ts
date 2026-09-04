@@ -58,10 +58,18 @@ export interface ProcessElementInfo {
 	category: ProcessElementCategory;
 }
 
-/** Parses every diagram element from a Process schema's `metadata.json`
- * (already-loaded file text). Returns `[]` on any parse failure — this is a
- * best-effort diagnostic feed, not a build step. */
-export function parseProcessSchemaElements(metadataText: string): ProcessElementInfo[] {
+interface RawProcessMetadataItem {
+	className: string;
+	name: string;
+}
+
+/** Scans every array-valued `MetaData.Schema` key for `BL1`+`A2`-bearing
+ * items (see module doc) — the shared low-level step both diagram-element
+ * parsing (`parseProcessSchemaElements`) and class-filtered lookups
+ * (`parseProcessMetadataItemsByClassName`, used for a `ProcessUserTask`
+ * schema's own `ProcessSchemaParameter` items) build on. Returns `[]` on any
+ * parse failure — this is a best-effort diagnostic feed, not a build step. */
+function parseRawProcessMetadataItems(metadataText: string): RawProcessMetadataItem[] {
 	let root: unknown;
 	try {
 		root = JSON.parse(metadataText);
@@ -72,7 +80,7 @@ export function parseProcessSchemaElements(metadataText: string): ProcessElement
 	if (!schema || typeof schema !== "object") {
 		return [];
 	}
-	const out: ProcessElementInfo[] = [];
+	const out: RawProcessMetadataItem[] = [];
 	for (const key of Object.keys(schema as Record<string, unknown>)) {
 		const arr = (schema as Record<string, unknown>)[key];
 		if (!Array.isArray(arr)) {
@@ -84,21 +92,40 @@ export function parseProcessSchemaElements(metadataText: string): ProcessElement
 			}
 			const record = item as Record<string, unknown>;
 			const classRef = record.BL1;
+			const name = record.A2;
 			if (typeof classRef !== "string" || !classRef.startsWith(CLASS_PREFIX)) {
 				continue;
 			}
-			const category = CATEGORY_BY_CLASS_NAME[classRef.slice(CLASS_PREFIX.length)];
-			if (!category) {
-				continue;
-			}
-			const name = record.A2;
 			if (typeof name !== "string" || !name) {
 				continue;
 			}
-			out.push({ name, category });
+			out.push({ className: classRef.slice(CLASS_PREFIX.length), name });
 		}
 	}
 	return out;
+}
+
+/** Parses every diagram element from a Process schema's `metadata.json`
+ * (already-loaded file text). */
+export function parseProcessSchemaElements(metadataText: string): ProcessElementInfo[] {
+	const out: ProcessElementInfo[] = [];
+	for (const item of parseRawProcessMetadataItems(metadataText)) {
+		const category = CATEGORY_BY_CLASS_NAME[item.className];
+		if (category) {
+			out.push({ name: item.name, category });
+		}
+	}
+	return out;
+}
+
+/** All items of one specific `BL1` class (its short name, without the
+ * `BPMSoft.Core.Process.` prefix) — used for a `ProcessUserTaskSchemaManager`
+ * schema's own `ProcessSchemaParameter` items, which share the exact same
+ * plain-JSON `metadata.json` shape as a Process schema's diagram. */
+export function parseProcessMetadataItemsByClassName(metadataText: string, className: string): string[] {
+	return parseRawProcessMetadataItems(metadataText)
+		.filter((item) => item.className === className)
+		.map((item) => item.name);
 }
 
 function escapeRegExp(value: string): string {
@@ -119,12 +146,16 @@ export function locateProcessElementOffset(metadataText: string, elementName: st
 	return match.index + match[0].lastIndexOf(`"${elementName}"`) + 1;
 }
 
-/** `<Item Name="BaseElements.{A2}.Caption" Value="..." />` — an element's own
- * title, in the same `Resources/{ProcessName}.Process/resource.{culture}.xml`
- * file as the process's own top-level `Caption` (confirmed real, e.g.
- * `GoActivitySendAssignmentNotificationProcess.Process`'s own resource.ru-RU.xml). */
-export function findProcessElementCaption(xmlText: string, elementName: string): string | undefined {
-	const marker = `BaseElements.${elementName}.Caption" Value="`;
+/** `<Item Name="{namespace}.{itemName}.Caption" Value="..." />` — the
+ * resource-XML shape shared by a Process diagram element's own title
+ * (`namespace: "BaseElements"`, in `Resources/{Process}.Process/
+ * resource.{culture}.xml`, alongside the process's own top-level `Caption`)
+ * and a ProcessUserTask's own parameter title (`namespace: "Parameters"`, in
+ * `Resources/{UserTask}.ProcessUserTask/resource.{culture}.xml` — confirmed
+ * real, e.g. `GoChangeDataUserTask.ProcessUserTask`'s own resource.ru-RU.xml
+ * has `Parameters.RecordColumnValues.Caption`). */
+export function findResourceItemCaption(xmlText: string, namespace: string, itemName: string): string | undefined {
+	const marker = `${namespace}.${itemName}.Caption" Value="`;
 	const idx = xmlText.indexOf(marker);
 	if (idx === -1) {
 		return undefined;
@@ -135,6 +166,12 @@ export function findProcessElementCaption(xmlText: string, elementName: string):
 		return undefined;
 	}
 	return unescapeXml(xmlText.slice(start, end));
+}
+
+/** `findResourceItemCaption` pinned to the `BaseElements` namespace — a
+ * Process diagram element's own title. */
+export function findProcessElementCaption(xmlText: string, elementName: string): string | undefined {
+	return findResourceItemCaption(xmlText, "BaseElements", elementName);
 }
 
 function unescapeXml(value: string): string {

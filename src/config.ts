@@ -96,6 +96,32 @@ export function processNamingDiagnosticsEnabled(): boolean {
 		.get<boolean>("processNamingDiagnostics", true);
 }
 
+export function processUserTaskNamingDiagnosticsEnabled(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("processUserTaskNamingDiagnostics", true);
+}
+
+const DEFAULT_ACTION_VERBS =
+	"Add,Apply,Assign,Build,Calculate,Call,Cancel,Change,Check,Clear,Clone,Close,Complete,Confirm," +
+	"Convert,Create,Delete,Disable,Enable,Execute,Export,Find,Generate,Get,Import,Load,Log,Merge," +
+	"Move,Normalize,Notify,Parse,Process,Publish,Read,Register,Reject,Reload,Remove,Reset,Run,Save," +
+	"Search,Send,Set,Show,Split,Start,Stop,Sync,Unregister,Update,Validate,Verify,Write";
+
+export function processUserTaskActionVerbs(): string[] {
+	return commaList("processUserTask.actionVerbs", DEFAULT_ACTION_VERBS);
+}
+
+/** naming-guidelines.md §8's Input/Output parameter-suffix recommendation
+ * has 0% real adoption in either surveyed install — off by default so it
+ * doesn't flag nearly every existing multi-parameter UserTask; a team that
+ * wants to start enforcing it going forward can turn it on. */
+export function processUserTaskCheckParameterDirectionSuffix(): boolean {
+	return vscode.workspace
+		.getConfiguration("bpmsoft")
+		.get<boolean>("processUserTask.checkParameterDirectionSuffix", false);
+}
+
 /** A `_Temp` SQL script (naming-guidelines.md §6) is meant to be removed
  * from the package after its one-time run on target environments — this is
  * a nudge, not an authoritative check (no visibility into what's actually

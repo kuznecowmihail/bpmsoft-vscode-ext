@@ -391,6 +391,21 @@
           "type": "boolean",
           "default": true,
           "description": "Check ProcessSchemaManager business processes (naming-guidelines.md §7 'Бизнес-процессы') against their own descriptor.json/metadata.json/Resources: process Code (PascalCase, prefix, mandatory 'Process' suffix, no temporary designation like New/Test/Temp/Copy/V2), ru-RU/en-US Title coverage, and per-diagram-element title rules — Actions should start with a verb, Events should describe an already-happened fact (past tense), Exclusive gateways are recommended as closed questions, and a Sequence flow without a transition condition should normally be left unnamed. The Action/Event checks are weak word-ending heuristics (no real Russian morphology available) and can be noisy — same trade-off as the SQL script pattern check."
+        },
+        "bpmsoft.processUserTaskNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check ProcessUserTaskSchemaManager schemas (naming-guidelines.md §8 'Действие процесса (UserTask)') against their own descriptor.json/metadata.json/Resources: UserTask Code (PascalCase, prefix, mandatory 'UserTask' suffix, business name starting with a verb from bpmsoft.processUserTask.actionVerbs), ru-RU/en-US Title coverage, and parameter Code (no Tbl/Entity/Field technical affix). The Input/Output parameter-direction-suffix recommendation is a separate opt-in, see bpmsoft.processUserTask.checkParameterDirectionSuffix."
+        },
+        "bpmsoft.processUserTask.actionVerbs": {
+          "type": "string",
+          "default": "Add,Apply,Assign,Build,Calculate,Call,Cancel,Change,Check,Clear,Clone,Close,Complete,Confirm,Convert,Create,Delete,Disable,Enable,Execute,Export,Find,Generate,Get,Import,Load,Log,Merge,Move,Normalize,Notify,Parse,Process,Publish,Read,Register,Reject,Reload,Remove,Reset,Run,Save,Search,Send,Set,Show,Split,Start,Stop,Sync,Unregister,Update,Validate,Verify,Write",
+          "description": "Comma-separated whitelist of verbs a UserTask's own code (after the team prefix) is expected to start with (e.g. GoChangeDataUserTask → \"Change\"). A curated list rather than a heuristic — English has no reliable ending marker for 'this is a verb' the way Russian infinitives do."
+        },
+        "bpmsoft.processUserTask.checkParameterDirectionSuffix": {
+          "type": "boolean",
+          "default": false,
+          "description": "naming-guidelines.md §8: recommends an Input/Output suffix on parameter names when a UserTask has more than one, to indicate direction. Off by default — confirmed 0% real adoption across two installs (176 real parameters, none suffixed), so enabling this flags nearly every existing multi-parameter UserTask. Turn on if your team wants to start enforcing it going forward."
         }
       }
     },
