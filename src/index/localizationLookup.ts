@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { findResourceDirs } from "./schemaResourceLookup";
 import { stripBom } from "../textUtils";
+import { isBoxedPackage } from "./packageOwnershipCheck";
 
 /** RU/EN shown first regardless of file order — the team's own language
  * plus the platform default; any other culture found still shows, just
@@ -179,60 +180,224 @@ export function resolveLocalizedString(
 	return { key, values };
 }
 
-/**
- * Resolves a `Resources.Images.<key>` (JS) reference to the actual image
- * bytes, across every culture the schema's own resource files carry.
- *
- * Unlike strings, an image's *name* and its actual data live under two
- * different, GUID-linked XML items - `Images.<guid>.Caption` (the
- * human-typed name shown in the Designer's image picker, which is what
- * `key` actually is) and `Images.<guid>.Image` (the real
- * `Type="Image" ContentType="Data" FileExtension=".svg" Value="<base64>"`
- * payload) - confirmed against real schemas. There is no static mapping
- * from an arbitrary JS binding key straight to a GUID (that link only
- * exists in the platform's own image registry at runtime), so this only
- * resolves when the Caption happens to equal `key` exactly - which real
- * code does hit (`AnRefreshDataButtonIcon`, `MenuItemSelectedIcon`, ...),
- * but far from always: plenty of images are captioned differently than
- * however their key was later named in code, or aren't captioned at all,
- * or come from a base/stock schema whose resources aren't reachable this
- * way at all. No match here means exactly that - not "this image doesn't
- * exist," just "can't be found from static files alone." */
-export function resolveLocalizedImage(
-	schemaDir: string,
-	schemaName: string,
-	key: string
-): LocalizedImage[] | undefined {
-	const images: LocalizedImage[] = [];
-	for (const { culture, items } of eachCultureFile(schemaDir, schemaName)) {
-		let guid: string | undefined;
+/** Finds `key` as an `A2` field inside one of the schema's own
+ * `metadata.json` `MetaData.Schema.HD8 { "UId": ..., "A2": <name>, ... }`
+ * entries (a diff-insert block, real JSON once isolated) and returns that
+ * entry's own `UId` — the real image GUID. This is the Designer's actual
+ * name→image registration record (confirmed directly against a real
+ * example: BasePageV2's own HD8 entry for "AnRefreshDataButtonIcon" carries
+ * `UId: "d320e098-..."`, the exact same GUID its `Images.<guid>.Image` item
+ * uses) — a more reliable source than the resource XML's own optional
+ * `Images.<guid>.Caption` (plenty of real images have no Caption at all,
+ * `metadata.json`'s HD8 still names them). `metadata.json` also carries
+ * unrelated `~ MetaData.Schema.HD8 [...]` array entries (bookkeeping, not
+ * name records) — skipped by requiring an actual `{` object, not `[`,
+ * right after the marker. */
+function findImageGuidInMetadata(schemaDir: string, key: string): string | undefined {
+	let text: string;
+	try {
+		text = stripBom(fs.readFileSync(path.join(schemaDir, "metadata.json"), "utf8"));
+	} catch {
+		return undefined;
+	}
+	const marker = "MetaData.Schema.HD8";
+	let searchFrom = 0;
+	while (true) {
+		const markerIdx = text.indexOf(marker, searchFrom);
+		if (markerIdx < 0) {
+			return undefined;
+		}
+		let i = markerIdx + marker.length;
+		while (text[i] === " " || text[i] === "\t") {
+			i++;
+		}
+		if (text[i] !== "{") {
+			searchFrom = markerIdx + marker.length;
+			continue;
+		}
+		const braceStart = i;
+		let depth = 0;
+		for (; i < text.length; i++) {
+			if (text[i] === "{") {
+				depth++;
+			} else if (text[i] === "}") {
+				depth--;
+				if (depth === 0) {
+					i++;
+					break;
+				}
+			}
+		}
+		searchFrom = i;
+		try {
+			const obj = JSON.parse(text.slice(braceStart, i));
+			if (obj && obj.A2 === key && typeof obj.UId === "string") {
+				return obj.UId;
+			}
+		} catch {
+			// Malformed/unexpected block shape - skip, keep scanning.
+		}
+	}
+}
+
+/** Fallback for when `metadata.json` has no HD8 record for `key` (real
+ * gap - some schemas reference an image purely by string key with nothing
+ * registered locally at all): the resource XML's own optional
+ * `Images.<guid>.Caption` item, when its value happens to equal `key`
+ * exactly. See `resolveLocalizedImage`'s own doc for why this is
+ * intentionally exact, not fuzzy. */
+function findImageGuidByCaption(schemaDir: string, schemaName: string, key: string): string | undefined {
+	for (const { items } of eachCultureFile(schemaDir, schemaName)) {
 		for (const [name, item] of items) {
 			if (item.value !== key) {
 				continue;
 			}
 			const m = /^Images\.([0-9a-fA-F-]+)\.Caption$/.exec(name);
 			if (m) {
-				guid = m[1];
-				break;
+				return m[1];
 			}
 		}
-		if (!guid) {
-			continue;
-		}
-		const imageItem = items.get(`Images.${guid}.Image`);
-		if (
-			!imageItem ||
-			imageItem.contentType !== "Data" ||
-			!imageItem.fileExtension ||
-			imageItem.value.length > MAX_IMAGE_BASE64_LENGTH
-		) {
-			continue;
-		}
-		const mimeType = MIME_BY_EXTENSION[imageItem.fileExtension.toLowerCase()];
-		if (!mimeType) {
-			continue;
-		}
-		images.push({ culture, mimeType, base64: imageItem.value });
 	}
+	return undefined;
+}
+
+function imagesFromItems(
+	items: Map<string, ResourceItem>,
+	culture: string,
+	guid: string
+): LocalizedImage | undefined {
+	const imageItem = items.get(`Images.${guid}.Image`);
+	if (
+		!imageItem ||
+		imageItem.contentType !== "Data" ||
+		!imageItem.fileExtension ||
+		imageItem.value.length > MAX_IMAGE_BASE64_LENGTH
+	) {
+		return undefined;
+	}
+	const mimeType = MIME_BY_EXTENSION[imageItem.fileExtension.toLowerCase()];
+	return mimeType ? { culture, mimeType, base64: imageItem.value } : undefined;
+}
+
+interface GuidIndexCache {
+	pkgRoot: string;
+	byGuid: Map<string, { culture: string; items: Map<string, ResourceItem> }[]>;
+}
+
+let guidIndexCache: GuidIndexCache | undefined;
+
+/** Every `Images.<guid>.Image` this GUID resolves to, across *every owned
+ * package's* resource files — not just the current schema's own. Real,
+ * confirmed necessity: a schema's own `metadata.json` can carry an HD8
+ * record for an image whose actual bytes were never copied into that
+ * schema's own resource XML at all (only into some unrelated schema's,
+ * likely from how the Designer/base-page-template duplicates a "common"
+ * icon set across many independently-authored pages) — e.g. `CasePage`
+ * references the exact same "AnRefreshDataButtonIcon" GUID as `BasePageV2`,
+ * but only `BasePageV2`'s own resource file actually has that GUID's image
+ * data; that same GUID turns out to be duplicated across ~40 different
+ * schemas platform-wide in one real install. A GUID match is unambiguous
+ * (it's a real UUID) regardless of which package physically stores the
+ * bytes, so searching every owned package for it is safe, just not free —
+ * built lazily on first need and cached for the process's lifetime (nothing
+ * here is expected to change without a full extension reload / manual
+ * "Rebuild Index", which calls `resetLocalizationCaches`). Boxed packages
+ * are skipped, same as everywhere else this session's indexing work
+ * scoped to owned content — their resources aren't meant to be edited and,
+ * more to the point here, a boxed package rarely even has file-level
+ * Resources at all. */
+function guidIndexForPkgRoot(pkgRoot: string): Map<string, { culture: string; items: Map<string, ResourceItem> }[]> {
+	if (guidIndexCache?.pkgRoot === pkgRoot) {
+		return guidIndexCache.byGuid;
+	}
+	const byGuid = new Map<string, { culture: string; items: Map<string, ResourceItem> }[]>();
+	let packageDirs: fs.Dirent[];
+	try {
+		packageDirs = fs.readdirSync(pkgRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
+	} catch {
+		packageDirs = [];
+	}
+	for (const pkgEntry of packageDirs) {
+		const pkgDir = path.join(pkgRoot, pkgEntry.name);
+		if (isBoxedPackage(pkgDir)) {
+			continue;
+		}
+		const resourcesRoot = path.join(pkgDir, "Resources");
+		for (const resDirEntry of readDirSafe(resourcesRoot)) {
+			if (!resDirEntry.isDirectory()) {
+				continue;
+			}
+			const resDir = path.join(resourcesRoot, resDirEntry.name);
+			for (const fileEntry of readDirSafe(resDir)) {
+				const m = /^resource\.([a-zA-Z]+(?:-[a-zA-Z]+)?)\.xml$/i.exec(fileEntry.name);
+				if (!fileEntry.isFile() || !m) {
+					continue;
+				}
+				const items = readResourceItemsCached(path.join(resDir, fileEntry.name));
+				for (const [name, item] of items) {
+					if (item.contentType !== "Data") {
+						continue;
+					}
+					const imgMatch = /^Images\.([0-9a-fA-F-]+)\.Image$/.exec(name);
+					if (!imgMatch) {
+						continue;
+					}
+					const list = byGuid.get(imgMatch[1]) ?? [];
+					list.push({ culture: m[1], items });
+					byGuid.set(imgMatch[1], list);
+				}
+			}
+		}
+	}
+	guidIndexCache = { pkgRoot, byGuid };
+	return byGuid;
+}
+
+/** Clears both this module's per-file resource cache and the (expensive to
+ * build) global GUID index — call whenever a full re-index is requested
+ * (the "Rebuild Index" command), so stale entries from before a change
+ * don't linger for the rest of the session. */
+export function resetLocalizationCaches(): void {
+	fileCache.clear();
+	guidIndexCache = undefined;
+}
+
+/**
+ * Resolves a `Resources.Images.<key>` (JS) reference to the actual image
+ * bytes. The name→GUID link is found via the schema's own `metadata.json`
+ * (`findImageGuidInMetadata`, the reliable source — see its doc) or, failing
+ * that, the resource XML's own optional `Caption` item
+ * (`findImageGuidByCaption`). Once the GUID is known, the actual
+ * `Images.<guid>.Image` payload is looked up first in the current schema's
+ * own resources, then across every other owned package's resources (see
+ * `guidIndexForPkgRoot` for why that second step is real and necessary,
+ * not paranoia). No match at any stage means exactly that — not "this
+ * image doesn't exist," just "can't be found from static files alone"
+ * (e.g. a genuinely boxed/stock-only image with no local registration
+ * anywhere reachable). */
+export function resolveLocalizedImage(
+	schemaDir: string,
+	schemaName: string,
+	key: string
+): LocalizedImage[] | undefined {
+	const guid = findImageGuidInMetadata(schemaDir, key) ?? findImageGuidByCaption(schemaDir, schemaName, key);
+	if (!guid) {
+		return undefined;
+	}
+	const ownFiles = eachCultureFile(schemaDir, schemaName);
+	const ownImages = ownFiles
+		.map(({ culture, items }) => imagesFromItems(items, culture, guid))
+		.filter((img): img is LocalizedImage => img !== undefined);
+	if (ownImages.length) {
+		return ownImages;
+	}
+	const pkgRoot = path.dirname(path.dirname(path.dirname(schemaDir)));
+	const candidates = guidIndexForPkgRoot(pkgRoot).get(guid);
+	if (!candidates?.length) {
+		return undefined;
+	}
+	const images = candidates
+		.map(({ culture, items }) => imagesFromItems(items, culture, guid))
+		.filter((img): img is LocalizedImage => img !== undefined);
 	return images.length ? images : undefined;
 }

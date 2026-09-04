@@ -12,6 +12,7 @@ import { CompletionProvider } from "./providers/CompletionProvider";
 import { DefinitionProvider } from "./providers/DefinitionProvider";
 import { HoverProvider } from "./providers/HoverProvider";
 import { CsharpHoverProvider } from "./providers/CsharpHoverProvider";
+import { resetLocalizationCaches } from "./index/localizationLookup";
 import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
 import { StyleDiagnostics } from "./providers/StyleDiagnostics";
 import { StyleCodeActionProvider } from "./providers/StyleCodeActionProvider";
@@ -821,6 +822,9 @@ function ensurePlatformIndexCacheDir(context: vscode.ExtensionContext): string |
  * manual "Rebuild Index" command/button, so a deliberate re-index always
  * re-parses everything regardless of what the cache's fingerprint says. */
 async function rebuildWithProgress(forceFresh = false): Promise<void> {
+	if (forceFresh) {
+		resetLocalizationCaches();
+	}
 	await vscode.window.withProgress(
 		{
 			location: vscode.ProgressLocation.Window,
