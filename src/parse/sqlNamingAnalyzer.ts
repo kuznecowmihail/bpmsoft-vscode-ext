@@ -1,6 +1,4 @@
-export interface NamingIssue {
-	message: string;
-}
+import { NamingIssue } from "./namingCommon";
 
 /**
  * `Remove` isn't in naming-guidelines.md's own table (Create/Alter/Delete/
@@ -38,22 +36,20 @@ function findBadPascalCaseSegment(withoutTemp: string): string | undefined {
 	return withoutTemp.split("_").find((segment) => segment && !/^[A-Z][A-Za-z0-9]*$/.test(segment));
 }
 
-export function checkSqlScriptNaming(scriptName: string): NamingIssue[] {
+export function checkSqlScriptNaming(code: string): NamingIssue[] {
 	const issues: NamingIssue[] = [];
-	const withoutTemp = scriptName.endsWith("_Temp")
-		? scriptName.slice(0, -"_Temp".length)
-		: scriptName;
+	const withoutTemp = code.endsWith("_Temp") ? code.slice(0, -"_Temp".length) : code;
 	const firstUnderscore = withoutTemp.indexOf("_");
 	const rest = firstUnderscore > 0 ? withoutTemp.slice(firstUnderscore + 1) : "";
 	if (firstUnderscore <= 0 || !KNOWN_OPERATIONS.some((op) => rest.startsWith(op))) {
 		issues.push({
-			message: `SQL-скрипт «${scriptName}»: ожидается шаблон {Object}_{Operation}{Description}, Operation — одно из ${KNOWN_OPERATIONS.join("/")}`
+			message: `SQL-скрипт «${code}»: ожидается шаблон {Object}_{Operation}{Description}, Operation — одно из ${KNOWN_OPERATIONS.join("/")}`
 		});
 	}
 	const badSegment = findBadPascalCaseSegment(withoutTemp);
 	if (badSegment !== undefined) {
 		issues.push({
-			message: `SQL-скрипт «${scriptName}»: сегмент «${badSegment}» должен быть в PascalCase`
+			message: `SQL-скрипт «${code}»: сегмент «${badSegment}» должен быть в PascalCase`
 		});
 	}
 	return issues;

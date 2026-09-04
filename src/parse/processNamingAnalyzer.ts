@@ -1,9 +1,5 @@
 import { ProcessElementCategory } from "./processElementsMetadata";
-import { findTemporaryDesignationSegment } from "./namingCommon";
-
-export interface NamingIssue {
-	message: string;
-}
+import { NamingIssue, findTemporaryDesignationSegment } from "./namingCommon";
 
 export interface ProcessNamingSettings {
 	/** Same `bpmsoft.namingPrefixes` used everywhere else — the guideline
@@ -23,41 +19,22 @@ function findTemporaryDesignationWord(text: string): string | undefined {
  * designation (`New`/`Test`/`Temp`/`Copy`/`V2`, …) baked into the code.
  * Doesn't check the Title (see `checkProcessCaptionCoverage`).
  */
-export function checkProcessCodeNaming(name: string, settings: ProcessNamingSettings): NamingIssue[] {
+export function checkProcessCodeNaming(code: string, settings: ProcessNamingSettings): NamingIssue[] {
 	const issues: NamingIssue[] = [];
-	if (!/^[A-Za-z0-9]+$/.test(name)) {
-		issues.push({ message: `Process "${name}": code must contain only English letters and digits` });
-	} else if (!/^[A-Z]/.test(name)) {
-		issues.push({ message: `Process "${name}": code must be PascalCase` });
+	if (!/^[A-Za-z0-9]+$/.test(code)) {
+		issues.push({ message: `Process "${code}": code must contain only English letters and digits` });
+	} else if (!/^[A-Z]/.test(code)) {
+		issues.push({ message: `Process "${code}": code must be PascalCase` });
 	}
-	if (settings.prefixes.length && !settings.prefixes.some((p) => name.startsWith(p))) {
-		issues.push({ message: `Process "${name}": expected prefix (${settings.prefixes.join("/")})` });
+	if (settings.prefixes.length && !settings.prefixes.some((p) => code.startsWith(p))) {
+		issues.push({ message: `Process "${code}": expected prefix (${settings.prefixes.join("/")})` });
 	}
-	if (!name.endsWith("Process")) {
-		issues.push({ message: `Process "${name}": code must end with the suffix "Process"` });
+	if (!code.endsWith("Process")) {
+		issues.push({ message: `Process "${code}": code must end with the suffix "Process"` });
 	}
-	const tempSegment = findTemporaryDesignationSegment(name);
+	const tempSegment = findTemporaryDesignationSegment(code);
 	if (tempSegment) {
-		issues.push({ message: `Process "${name}": avoid the temporary designation "${tempSegment}" in the code` });
-	}
-	return issues;
-}
-
-/** Process has (or is missing) its own ru-RU/en-US `Caption` — same
- * mechanism as an Object's Title (`checkEntityCaptionCoverage`), just under
- * `Resources/{Process}.Process/resource.{culture}.xml` instead of
- * `.../{Entity}.Entity/...`. */
-export function checkProcessCaptionCoverage(
-	name: string,
-	hasRuCaption: boolean,
-	hasEnCaption: boolean
-): NamingIssue[] {
-	const issues: NamingIssue[] = [];
-	if (!hasRuCaption) {
-		issues.push({ message: `Process "${name}": missing a Russian title (ru-RU Caption)` });
-	}
-	if (!hasEnCaption) {
-		issues.push({ message: `Process "${name}": missing an English title (en-US Caption)` });
+		issues.push({ message: `Process "${code}": avoid the temporary designation "${tempSegment}" in the code` });
 	}
 	return issues;
 }

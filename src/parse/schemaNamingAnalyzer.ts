@@ -1,8 +1,4 @@
-import { TEMP_DESIGNATION_WORDS, pascalCaseSegments } from "./namingCommon";
-
-export interface NamingIssue {
-	message: string;
-}
+import { NamingIssue, TEMP_DESIGNATION_WORDS, pascalCaseSegments } from "./namingCommon";
 
 export interface ClientSchemaNamingSettings {
 	prefixes: string[];
@@ -90,41 +86,49 @@ function checkBusinessNameGarbage(schemaName: string, issues: NamingIssue[]): vo
 	}
 }
 
+/** The non-Code context `checkClientSchemaNaming` needs — resolved by the
+ * caller (via `SchemaHierarchyResolver`/`parseDescriptorParent`/reading the
+ * schema's own `.js`/`.less`) since it depends on the workspace index, not
+ * on anything derivable from the Code alone. */
+export interface ClientSchemaNamingContext {
+	schemaType?: string;
+	parentName?: string;
+	/** Module-type schemas only — the schema's own `.js` source and, if
+	 * present, `.less`. */
+	moduleSource?: { js: string; less?: string };
+}
+
 /**
  * Checks a client (JS) schema's name against naming-guidelines.md §3: the
  * type-appropriate suffix, the package prefix, and (for Module-type schemas)
  * §3's Module/Mixin/Css triad — see `checkModuleTypeNaming`. Pure — the
- * caller resolves `schemaType` (and the immediate `parentName`, via the
- * existing `SchemaHierarchyResolver`/`parseDescriptorParent`) and passes
- * them in; for a `MODULE`-type schema it also reads the schema's own `.js`
- * (and, if present, `.less`) source.
+ * caller resolves everything in `ClientSchemaNamingContext` and passes it in.
  */
 export function checkClientSchemaNaming(
-	schemaName: string,
-	schemaType: string | undefined,
+	code: string,
 	settings: ClientSchemaNamingSettings,
-	parentName?: string,
-	moduleSource?: { js: string; less?: string }
+	context: ClientSchemaNamingContext = {}
 ): NamingIssue[] {
+	const { schemaType, parentName, moduleSource } = context;
 	const issues: NamingIssue[] = [];
 	const suffixes = schemaType ? SUFFIXES_BY_SCHEMA_TYPE[schemaType] : undefined;
 	if (suffixes) {
 		const required = parentName ? requiredSuffixesForParent(parentName, suffixes) : undefined;
-		if (required && !required.some((suffix) => schemaName.endsWith(suffix))) {
+		if (required && !required.some((suffix) => code.endsWith(suffix))) {
 			issues.push({
-				message: `Схема «${schemaName}»: родитель «${parentName}» относится к типу с суффиксом ${required.join("/")}, ожидается такой же суффикс`
+				message: `Схема «${code}»: родитель «${parentName}» относится к типу с суффиксом ${required.join("/")}, ожидается такой же суффикс`
 			});
 		}
 	}
 	if (schemaType === "MODULE" && moduleSource) {
-		checkModuleTypeNaming(schemaName, moduleSource, settings.checkModuleSuffix, issues);
+		checkModuleTypeNaming(code, moduleSource, settings.checkModuleSuffix, issues);
 	}
-	if (settings.prefixes.length && !settings.prefixes.some((prefix) => schemaName.startsWith(prefix))) {
+	if (settings.prefixes.length && !settings.prefixes.some((prefix) => code.startsWith(prefix))) {
 		issues.push({
-			message: `Схема «${schemaName}»: ожидается префикс пакета (${settings.prefixes.join("/")})`
+			message: `Схема «${code}»: ожидается префикс пакета (${settings.prefixes.join("/")})`
 		});
 	}
-	checkBusinessNameGarbage(schemaName, issues);
+	checkBusinessNameGarbage(code, issues);
 	return issues;
 }
 

@@ -1,6 +1,4 @@
-export interface NamingIssue {
-	message: string;
-}
+import { NamingIssue } from "./namingCommon";
 
 /** A raw hex-looking blob of 16+ chars — the shape of a stripped-down GUID
  * (`1ecde34cf83743188a3g82763a8ed267`-style) the platform sometimes appends

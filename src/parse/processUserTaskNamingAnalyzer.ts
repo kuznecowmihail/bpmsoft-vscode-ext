@@ -1,9 +1,5 @@
 import { hasTechnicalAffix, stripPrefix } from "./entityNamingAnalyzer";
-import { pascalCaseSegments } from "./namingCommon";
-
-export interface NamingIssue {
-	message: string;
-}
+import { NamingIssue, pascalCaseSegments } from "./namingCommon";
 
 export interface ProcessUserTaskNamingSettings {
 	/** Same `bpmsoft.namingPrefixes` used everywhere else. */
@@ -29,46 +25,29 @@ export interface ProcessUserTaskNamingSettings {
  * the Title (see `checkProcessUserTaskCaptionCoverage`).
  */
 export function checkProcessUserTaskCodeNaming(
-	name: string,
+	code: string,
 	settings: ProcessUserTaskNamingSettings
 ): NamingIssue[] {
 	const issues: NamingIssue[] = [];
-	if (!/^[A-Za-z0-9]+$/.test(name)) {
-		issues.push({ message: `UserTask "${name}": code must contain only English letters and digits` });
-	} else if (!/^[A-Z]/.test(name)) {
-		issues.push({ message: `UserTask "${name}": code must be PascalCase` });
+	if (!/^[A-Za-z0-9]+$/.test(code)) {
+		issues.push({ message: `UserTask "${code}": code must contain only English letters and digits` });
+	} else if (!/^[A-Z]/.test(code)) {
+		issues.push({ message: `UserTask "${code}": code must be PascalCase` });
 	}
-	if (settings.prefixes.length && !settings.prefixes.some((p) => name.startsWith(p))) {
-		issues.push({ message: `UserTask "${name}": expected prefix (${settings.prefixes.join("/")})` });
+	if (settings.prefixes.length && !settings.prefixes.some((p) => code.startsWith(p))) {
+		issues.push({ message: `UserTask "${code}": expected prefix (${settings.prefixes.join("/")})` });
 	}
-	if (!name.endsWith("UserTask")) {
-		issues.push({ message: `UserTask "${name}": code must end with the suffix "UserTask"` });
+	if (!code.endsWith("UserTask")) {
+		issues.push({ message: `UserTask "${code}": code must end with the suffix "UserTask"` });
 	}
 	if (settings.actionVerbs.length) {
-		const businessName = stripPrefix(name, settings.prefixes);
+		const businessName = stripPrefix(code, settings.prefixes);
 		const firstSegment = pascalCaseSegments(businessName)[0];
 		if (firstSegment && !settings.actionVerbs.includes(firstSegment)) {
 			issues.push({
-				message: `UserTask "${name}": code should start with a verb reflecting its purpose (configured: ${settings.actionVerbs.join("/")})`
+				message: `UserTask "${code}": code should start with a verb reflecting its purpose (configured: ${settings.actionVerbs.join("/")})`
 			});
 		}
-	}
-	return issues;
-}
-
-/** UserTask has (or is missing) its own ru-RU/en-US `Caption` — same
- * mechanism as a Process's own Title. */
-export function checkProcessUserTaskCaptionCoverage(
-	name: string,
-	hasRuCaption: boolean,
-	hasEnCaption: boolean
-): NamingIssue[] {
-	const issues: NamingIssue[] = [];
-	if (!hasRuCaption) {
-		issues.push({ message: `UserTask "${name}": missing a Russian title (ru-RU Caption)` });
-	}
-	if (!hasEnCaption) {
-		issues.push({ message: `UserTask "${name}": missing an English title (en-US Caption)` });
 	}
 	return issues;
 }

@@ -1,6 +1,4 @@
-export interface NamingIssue {
-	message: string;
-}
+import { NamingIssue } from "./namingCommon";
 
 export interface EntityNamingSettings {
 	/** Same `bpmsoft.namingPrefixes` used for client schemas — the guideline
@@ -71,42 +69,22 @@ function looksPlural(name: string, exceptions: string[]): boolean {
  * `checkEntityCaptionCoverage`) or cross-package uniqueness (needs to see
  * every occurrence at once — see `findEntityCodeCollisions`).
  */
-export function checkEntityCodeNaming(name: string, settings: EntityNamingSettings): NamingIssue[] {
+export function checkEntityCodeNaming(code: string, settings: EntityNamingSettings): NamingIssue[] {
 	const issues: NamingIssue[] = [];
-	if (!/^[A-Za-z0-9]+$/.test(name)) {
-		issues.push({ message: `Object "${name}": code must contain only English letters and digits` });
-	} else if (!/^[A-Z]/.test(name)) {
-		issues.push({ message: `Object "${name}": code must be PascalCase` });
+	if (!/^[A-Za-z0-9]+$/.test(code)) {
+		issues.push({ message: `Object "${code}": code must contain only English letters and digits` });
+	} else if (!/^[A-Z]/.test(code)) {
+		issues.push({ message: `Object "${code}": code must be PascalCase` });
 	}
-	if (settings.prefixes.length && !settings.prefixes.some((p) => name.startsWith(p))) {
-		issues.push({ message: `Object "${name}": expected prefix (${settings.prefixes.join("/")})` });
+	if (settings.prefixes.length && !settings.prefixes.some((p) => code.startsWith(p))) {
+		issues.push({ message: `Object "${code}": expected prefix (${settings.prefixes.join("/")})` });
 	}
-	if (settings.checkSingularName && looksPlural(name, settings.singularExceptions)) {
-		issues.push({ message: `Object "${name}": code should be singular` });
+	if (settings.checkSingularName && looksPlural(code, settings.singularExceptions)) {
+		issues.push({ message: `Object "${code}": code should be singular` });
 	}
-	const affix = hasTechnicalAffix(name);
+	const affix = hasTechnicalAffix(code);
 	if (affix) {
-		issues.push({ message: `Object "${name}": avoid the technical affix "${affix}"` });
-	}
-	return issues;
-}
-
-/** Entity has (or is missing) its own ru-RU/en-US `Caption` — the
- * guideline's "минимум русский и английский" for the Title. Caller resolves
- * which resource files/captions actually exist (`Resources/{Entity}.Entity/
- * resource.{culture}.xml`'s top-level `Item Name="Caption"`, confirmed real
- * shape against `GoTicket.Entity`). */
-export function checkEntityCaptionCoverage(
-	name: string,
-	hasRuCaption: boolean,
-	hasEnCaption: boolean
-): NamingIssue[] {
-	const issues: NamingIssue[] = [];
-	if (!hasRuCaption) {
-		issues.push({ message: `Object "${name}": missing a Russian title (ru-RU Caption)` });
-	}
-	if (!hasEnCaption) {
-		issues.push({ message: `Object "${name}": missing an English title (en-US Caption)` });
+		issues.push({ message: `Object "${code}": avoid the technical affix "${affix}"` });
 	}
 	return issues;
 }

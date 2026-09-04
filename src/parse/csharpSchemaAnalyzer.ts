@@ -1,10 +1,4 @@
-import { findTemporaryDesignationSegment, pascalCaseSegments } from "./namingCommon";
-
-export interface NamingIssue {
-	message: string;
-	start: number;
-	end: number;
-}
+import { PositionedNamingIssue, findTemporaryDesignationSegment, pascalCaseSegments } from "./namingCommon";
 
 export interface TopLevelClass {
 	name: string;
@@ -144,27 +138,34 @@ function findChainedRoleSuffixes(name: string, roleSuffixes: string[]): string[]
  * `CsharpNamingSettings` — a recognizable role suffix at all, and no more
  * than one top-level class per file.
  *
- * The name being *validated* is the schema's registered name — `schemaName`,
- * read from `descriptor.json` by the caller — not necessarily the literal
- * C# class identifier: the two are usually identical, but descriptor.json is
+ * The name being *validated* is the schema's registered name — `code`, read
+ * from `descriptor.json` by the caller — not necessarily the literal C#
+ * class identifier: the two are usually identical, but descriptor.json is
  * the platform's authoritative source of truth for every other schema type
  * (JS, SQL) already, and a substitution/override class can legitimately
  * carry its own source-level identifier. Falls back to the first
- * source-extracted class name when `schemaName` isn't available (no/
- * unreadable descriptor.json), and returns `[]` outright when the file
- * declares no class at all (an enum/interface-only file — outside what this
+ * source-extracted class name when `code` isn't available (no/unreadable
+ * descriptor.json), and returns `[]` outright when the file declares no
+ * class at all (an enum/interface-only file — outside what this
  * class-naming check can reason about).
+ *
+ * `code` is optional and third, unlike every other `check*Naming`
+ * function's mandatory, first-positional subject — deliberately: this
+ * function's one truly required input is `source` (it extracts the classes
+ * and their positions from it), and `code` only overrides *which* extracted
+ * class the checks run against, falling back to the first class in the file
+ * when absent.
  */
 export function checkCsharpSchemaNaming(
 	source: string,
 	settings: CsharpNamingSettings,
-	schemaName?: string
-): NamingIssue[] {
+	code?: string
+): PositionedNamingIssue[] {
 	const classes = extractAllTopLevelClasses(source);
 	if (classes.length === 0) {
 		return [];
 	}
-	const name = schemaName || classes[0].name;
+	const name = code || classes[0].name;
 	// The class whose own name matches the schema's registered name — same
 	// class in the overwhelming majority of files (one class per file), but
 	// in a multi-class file the matching class isn't always textually first
@@ -173,7 +174,7 @@ export function checkCsharpSchemaNaming(
 	// schema with no matching class at all still gets a real position to
 	// anchor its findings on.
 	const mainClass = classes.find((c) => c.name === name) || classes[0];
-	const issues: NamingIssue[] = [];
+	const issues: PositionedNamingIssue[] = [];
 	const push = (message: string) =>
 		issues.push({ message, start: mainClass.nameStart, end: mainClass.nameEnd });
 
