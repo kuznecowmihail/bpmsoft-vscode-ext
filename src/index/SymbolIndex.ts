@@ -3,7 +3,7 @@ import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember,
 import {
 	NO_ENTITY_COLUMN_SCHEMA_TYPES,
 	SchemaHierarchyResolver
-} from "./schemaHierarchy";
+} from "./SchemaHierarchyResolver";
 import { ViewControlsIndex } from "./ViewControlsIndex";
 import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
 import {

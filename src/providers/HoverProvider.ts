@@ -19,7 +19,7 @@ function memberHover(
 	]);
 }
 
-export class BpmsoftHoverProvider implements vscode.HoverProvider {
+export class HoverProvider implements vscode.HoverProvider {
 	constructor(private readonly index: SymbolIndex) {}
 
 	provideHover(

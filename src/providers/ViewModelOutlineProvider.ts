@@ -22,7 +22,7 @@ type OutlineNode =
 // SchemaBuilderV2 — see CLAUDE.md §4a) — as opposed to a plain Module-type
 // schema (ClientUnitSchemaType.Module/None, no Ext.define hierarchy at all)
 // or non-ClientUnitSchemaManager files (mixins, constants, C#, SQL). Same
-// set `packageIcons.ts`/`schemaHierarchy.ts`'s `NO_ENTITY_COLUMN_SCHEMA_TYPES`
+// set `packageIcons.ts`/`SchemaHierarchyResolver.ts`'s `NO_ENTITY_COLUMN_SCHEMA_TYPES`
 // already treat as "has entitySchemaName" for the family, plus the two
 // EditControls/GridEdit detail variants documented (but not yet observed as
 // a literal string in either indexed install) in CLAUDE.md §4.

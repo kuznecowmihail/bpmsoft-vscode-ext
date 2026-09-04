@@ -61,7 +61,7 @@ function skipLocalMethod(
 	);
 }
 
-export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
+export class DefinitionProvider implements vscode.DefinitionProvider {
 	constructor(private readonly index: SymbolIndex) {}
 
 	provideDefinition(

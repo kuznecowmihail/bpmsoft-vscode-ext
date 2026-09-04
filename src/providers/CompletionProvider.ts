@@ -297,7 +297,7 @@ function globalIdentifierItems(typed: string): vscode.CompletionItem[] {
 	});
 }
 
-export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider {
+export class CompletionProvider implements vscode.CompletionItemProvider {
 	constructor(private readonly index: SymbolIndex) {}
 
 	provideCompletionItems(

@@ -7,9 +7,9 @@ import {
 	supportedAppLayouts
 } from "./index/workspaceLayout";
 import { ensureDotnetSolution, maybeOfferCsharpExtension } from "./dotnet/ensureDotnetIntellisense";
-import { BpmsoftCompletionProvider } from "./providers/CompletionProvider";
-import { BpmsoftDefinitionProvider } from "./providers/DefinitionProvider";
-import { BpmsoftHoverProvider } from "./providers/HoverProvider";
+import { CompletionProvider } from "./providers/CompletionProvider";
+import { DefinitionProvider } from "./providers/DefinitionProvider";
+import { HoverProvider } from "./providers/HoverProvider";
 import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
 import { StyleDiagnostics } from "./providers/StyleDiagnostics";
 import { StyleCodeActionProvider } from "./providers/StyleCodeActionProvider";
@@ -171,7 +171,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			{ pattern: "**/Data/**/descriptor.json", scheme: "file" }
 		];
 
-		const completionProvider = new BpmsoftCompletionProvider(index);
+		const completionProvider = new CompletionProvider(index);
 
 		const gitFlowCandidateRoots = layouts
 			.map((l) => l.pkgRoot || l.configurationRoot || l.appRoot || l.workspaceRoot)
@@ -316,11 +316,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			),
 			vscode.languages.registerDefinitionProvider(
 				jsSelector,
-				new BpmsoftDefinitionProvider(index)
+				new DefinitionProvider(index)
 			),
 			vscode.languages.registerHoverProvider(
 				jsSelector,
-				new BpmsoftHoverProvider(index)
+				new HoverProvider(index)
 			),
 			vscode.languages.registerCodeActionsProvider(
 				jsSelector,
