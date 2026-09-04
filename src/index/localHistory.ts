@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { parseJsonNoBom } from "../textUtils";
 
 export interface LocalHistoryEntry {
 	id: string;
@@ -164,6 +165,6 @@ export class LocalHistoryStore {
 
 async function readManifest(manifestPath: string): Promise<HistoryManifest | undefined> {
 	const text = await fs.promises.readFile(manifestPath, "utf8");
-	const parsed = JSON.parse(text);
-	return parsed && typeof parsed === "object" ? (parsed as HistoryManifest) : undefined;
+	const parsed = parseJsonNoBom<HistoryManifest>(text);
+	return parsed && typeof parsed === "object" ? parsed : undefined;
 }

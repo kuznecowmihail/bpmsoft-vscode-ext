@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import { IndexedMember, SourcePosition } from "./types";
+import { IndexedMember } from "./types";
+import { offsetToLineCharacter } from "../textOffset";
 
 const D2_BLOCK_RE = /^\+ MetaData\.Schema\.D2\s+\{/gm;
 const COLUMN_NAME_RE = /^[A-Za-z_][\w]*$/;
@@ -23,18 +24,6 @@ function lookupChildren(): IndexedMember[] {
 			documentation: "Отображаемое значение"
 		}
 	];
-}
-
-function offsetToPosition(source: string, offset: number): SourcePosition {
-	let line = 0;
-	let lastBreak = -1;
-	for (let i = 0; i < offset; i++) {
-		if (source.charCodeAt(i) === 10) {
-			line++;
-			lastBreak = i;
-		}
-	}
-	return { line, character: offset - lastBreak - 1 };
 }
 
 function sliceJsonObject(source: string, braceStart: number): string | undefined {
@@ -180,7 +169,7 @@ export function parsePkgEntityColumns(
 			name,
 			kind: "attribute",
 			filePath,
-			position: offsetToPosition(source, braceStart + a2ValueOffset(json)),
+			position: offsetToLineCharacter(source, braceStart + a2ValueOffset(json)),
 			children: lookup ? lookupChildren() : undefined,
 			detail: lookup ? "entity lookup" : "entity",
 			dataValueType: decodeDataValueType(obj.S2)

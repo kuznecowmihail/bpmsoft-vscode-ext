@@ -1,22 +1,26 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
 import * as path from "path";
 import { execFile } from "child_process";
+import { escapeRegExp, readFileSafe } from "../fsUtils";
+import { offsetToLineCharacter } from "../textOffset";
 import { resolveAppLayouts, walkFiles } from "./workspaceLayout";
 import {
 	parseDescriptorInfo,
 	parseDescriptorParent,
 	parseSqlScriptDescriptorName
 } from "./schemaStructureParse";
-import { findResourceDirs, findSchemaDir } from "./schemaResourceLookup";
-import { ClientSchemaNamingSettings, checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
-import { extractNamingSubject } from "../parse/namingCommon";
+import { findResourceDirs, findSchemaDir, readModuleSource } from "./schemaResourceLookup";
+import {
+	ClientSchemaNamingContext,
+	ClientSchemaNamingSettings,
+	checkClientSchemaNaming
+} from "../parse/schemaNamingAnalyzer";
+import { checkCaptionCoverage, extractNamingSubject } from "../parse/namingCommon";
 import { CsharpNamingSettings, checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
 import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
 import {
 	EntityCodeOccurrence,
 	EntityNamingSettings,
-	checkEntityCaptionCoverage,
 	checkEntityCodeNaming,
 	checkEntityColumnNaming,
 	findEntityCodeCollisions,
@@ -25,7 +29,6 @@ import {
 import { parsePkgEntityColumns } from "../parse/entityMetadata";
 import {
 	ProcessNamingSettings,
-	checkProcessCaptionCoverage,
 	checkProcessCodeNaming,
 	checkProcessElementNaming
 } from "../parse/processNamingAnalyzer";
@@ -38,7 +41,6 @@ import {
 } from "../parse/processElementsMetadata";
 import {
 	ProcessUserTaskNamingSettings,
-	checkProcessUserTaskCaptionCoverage,
 	checkProcessUserTaskCodeNaming,
 	checkProcessUserTaskParameterDirectionSuffix,
 	checkProcessUserTaskParameterNaming
@@ -414,15 +416,14 @@ export class NamingIssuesIndex {
 		}
 		const schemaType = this.index.hierarchy.resolveSchemaType(schemaName);
 		const moduleSource = schemaType === "MODULE" ? readModuleSource(filePath, schemaName) : undefined;
-		return checkClientSchemaNaming(schemaName, schemaType, settings, parentName, moduleSource).map(
-			(issue) => ({
-				packageName: packageFromPath(filePath),
-				label: schemaName,
-				message: issue.message,
-				filePath,
-				position: offsetToPosition(text, locateJsonNameOffset(text, schemaName))
-			})
-		);
+		const context: ClientSchemaNamingContext = { schemaType, parentName, moduleSource };
+		return checkClientSchemaNaming(schemaName, settings, context).map((issue) => ({
+			packageName: packageFromPath(filePath),
+			label: schemaName,
+			message: issue.message,
+			filePath,
+			position: offsetToPosition(text, locateJsonNameOffset(text, schemaName))
+		}));
 	}
 
 	/**
@@ -483,7 +484,7 @@ export class NamingIssuesIndex {
 				hasRu = hasRu || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.ru-RU.xml")));
 				hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
 			}
-			for (const issue of checkEntityCaptionCoverage(schemaName, hasRu, hasEn)) {
+			for (const issue of checkCaptionCoverage("Object", schemaName, hasRu, hasEn)) {
 				findings.push({
 					packageName: packageFromPath(filePath),
 					label: schemaName,
@@ -574,7 +575,7 @@ export class NamingIssuesIndex {
 			elementResourceText = elementResourceText || ruText;
 		}
 		if (!isSubstitution) {
-			for (const issue of checkProcessCaptionCoverage(schemaName, hasRu, hasEn)) {
+			for (const issue of checkCaptionCoverage("Process", schemaName, hasRu, hasEn)) {
 				findings.push({
 					packageName: packageFromPath(filePath),
 					label: schemaName,
@@ -664,7 +665,7 @@ export class NamingIssuesIndex {
 			parameterResourceText = parameterResourceText || ruText;
 		}
 		if (!isSubstitution) {
-			for (const issue of checkProcessUserTaskCaptionCoverage(schemaName, hasRu, hasEn)) {
+			for (const issue of checkCaptionCoverage("UserTask", schemaName, hasRu, hasEn)) {
 				findings.push({
 					packageName: packageFromPath(filePath),
 					label: schemaName,
@@ -919,31 +920,6 @@ function gitFileFirstAddedAgeDays(gitRoot: string, filePath: string): Promise<nu
 	});
 }
 
-function readFileSafe(filePath: string): string | undefined {
-	try {
-		return fs.readFileSync(filePath, "utf8");
-	} catch {
-		return undefined;
-	}
-}
-
-/** A Module-type client schema's own `{Name}.js` (its code) and, if present,
- * `{Name}.less` (its styles) — siblings of `descriptorPath` in the same
- * `Schemas/{Name}/` folder. `undefined` js means the schema's own source
- * couldn't be read (e.g. deleted mid-scan) — the caller skips module checks
- * entirely in that case rather than guessing. */
-function readModuleSource(
-	descriptorPath: string,
-	schemaName: string
-): { js: string; less?: string } | undefined {
-	const dir = path.dirname(descriptorPath);
-	const js = readFileSafe(path.join(dir, `${schemaName}.js`));
-	if (js === undefined) {
-		return undefined;
-	}
-	return { js, less: readFileSafe(path.join(dir, `${schemaName}.less`)) };
-}
-
 /** `<Item Name="Caption" Value="..." />` — the entity's own title, at the
  * top level of `Resources/{Entity}.Entity/resource.{culture}.xml` (confirmed
  * real shape: `GoTicket.Entity`'s own `resource.ru-RU.xml` has `Value="Тикет"`
@@ -971,14 +947,7 @@ function locateJsonNameOffset(text: string, name: string): number {
 	return match.index + match[0].lastIndexOf(`"${name}"`) + 1;
 }
 
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function offsetToPosition(text: string, offset: number): vscode.Position {
-	const before = text.slice(0, Math.max(0, offset));
-	const lines = before.split(/\r\n|\r|\n/);
-	const line = lines.length - 1;
-	const character = lines[lines.length - 1].length;
+	const { line, character } = offsetToLineCharacter(text, offset);
 	return new vscode.Position(line, character);
 }

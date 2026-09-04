@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { PlatformStubMember, MemberKind } from "../parse/types";
+import { PlatformStubMember } from "../parse/types";
 import { resolveAppLayouts, collectResourceRoots } from "../index/workspaceLayout";
 import { cloneStub, mergeStubFirstWins } from "./stubTree";
 
@@ -218,6 +218,21 @@ function findExtBaseFiles(roots: string[]): string[] {
 	return out;
 }
 
+const METHOD_LIKE_KEY_RE = /([A-Za-z_$][\w$]*)\s*:\s*(?:function\b|\()/g;
+
+/** Every key in `obj` whose value looks like a function (`key: function` or
+ * `key: (`) — collected in one pass so `extractExtApplyMembers` doesn't need
+ * to re-scan the whole object text with a fresh regex per key. */
+function findMethodLikeKeys(obj: string): Set<string> {
+	const names = new Set<string>();
+	METHOD_LIKE_KEY_RE.lastIndex = 0;
+	let match: RegExpExecArray | null;
+	while ((match = METHOD_LIKE_KEY_RE.exec(obj))) {
+		names.add(match[1]);
+	}
+	return names;
+}
+
 /**
  * Pull top-level keys from Ext.apply(Ext, { … }) object literals in a source chunk.
  */
@@ -231,16 +246,12 @@ function extractExtApplyMembers(source: string): PlatformStubMember[] {
 		if (!obj) {
 			continue;
 		}
+		const methodLikeKeys = findMethodLikeKeys(obj);
 		for (const name of extractObjectKeys(obj)) {
 			if (name.startsWith("_") || name === "name") {
 				continue;
 			}
-			const kind: MemberKind =
-				new RegExp(`${name}\\s*:\\s*function`).test(obj) ||
-				new RegExp(`${name}\\s*:\\s*\\(`).test(obj)
-					? "method"
-					: "property";
-			out.push({ name, kind, detail: "Ext" });
+			out.push({ name, kind: methodLikeKeys.has(name) ? "method" : "property", detail: "Ext" });
 		}
 	}
 	return out;

@@ -1,5 +1,6 @@
-import * as fs from "fs";
 import * as path from "path";
+import { readFileSafe } from "../fsUtils";
+import { parseJsonNoBom } from "../textUtils";
 
 export interface PackageDescriptor {
 	name: string;
@@ -35,24 +36,17 @@ export function findPackageDir(filePath: string): string | undefined {
  * (`Pkg/{Package}/Schemas/{Schema}/descriptor.json`, no `Maintainer`) — this
  * one lives directly under the package folder. */
 export function readPackageDescriptor(packageDir: string): PackageDescriptor | undefined {
-	const descriptorPath = path.join(packageDir, "descriptor.json");
-	let raw: string;
-	try {
-		raw = fs.readFileSync(descriptorPath, "utf8").replace(/^﻿/, "");
-	} catch {
+	const raw = readFileSafe(path.join(packageDir, "descriptor.json"));
+	if (raw === undefined) {
 		return undefined;
 	}
-	try {
-		const parsed = JSON.parse(raw) as { Descriptor?: { Name?: unknown; Maintainer?: unknown } };
-		const name = parsed?.Descriptor?.Name;
-		if (typeof name !== "string" || !name) {
-			return undefined;
-		}
-		const maintainer = parsed?.Descriptor?.Maintainer;
-		return { name, maintainer: typeof maintainer === "string" ? maintainer : undefined };
-	} catch {
+	const parsed = parseJsonNoBom<{ Descriptor?: { Name?: unknown; Maintainer?: unknown } }>(raw);
+	const name = parsed?.Descriptor?.Name;
+	if (typeof name !== "string" || !name) {
 		return undefined;
 	}
+	const maintainer = parsed?.Descriptor?.Maintainer;
+	return { name, maintainer: typeof maintainer === "string" ? maintainer : undefined };
 }
 
 /**

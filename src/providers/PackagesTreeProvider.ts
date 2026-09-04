@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { readFileSafe } from "../fsUtils";
 import { resolveAppLayouts } from "../index/workspaceLayout";
 import { parseDescriptorInfo } from "../index/schemaStructureParse";
 import { SymbolIndex } from "../index/SymbolIndex";
@@ -525,14 +526,6 @@ function readDirSafe(dirPath: string): fs.Dirent[] {
 		return fs.readdirSync(dirPath, { withFileTypes: true });
 	} catch {
 		return [];
-	}
-}
-
-function readFileSafe(filePath: string): string | undefined {
-	try {
-		return fs.readFileSync(filePath, "utf8");
-	} catch {
-		return undefined;
 	}
 }
 

@@ -14,6 +14,9 @@
  * guess which key holds the diagram on a given schema/version.
  */
 
+import { escapeRegExp } from "../fsUtils";
+import { parseJsonNoBom } from "../textUtils";
+
 export type ProcessElementCategory =
 	| "action"
 	| "event"
@@ -70,10 +73,8 @@ interface RawProcessMetadataItem {
  * schema's own `ProcessSchemaParameter` items) build on. Returns `[]` on any
  * parse failure — this is a best-effort diagnostic feed, not a build step. */
 function parseRawProcessMetadataItems(metadataText: string): RawProcessMetadataItem[] {
-	let root: unknown;
-	try {
-		root = JSON.parse(metadataText);
-	} catch {
+	const root = parseJsonNoBom<unknown>(metadataText);
+	if (root === undefined) {
 		return [];
 	}
 	const schema = (root as { MetaData?: { Schema?: unknown } })?.MetaData?.Schema;
@@ -126,10 +127,6 @@ export function parseProcessMetadataItemsByClassName(metadataText: string, class
 	return parseRawProcessMetadataItems(metadataText)
 		.filter((item) => item.className === className)
 		.map((item) => item.name);
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Best-effort offset of an element's `"A2": "<name>"` occurrence in the raw

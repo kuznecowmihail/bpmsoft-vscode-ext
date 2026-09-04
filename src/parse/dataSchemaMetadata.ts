@@ -17,15 +17,7 @@
  * matching).
  */
 
-const BOM_RE = /^﻿/;
-
-function parseJsonSafe(text: string): unknown {
-	try {
-		return JSON.parse(text.replace(BOM_RE, ""));
-	} catch {
-		return undefined;
-	}
-}
+import { parseJsonNoBom } from "../textUtils";
 
 export interface DataSchemaDescriptorInfo {
 	/** `Descriptor.Name` — the Data schema's own Code (the `Data/{Name}/` folder name). */
@@ -35,7 +27,7 @@ export interface DataSchemaDescriptorInfo {
 }
 
 export function parseDataSchemaDescriptor(descriptorText: string): DataSchemaDescriptorInfo | undefined {
-	const root = parseJsonSafe(descriptorText) as
+	const root = parseJsonNoBom(descriptorText) as
 		| { Descriptor?: { Name?: unknown; Schema?: { Name?: unknown } } }
 		| undefined;
 	const code = root?.Descriptor?.Name;
@@ -92,8 +84,8 @@ export function readDataRowColumnValue(
 	dataText: string,
 	columnName: string
 ): string | undefined {
-	const descriptorRoot = parseJsonSafe(descriptorText);
-	const dataRoot = parseJsonSafe(dataText);
+	const descriptorRoot = parseJsonNoBom(descriptorText);
+	const dataRoot = parseJsonNoBom(dataText);
 	if (descriptorRoot === undefined || dataRoot === undefined) {
 		return undefined;
 	}

@@ -1,14 +1,19 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { escapeRegExp } from "../fsUtils";
 import {
 	DescriptorInfo,
 	parseDescriptorInfo,
 	parseDescriptorParent,
 	parseSqlScriptDescriptorName
 } from "../index/schemaStructureParse";
-import { findSchemaDir } from "../index/schemaResourceLookup";
-import { ClientSchemaNamingSettings, checkClientSchemaNaming } from "../parse/schemaNamingAnalyzer";
+import { findSchemaDir, readModuleSource } from "../index/schemaResourceLookup";
+import {
+	ClientSchemaNamingContext,
+	ClientSchemaNamingSettings,
+	checkClientSchemaNaming
+} from "../parse/schemaNamingAnalyzer";
 import { checkCsharpSchemaNaming } from "../parse/csharpSchemaAnalyzer";
 import { checkSqlScriptNaming } from "../parse/sqlNamingAnalyzer";
 import { parseDataSchemaDescriptor } from "../parse/dataSchemaMetadata";
@@ -133,13 +138,12 @@ export class NamingDiagnostics implements vscode.Disposable {
 			prefixes: namingPrefixes(),
 			checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
 		};
+		const context: ClientSchemaNamingContext = { schemaType, parentName, moduleSource };
 		const pos = locateJsonNameValue(text, schemaName);
-		return checkClientSchemaNaming(schemaName, schemaType, settings, parentName, moduleSource).map(
-			(issue) => ({
-				...issue,
-				...pos
-			})
-		);
+		return checkClientSchemaNaming(schemaName, settings, context).map((issue) => ({
+			...issue,
+			...pos
+		}));
 	}
 
 	private checkSqlDescriptor(document: vscode.TextDocument): PositionedIssue[] {
@@ -208,28 +212,6 @@ function csharpSchemaDescriptorInfo(filePath: string): DescriptorInfo | undefine
 	}
 }
 
-/** A Module-type client schema's own `{Name}.js`/`{Name}.less` — siblings of
- * `descriptorPath` in the same `Schemas/{Name}/` folder. Mirrors
- * `NamingIssuesIndex.ts`'s own `readModuleSource`. */
-function readModuleSource(
-	descriptorPath: string,
-	schemaName: string
-): { js: string; less?: string } | undefined {
-	const dir = path.dirname(descriptorPath);
-	try {
-		const js = fs.readFileSync(path.join(dir, `${schemaName}.js`), "utf8");
-		let less: string | undefined;
-		try {
-			less = fs.readFileSync(path.join(dir, `${schemaName}.less`), "utf8");
-		} catch {
-			less = undefined;
-		}
-		return { js, less };
-	} catch {
-		return undefined;
-	}
-}
-
 function locateJsonNameValue(text: string, name: string): { start: number; end: number } {
 	const re = new RegExp(`"Name"\\s*:\\s*"${escapeRegExp(name)}"`);
 	const match = re.exec(text);
@@ -238,10 +220,6 @@ function locateJsonNameValue(text: string, name: string): { start: number; end: 
 		return { start: valueStart, end: valueStart + name.length };
 	}
 	return { start: 0, end: Math.min(text.length, 1) };
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function toDiagnostic(document: vscode.TextDocument, issue: PositionedIssue): vscode.Diagnostic {
