@@ -23,6 +23,12 @@ import { PackagesTreeProvider } from "./providers/PackagesTreeProvider";
 import { NamingDecorationProvider } from "./providers/NamingDecorationProvider";
 import { ViewModelOutlineProvider } from "./providers/ViewModelOutlineProvider";
 import { GitFlowStatusBar } from "./providers/GitFlowStatusBar";
+import { PackageOwnershipStatusBar } from "./providers/PackageOwnershipStatusBar";
+import {
+	EDIT_PACKAGE_SETTING_COMMAND,
+	PackageSettingsTreeProvider,
+	editPackageSetting
+} from "./providers/PackageSettingsTreeProvider";
 import { PlainOutlineProvider, PlainOutlineSortMode } from "./providers/PlainOutlineProvider";
 import {
 	SchemaHistoryTreeProvider,
@@ -161,6 +167,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			.map((l) => l.pkgRoot || l.configurationRoot || l.appRoot || l.workspaceRoot)
 			.filter((p): p is string => Boolean(p));
 		const gitFlowStatusBar = new GitFlowStatusBar(gitFlowCandidateRoots);
+		const packageOwnershipStatusBar = new PackageOwnershipStatusBar();
+		const packageSettingsTree = new PackageSettingsTreeProvider();
 
 		context.subscriptions.push(
 			diagnostics,
@@ -361,6 +369,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				void plainOutlineTree.refresh();
 				schemaHistoryTree.refresh();
 				void gitFlowStatusBar.refresh();
+				packageOwnershipStatusBar.refresh();
 				if (editor) {
 					styleDiagnostics.refresh(editor.document);
 					if (editor.document.languageId === "csharp") {
@@ -382,6 +391,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.window.onDidChangeWindowState((state) => {
 				if (state.focused) {
 					void gitFlowStatusBar.refresh();
+				}
+			}),
+			packageOwnershipStatusBar,
+			vscode.window.registerTreeDataProvider("bpmsoftPackageSettings", packageSettingsTree),
+			vscode.commands.registerCommand(EDIT_PACKAGE_SETTING_COMMAND, async (field) => {
+				const changed = await editPackageSetting(field);
+				if (changed) {
+					packageSettingsTree.refresh();
+					packageOwnershipStatusBar.refresh();
 				}
 			}),
 			vscode.workspace.onDidCloseTextDocument((document) => {
@@ -415,6 +433,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				) {
 					void gitFlowStatusBar.refresh();
 				}
+				if (
+					e.affectsConfiguration("bpmsoft.packageOwnershipDiagnostics") ||
+					e.affectsConfiguration("bpmsoft.currentPackage") ||
+					e.affectsConfiguration("bpmsoft.namingPrefixes") ||
+					e.affectsConfiguration("bpmsoft.expectedMaintainers")
+				) {
+					packageOwnershipStatusBar.refresh();
+					packageSettingsTree.refresh();
+				}
 			})
 		);
 
@@ -426,6 +453,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		void plainOutlineTree.refresh();
 		schemaHistoryTree.refresh();
 		void gitFlowStatusBar.refresh();
+		packageOwnershipStatusBar.refresh();
 
 		void preferIndexedCompletions();
 		void rebuildWithProgress();

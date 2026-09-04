@@ -341,6 +341,21 @@
           "type": "boolean",
           "default": true,
           "description": "Heuristically check that feature/* was branched from a sprint/* branch and bugfix/* from a release/* branch, not straight off develop/main — based on merge-base analysis of git history, so it can false-positive on a branch that was created correctly but never rebased/updated from its parent. Turn off if it's too noisy; the other bpmsoft.gitFlowDiagnostics checks are unaffected."
+        },
+        "bpmsoft.packageOwnershipDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check the active file's package against bpmsoft.namingPrefixes and bpmsoft.expectedMaintainers (stand-ins for the SchemaNamePrefix/Maintainer system settings — no DB connection to read those directly), reading each package's own descriptor.json. Violations show in the status bar."
+        },
+        "bpmsoft.currentPackage": {
+          "type": "string",
+          "default": "",
+          "description": "Reference value for the package you're currently working in — stand-in for the CurrentPackageId system setting. Shown in the 'Package Settings' view; not yet enforced as a check (see bpmsoft.packageOwnershipDiagnostics for what actually is)."
+        },
+        "bpmsoft.expectedMaintainers": {
+          "type": "string",
+          "default": "",
+          "description": "Comma-separated Maintainer value(s) your team's packages should have (e.g. \"YandexGo\") — stand-in for the Maintainer system setting. Empty (default) disables the maintainer check."
         }
       }
     },
@@ -363,6 +378,10 @@
         {
           "id": "bpmsoftFormatting",
           "name": "Formatting"
+        },
+        {
+          "id": "bpmsoftPackageSettings",
+          "name": "Package Settings"
         }
       ],
       "bpmsoftExplorer": [
