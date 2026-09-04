@@ -30,7 +30,6 @@ type PackagesNode =
 	| { kind: "shortcutGroup"; label: "Ресурсы" | "Иерархия"; schemaName: string; schemaPath: string }
 	| { kind: "shortcutItem"; label: string; targetPath: string };
 
-const WARNING_COLOR = new vscode.ThemeColor("problemsWarningIcon.foreground");
 const MUTED_COLOR = new vscode.ThemeColor("disabledForeground");
 
 const REGULAR_LABEL = "Пакеты";
@@ -259,10 +258,13 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		item.resourceUri = vscode.Uri.file(node.path);
 		const boxed = isBoxedPackage(node.path);
 		const hasIssues = this.namingIndex.hasIssuesUnder(node.path);
-		item.iconPath = new vscode.ThemeIcon(
-			"package",
-			boxed ? MUTED_COLOR : hasIssues ? WARNING_COLOR : PACKAGE_COLOR
-		);
+		// Naming-issue state is shown via the registered
+		// `NamingDecorationProvider` (label color + badge, applies to every
+		// resourceUri-bearing node already) — recoloring the icon on top of
+		// that just makes every problem package the same warning-yellow,
+		// drowning out the category color this icon is otherwise meant to
+		// carry (see packageIcons.ts).
+		item.iconPath = new vscode.ThemeIcon("package", boxed ? MUTED_COLOR : PACKAGE_COLOR);
 		if (hasIssues) {
 			item.tooltip = "В этом пакете есть проблемы с неймингом";
 		}
@@ -272,7 +274,9 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 	/** Naming-issue text is shown via the registered `NamingDecorationProvider`
 	 * (label color + badge) rather than a `description` string — a manual
 	 * description ends up rendered in the same color as the label, which
-	 * doesn't read as an error/warning. */
+	 * doesn't read as an error/warning. Same reasoning as `packageTreeItem`
+	 * for why the icon itself stays the plain category color regardless of
+	 * findings. */
 	private schemaTreeItem(node: {
 		name: string;
 		path: string;
@@ -283,12 +287,9 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		item.contextValue = "bpmsoftSchema";
 		item.resourceUri = vscode.Uri.file(node.path);
 		const findings = this.namingIndex.getForPath(path.join(node.path, "descriptor.json"));
-		const icon = schemaIcon(node.managerName, node.schemaType);
+		item.iconPath = schemaIcon(node.managerName, node.schemaType);
 		if (findings.length) {
-			item.iconPath = new vscode.ThemeIcon(icon.id, WARNING_COLOR);
 			item.tooltip = findings.map((f) => f.message).join("\n");
-		} else {
-			item.iconPath = icon;
 		}
 		return item;
 	}
@@ -298,11 +299,9 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		item.contextValue = "bpmsoftSqlScript";
 		item.resourceUri = vscode.Uri.file(node.path);
 		const findings = this.namingIndex.getForPath(path.join(node.path, "descriptor.json"));
+		item.iconPath = topFolderIcon("SqlScripts");
 		if (findings.length) {
-			item.iconPath = new vscode.ThemeIcon("server-process", WARNING_COLOR);
 			item.tooltip = findings.map((f) => f.message).join("\n");
-		} else {
-			item.iconPath = topFolderIcon("SqlScripts");
 		}
 		return item;
 	}
