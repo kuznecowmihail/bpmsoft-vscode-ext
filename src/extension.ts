@@ -328,7 +328,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			),
 			vscode.languages.registerHoverProvider(
 				csharpSelector,
-				new CsharpHoverProvider()
+				new CsharpHoverProvider(index)
 			),
 			vscode.languages.registerCodeActionsProvider(
 				jsSelector,

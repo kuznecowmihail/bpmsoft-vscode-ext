@@ -51,15 +51,20 @@ export class HoverProvider implements vscode.HoverProvider {
 		const colCtx = getQueryColumnContext(text, offset);
 		if (colCtx?.name) {
 			const entities = resolveQueryEntities(text, offset, colCtx.queryIdent);
-			const m = this.index.resolveEsqColumn(entities, colCtx.name);
-			if (m) {
+			const resolved = this.index.resolveEsqColumnFull(entities, colCtx.name);
+			if (resolved) {
 				const extra: string[] = [];
 				if (entities.length) {
 					extra.push(`entities: ${entities.join(", ")}`);
 				}
+				if (resolved.hops.length) {
+					extra.push(
+						`join: ${resolved.hops.map((h) => `${h.joinType} → ${h.schemaName}`).join(", ")}`
+					);
+				}
 				return memberHover(
 					`**${colCtx.name}** *(entity column)*`,
-					m,
+					resolved.member,
 					extra
 				);
 			}

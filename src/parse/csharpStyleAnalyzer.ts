@@ -1,7 +1,7 @@
 import { StyleFix, StyleIssue, isSuppressedAbove } from "./styleAnalyzer";
 import { KNOWN_XMLDOC_TAGS, nearestKnownTag } from "./docTagCheck";
 
-interface Token {
+export interface Token {
 	kind: "ident" | "kw" | "punct" | "num" | "str";
 	value: string;
 	start: number;
@@ -2161,7 +2161,7 @@ const ESCAPE_CHARS: Record<string, string> = {
 	n: "\n", r: "\r", t: "\t", "0": "\0", a: "\x07", b: "\b", f: "\f", v: "\v"
 };
 
-function decodeCsharpStringLiteral(raw: string): string | undefined {
+export function decodeCsharpStringLiteral(raw: string): string | undefined {
 	let i = 0;
 	let interpolated = false;
 	let verbatim = false;

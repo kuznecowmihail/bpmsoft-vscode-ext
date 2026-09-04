@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember, memberDedupeKey, schemaMessageSupports } from "../parse/types";
+import { EsqColumnResolution, resolveEsqColumnPath } from "../parse/esqColumnPath";
 import {
 	NO_ENTITY_COLUMN_SCHEMA_TYPES,
 	SchemaHierarchyResolver
@@ -1697,34 +1698,33 @@ export class SymbolIndex {
 		return undefined;
 	}
 
+	/** Full resolution (member + which schemas got joined in along the way,
+	 * with what join type) for the first `entityNames` entry the path
+	 * actually resolves against — see `esqColumnPath.ts` for the path
+	 * grammar (join-type prefixes, reverse-link `[Schema:Col:Col]`
+	 * segments). */
+	resolveEsqColumnFull(
+		entityNames: string[],
+		columnPath: string
+	): EsqColumnResolution | undefined {
+		for (const entityName of entityNames) {
+			const resolved = resolveEsqColumnPath(
+				(schemaName) => this.getEntityModule(schemaName)?.members,
+				entityName,
+				columnPath
+			);
+			if (resolved) {
+				return resolved;
+			}
+		}
+		return undefined;
+	}
+
 	resolveEsqColumn(
 		entityNames: string[],
 		columnPath: string
 	): IndexedMember | undefined {
-		const parts = columnPath.split(".").filter(Boolean);
-		if (!parts.length || !entityNames.length) {
-			return undefined;
-		}
-		for (const entityName of entityNames) {
-			let currentEntity = entityName;
-			let found: IndexedMember | undefined;
-			let ok = true;
-			for (let i = 0; i < parts.length; i++) {
-				const members = this.getEntityModule(currentEntity)?.members || [];
-				found = members.find((m) => m.name === parts[i]);
-				if (!found) {
-					ok = false;
-					break;
-				}
-				if (i < parts.length - 1) {
-					currentEntity = found.referenceSchemaName || found.name;
-				}
-			}
-			if (ok && found) {
-				return found;
-			}
-		}
-		return undefined;
+		return this.resolveEsqColumnFull(entityNames, columnPath)?.member;
 	}
 
 	isKnownEsqColumn(entityNames: string[], columnPath: string): boolean {
