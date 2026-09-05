@@ -148,3 +148,37 @@ export function resolveEsqColumnPath(
 	}
 	return found ? { member: found, hops } : undefined;
 }
+
+/**
+ * Resolves just the schema landed on after walking every segment of
+ * `columnPath` — unlike `resolveEsqColumnPath`, a trailing reverse (bracket)
+ * segment is fine here, since completion wants "what schema does this
+ * already-typed prefix point to", not a final selected column. `columnPath`
+ * of `""` (nothing typed yet) resolves to `entityName` itself. `undefined` on
+ * any unresolvable hop (unknown column, unknown schema, a non-lookup forward
+ * column with nothing to hop into, …).
+ */
+export function resolveEsqPathSchema(
+	getEntityMembers: (schemaName: string) => IndexedMember[] | undefined,
+	entityName: string,
+	columnPath: string
+): string | undefined {
+	const rawSegments = splitEsqPath(columnPath);
+	let currentSchema = entityName;
+	for (const raw of rawSegments) {
+		const segment = parseEsqPathSegment(raw);
+		if (!segment) {
+			return undefined;
+		}
+		if (segment.kind === "forward") {
+			const member = getEntityMembers(currentSchema)?.find((m) => m.name === segment.columnName);
+			if (!member?.referenceSchemaName) {
+				return undefined;
+			}
+			currentSchema = member.referenceSchemaName;
+		} else {
+			currentSchema = segment.schemaName;
+		}
+	}
+	return currentSchema;
+}

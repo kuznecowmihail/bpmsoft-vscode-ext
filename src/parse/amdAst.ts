@@ -165,10 +165,29 @@ function functionParamNames(value: AnyNode | undefined): string[] | undefined {
 	return names;
 }
 
+/**
+ * A "constants module" return statement is typically a flat `Key: localVar`
+ * re-export list (e.g. `return { SysAdminUnit: sysAdminUnit, ... }`), with no
+ * comment of its own on each line - the real JSDoc lives above the
+ * `const localVar = {...}` declaration elsewhere in the factory, not on the
+ * re-export. Anchoring `leadingComment`'s proximity search on the re-export
+ * property itself is unreliable there: with nothing between consecutive
+ * re-export lines, the "nearest preceding comment within maxGap chars" is
+ * whatever comment happened to be typed last in the file - which can belong
+ * to a *different*, unrelated declaration (confirmed real: every property in
+ * `GoMainClientConstants.js`'s return statement resolved to
+ * `SysModuleType.SSP`'s own "Портальный." doc, just because it was the last
+ * comment before the return block). When `scope` (the enclosing factory
+ * body) is given and the property's value is an `Identifier`, resolve it to
+ * its own `const` declaration first and anchor documentation - and pull
+ * children - from *that*, which does have its own accurate, directly-adjacent
+ * comment.
+ */
 function collectObjectMembers(
 	obj: AnyNode,
 	comments: acorn.Comment[],
-	filter?: (name: string, value: AnyNode) => boolean
+	filter?: (name: string, value: AnyNode) => boolean,
+	scope?: AnyNode
 ): IndexedMember[] {
 	const members: IndexedMember[] = [];
 	if (!obj || obj.type !== "ObjectExpression") {
@@ -183,12 +202,16 @@ function collectObjectMembers(
 		if (filter && !filter(name, value)) {
 			continue;
 		}
+		const resolvedValue =
+			value.type === "Identifier" && scope ? findObjectBinding(scope, value.name) : undefined;
+		const docAnchor = resolvedValue ?? prop;
 		members.push({
 			name,
-			kind: inferMemberKind(value),
-			documentation: leadingComment(comments, prop, 80),
+			kind: inferMemberKind(resolvedValue ?? value),
+			documentation: leadingComment(comments, docAnchor, 80),
 			position: posFromNode(prop.key ?? prop),
-			params: functionParamNames(value)
+			params: functionParamNames(value),
+			children: resolvedValue ? collectObjectMembers(resolvedValue, comments) : undefined
 		});
 	}
 	return members;
@@ -1756,7 +1779,7 @@ export function parseDefineCall(
 			if (returnArg?.type === "ObjectExpression") {
 				module.kind = "constants";
 			}
-			module.members.push(...collectObjectMembers(exportObj, comments));
+			module.members.push(...collectObjectMembers(exportObj, comments, undefined, body));
 		}
 	}
 

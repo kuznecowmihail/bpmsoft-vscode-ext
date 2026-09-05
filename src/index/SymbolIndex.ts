@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember, memberDedupeKey, schemaMessageSupports } from "../parse/types";
-import { EsqColumnResolution, resolveEsqColumnPath } from "../parse/esqColumnPath";
+import { EsqColumnResolution, resolveEsqColumnPath, resolveEsqPathSchema } from "../parse/esqColumnPath";
 import {
 	NO_ENTITY_COLUMN_SCHEMA_TYPES,
 	SchemaHierarchyResolver
@@ -1725,6 +1725,24 @@ export class SymbolIndex {
 		columnPath: string
 	): IndexedMember | undefined {
 		return this.resolveEsqColumnFull(entityNames, columnPath)?.member;
+	}
+
+	/** Schema reached after `columnPath` (which may end in an unfinished/reverse
+	 * segment) — completion's "what should I suggest next" question, as
+	 * opposed to `resolveEsqColumnFull`'s "what column does this fully name".
+	 * See `esqColumnPath.ts`. */
+	resolveEsqPathSchema(entityNames: string[], columnPath: string): string | undefined {
+		for (const entityName of entityNames) {
+			const resolved = resolveEsqPathSchema(
+				(schemaName) => this.getEntityModule(schemaName)?.members,
+				entityName,
+				columnPath
+			);
+			if (resolved) {
+				return resolved;
+			}
+		}
+		return undefined;
 	}
 
 	isKnownEsqColumn(entityNames: string[], columnPath: string): boolean {
