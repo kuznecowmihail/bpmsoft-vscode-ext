@@ -10,9 +10,10 @@ import {
 	getCsharpEsqColumnContext
 } from "../parse/esqCsharp";
 import { findEnclosingEntityEventListenerSchema, getEntityColumnContext } from "../parse/entityCsharp";
+import { collectDbQueryChains, getDbQueryColumnContext } from "../parse/dbQueryCsharp";
 
 /**
- * Three independent hover sources for `.cs` files:
+ * Four independent hover sources for `.cs` files:
  *
  * 1. `EntitySchemaQuery` — hovering the root-schema-name string literal in
  *    `new EntitySchemaQuery(EntitySchemaManager, "Contact")` shows the
@@ -30,7 +31,16 @@ import { findEnclosingEntityEventListenerSchema, getEntityColumnContext } from "
  *    reliably-traceable case, not every possible way an `Entity` reaches
  *    that call.
  *
- * 3. Localization strings — a string-literal key (e.g.
+ * 3. Direct-access query builders — `BPMSoft.Core.DB.Select`/`Insert`/
+ *    `Update`/`Delete`, the fluent SQL builder API. Hovering the root
+ *    schema name (`.From("Contact")`/`.Into("Contact")`, or `Update`'s own
+ *    constructor argument) shows the entity; hovering a column argument to
+ *    `.Column(...)`/`.Set(...)`/`.Where(...)` resolves it — see
+ *    `dbQueryCsharp.ts` for why this needs its own detection (plain
+ *    table/column names, fluent one-statement chains, no path DSL at all —
+ *    a genuinely different API shape than `EntitySchemaQuery`).
+ *
+ * 4. Localization strings — a string-literal key (e.g.
  *    `GetLocalizableStringValue(userConnection, "SomeKey")`, or the raw
  *    `"LocalizableStrings.SomeKey.Value"` form) shows the actual RU/EN text
  *    from that schema's own resource XML — see `localizationLookup.ts` for
@@ -59,6 +69,11 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 		const entityHover = this.resolveEntityColumnHover(text, offset);
 		if (entityHover) {
 			return entityHover;
+		}
+
+		const dbQueryHover = this.resolveDbQueryHover(text, offset);
+		if (dbQueryHover) {
+			return dbQueryHover;
 		}
 
 		const schema = findSchemaDir(document.uri.fsPath);
@@ -155,6 +170,50 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 		}
 		return markdownHover([
 			`**${colCtx.columnName}** *(entity column, ${schemaName})*`,
+			...(member.detail ? [member.detail] : []),
+			...(member.documentation ? ["", member.documentation] : [])
+		]);
+	}
+
+	private resolveDbQueryHover(text: string, offset: number): vscode.Hover | undefined {
+		const chains = collectDbQueryChains(text);
+
+		const onSchemaName = chains.find(
+			(c) =>
+				c.schemaName !== undefined &&
+				c.schemaNameStart !== undefined &&
+				c.schemaNameEnd !== undefined &&
+				offset >= c.schemaNameStart &&
+				offset <= c.schemaNameEnd
+		);
+		if (onSchemaName) {
+			const def = this.index.findEntityDefinition(onSchemaName.schemaName!);
+			const cols = this.index.resolveEntityColumns(onSchemaName.schemaName!);
+			if (def || cols.length) {
+				const lines = [`**${onSchemaName.schemaName}** *(entity)*`];
+				if (def) {
+					lines.push(`\`${def.filePath}\``);
+				}
+				if (cols.length) {
+					lines.push(`${cols.length} column(s)`);
+				}
+				return markdownHover(lines);
+			}
+			return undefined;
+		}
+
+		const colCtx = getDbQueryColumnContext(text, offset, chains);
+		if (!colCtx) {
+			return undefined;
+		}
+		const member = this.index
+			.resolveEntityColumns(colCtx.schemaName)
+			.find((m) => m.name === colCtx.columnName);
+		if (!member) {
+			return undefined;
+		}
+		return markdownHover([
+			`**${colCtx.columnName}** *(entity column, ${colCtx.schemaName})*`,
 			...(member.detail ? [member.detail] : []),
 			...(member.documentation ? ["", member.documentation] : [])
 		]);
