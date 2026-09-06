@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import { IndexedModule } from "../parse/types";
 import { parseJsonNoBom } from "../textUtils";
+import { pMap } from "./concurrency";
 
 /**
  * Cross-activation cache for the two `ModuleIndexer` categories that are
@@ -30,20 +31,26 @@ export interface PlatformIndexCache {
 
 /** FNV-1a over each file's `path\0size\0mtimeMs`, sorted by path first so
  * traversal order doesn't affect the result — cheap (a handful of bytes of
- * arithmetic per file) next to the `fs.statSync` call it's paired with, and
- * good enough for "did anything change", which is all this needs (no
- * cryptographic requirement). */
-export function computeDirFingerprint(files: string[]): string {
+ * arithmetic per file) next to the `fs.stat` call it's paired with, and good
+ * enough for "did anything change", which is all this needs (no
+ * cryptographic requirement). Stats are gathered through `pMap` (not a plain
+ * serial loop) for the same reason `ModuleIndexer` reads file content that
+ * way — see `concurrency.ts`'s own doc. */
+export async function computeDirFingerprint(files: string[]): Promise<string> {
 	const sorted = [...files].sort();
-	let hash = 0x811c9dc5;
-	for (const filePath of sorted) {
-		let stat: fs.Stats;
+	const entries = await pMap(sorted, async (filePath) => {
 		try {
-			stat = fs.statSync(filePath);
+			const stat = await fs.promises.stat(filePath);
+			return `${filePath}\0${stat.size}\0${stat.mtimeMs}`;
 		} catch {
+			return undefined;
+		}
+	});
+	let hash = 0x811c9dc5;
+	for (const entry of entries) {
+		if (entry === undefined) {
 			continue;
 		}
-		const entry = `${filePath}\0${stat.size}\0${stat.mtimeMs}`;
 		for (let i = 0; i < entry.length; i++) {
 			hash ^= entry.charCodeAt(i);
 			hash = Math.imul(hash, 0x01000193);

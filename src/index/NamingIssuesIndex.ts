@@ -1,9 +1,20 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { execFile } from "child_process";
-import { escapeRegExp, readFileSafe } from "../fsUtils";
+import { escapeRegExp, readFileSafe, readFileSafeAsync } from "../fsUtils";
 import { offsetToLineCharacter } from "../textOffset";
 import { resolveAppLayouts, walkFiles } from "./workspaceLayout";
+import { pMap } from "./concurrency";
+import { IndexingProgressReporter } from "./indexingProgress";
+import {
+	CachedFinding,
+	NamingIssuesCacheData,
+	buildStamps,
+	emptyNamingIssuesCache,
+	loadNamingIssuesCache,
+	saveNamingIssuesCache,
+	stampsMatch
+} from "./namingIssuesCache";
 import {
 	parseDescriptorInfo,
 	parseDescriptorParent,
@@ -84,6 +95,28 @@ export interface NamingFinding {
 	position: vscode.Position;
 }
 
+const NAMING_CACHE_FILE_NAME = "naming-issues-cache.json";
+
+function toCachedFinding(finding: NamingFinding): CachedFinding {
+	return {
+		packageName: finding.packageName,
+		label: finding.label,
+		message: finding.message,
+		filePath: finding.filePath,
+		position: { line: finding.position.line, character: finding.position.character }
+	};
+}
+
+function fromCachedFinding(finding: CachedFinding): NamingFinding {
+	return {
+		packageName: finding.packageName,
+		label: finding.label,
+		message: finding.message,
+		filePath: finding.filePath,
+		position: new vscode.Position(finding.position.line, finding.position.character)
+	};
+}
+
 /** Drops any finding whose subject name (extracted from its own message —
  * see `extractNamingSubject`) is in `bpmsoft.naming.ignoredNames` — a
  * confirmed false positive the user marked via the "Пометить как ложное
@@ -113,23 +146,36 @@ export class NamingIssuesIndex {
 	readonly onDidChangeFindings = this.changeEmitter.event;
 	private _findings: NamingFinding[] = [];
 
-	constructor(private readonly index: SymbolIndex) {}
+	constructor(
+		private readonly index: SymbolIndex,
+		private readonly cacheDir?: string,
+		private readonly extensionVersion?: string,
+		private readonly reporter?: IndexingProgressReporter
+	) {}
 
 	get findings(): readonly NamingFinding[] {
 		return this._findings;
 	}
 
-	/** Full workspace rescan — every descriptor.json/.cs file gets re-read and
-	 * re-parsed. Only worth paying for when something that could change *any*
-	 * file's verdict just happened (extension startup, index rebuild, the
-	 * naming config itself changing) — for a single file being saved/created/
-	 * deleted, use `refreshFile` instead. Async since the `_Temp` SQL script
-	 * age check (see `checkTempScriptAge`) needs `git log`, unlike everything
-	 * else here which is plain file I/O. */
-	async refresh(): Promise<void> {
+	/** Full workspace rescan — every descriptor.json/.cs file's *dependency
+	 * set* gets re-stat'd (cheap) and only actually re-read/re-parsed when
+	 * something in it changed since the last `refresh()` — see
+	 * `namingIssuesCache.ts`. Only worth paying even the stat cost for when
+	 * something that could change *any* file's verdict just happened
+	 * (extension startup, index rebuild, the naming config itself changing)
+	 * — for a single file being saved/created/deleted, use `refreshFile`
+	 * instead. `forceFresh` (the manual "Rebuild Index" command) skips
+	 * reading the cache entirely, same convention as
+	 * `ModuleIndexer.rebuild`'s own `forceFresh`, while still writing a
+	 * fresh one afterward. Async since the `_Temp` SQL script age check (see
+	 * `checkTempScriptAge`) needs `git log`, unlike everything else here
+	 * which is plain file I/O. */
+	async refresh(forceFresh = false): Promise<void> {
+		const startedAt = Date.now();
 		this._findings = namingDiagnosticsEnabled()
-			? filterIgnoredNames(await this.scanWorkspace())
+			? filterIgnoredNames(await this.scanWorkspace(forceFresh))
 			: [];
+		this.reporter?.finishNaming(this._findings.length, Date.now() - startedAt);
 		this.changeEmitter.fire();
 	}
 
@@ -165,9 +211,9 @@ export class NamingIssuesIndex {
 		return this._findings.some((f) => path.normalize(f.filePath).startsWith(normalized));
 	}
 
-	private async scanWorkspace(): Promise<NamingFinding[]> {
+	private async scanWorkspace(forceFresh: boolean): Promise<NamingFinding[]> {
 		const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
-		const layouts = resolveAppLayouts(folders);
+		const layouts = resolveAppLayouts(folders).filter((l) => l.pkgRoot);
 		const prefixes = namingPrefixes();
 		const tempMaxAgeDays = sqlTempScriptMaxAgeDays();
 		const entitySettings: EntityNamingSettings = {
@@ -198,84 +244,187 @@ export class NamingIssuesIndex {
 			prefixes,
 			checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
 		};
+
+		// A finding's verdict depends on these settings as much as on the
+		// file it's read from — a file's own stamp can't detect a *setting*
+		// changing, so every setting gathered above that can affect a
+		// finding's presence/text is folded into one fingerprint here; a
+		// mismatch against what the cache was last written under (handled
+		// inside `loadNamingIssuesCache`) invalidates the whole cache, not
+		// just one entry, since there's no cheaper way to know which cached
+		// entries a given setting change would actually affect.
+		const settingsFingerprint = JSON.stringify({
+			entitySettings,
+			entityDiagnosticsOn,
+			processSettings,
+			processDiagnosticsOn,
+			userTaskSettings,
+			userTaskDiagnosticsOn,
+			dataDiagnosticsOn,
+			csharpDiagnosticsOn,
+			csharpSettings,
+			clientSchemaSettings,
+			tempMaxAgeDays
+		});
+		const cacheFilePath = this.cacheDir ? path.join(this.cacheDir, NAMING_CACHE_FILE_NAME) : undefined;
+		const previousCache: NamingIssuesCacheData | undefined =
+			cacheFilePath && !forceFresh && this.extensionVersion
+				? loadNamingIssuesCache(cacheFilePath, this.extensionVersion, settingsFingerprint)
+				: undefined;
+		const nextCache: NamingIssuesCacheData = emptyNamingIssuesCache();
+
+		// Every file this scan will touch, gathered up front per layout —
+		// cheap (directory listings only, via `walkFiles`; no file *content*
+		// read yet) and lets the status bar report a real "N/total" instead of
+		// an unbounded spinner for the whole scan.
+		const layoutFiles = layouts.map((layout) => {
+			const pkgRoot = layout.pkgRoot as string;
+			return {
+				pkgRoot,
+				schemaDescriptorFiles: walkFiles(
+					pkgRoot,
+					(name) => name === "descriptor.json",
+					(p) => /\/Schemas\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
+				),
+				csharpFiles: csharpDiagnosticsOn
+					? walkFiles(
+							pkgRoot,
+							(name) => name.endsWith(".cs"),
+							(p) => /\/Schemas\//i.test(p.replace(/\\/g, "/"))
+						)
+					: [],
+				sqlScriptFiles: walkFiles(
+					pkgRoot,
+					(name) => name === "descriptor.json",
+					(p) => /\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
+				),
+				dataDescriptorFiles: dataDiagnosticsOn
+					? walkFiles(
+							pkgRoot,
+							(name) => name === "descriptor.json",
+							(p) => /\/Data\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
+						)
+					: []
+			};
+		});
+		const total = layoutFiles.reduce(
+			(sum, l) =>
+				sum + l.schemaDescriptorFiles.length + l.csharpFiles.length + l.sqlScriptFiles.length + l.dataDescriptorFiles.length,
+			0
+		);
+		this.reporter?.startNaming(total);
+		let processed = 0;
+		const bump = () => {
+			processed++;
+			this.reporter?.reportNamingProgress(processed, total);
+		};
+
 		const out: NamingFinding[] = [];
 		const entityOccurrences: EntityCodeOccurrence[] = [];
 		const sysSettingsOccurrences: SysSettingsOccurrence[] = [];
 		const sysSettingsValueOccurrences: SysSettingsValueOccurrence[] = [];
-		for (const layout of layouts) {
-			if (!layout.pkgRoot) {
-				continue;
-			}
-			const schemaDescriptorFiles = walkFiles(
-				layout.pkgRoot,
-				(name) => name === "descriptor.json",
-				(p) => /\/Schemas\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
-			);
-			for (const filePath of schemaDescriptorFiles) {
-				const text = readFileSafe(filePath);
+		for (const { pkgRoot, schemaDescriptorFiles, csharpFiles, sqlScriptFiles, dataDescriptorFiles } of layoutFiles) {
+			// Every descriptor's read + per-type checks run through the same
+			// bounded-concurrency pool as `ModuleIndexer` — see
+			// `concurrency.ts`'s own doc for why a plain serial loop over
+			// thousands of files here is the other half of the extension's
+			// cold-start hang.
+			const schemaResults = await pMap(schemaDescriptorFiles, async (filePath) => {
+				const text = await readFileSafeAsync(filePath);
+				bump();
 				if (text === undefined) {
-					continue;
+					return undefined;
 				}
 				const info = parseDescriptorInfo(text);
 				if (info?.managerName === "EntitySchemaManager") {
-					if (!entityDiagnosticsOn) {
-						continue;
-					}
-					const result = this.findingsForEntitySchema(filePath, text, info, entitySettings);
-					out.push(...result.findings);
-					if (result.occurrence) {
-						entityOccurrences.push(result.occurrence);
-					}
-					continue;
+					return entityDiagnosticsOn
+						? await this.findingsForEntitySchema(filePath, text, info, entitySettings, previousCache, nextCache)
+						: undefined;
 				}
 				if (info?.managerName === "ProcessSchemaManager") {
 					if (!processDiagnosticsOn) {
-						continue;
+						return undefined;
 					}
-					out.push(...this.findingsForProcessSchema(filePath, text, info, processSettings));
-					continue;
+					return {
+						findings: await this.findingsForProcessSchema(
+							filePath,
+							text,
+							info,
+							processSettings,
+							previousCache,
+							nextCache
+						),
+						occurrence: undefined
+					};
 				}
 				if (info?.managerName === "ProcessUserTaskSchemaManager") {
 					if (!userTaskDiagnosticsOn) {
-						continue;
+						return undefined;
 					}
-					out.push(...this.findingsForProcessUserTaskSchema(filePath, text, info, userTaskSettings));
+					return {
+						findings: await this.findingsForProcessUserTaskSchema(
+							filePath,
+							text,
+							info,
+							userTaskSettings,
+							previousCache,
+							nextCache
+						),
+						occurrence: undefined
+					};
+				}
+				return {
+					findings: this.findingsForClientSchemaText(filePath, text, clientSchemaSettings),
+					occurrence: undefined
+				};
+			});
+			for (const result of schemaResults) {
+				if (!result) {
 					continue;
 				}
-				out.push(...this.findingsForClientSchemaText(filePath, text, clientSchemaSettings));
-			}
-			if (csharpDiagnosticsOn) {
-				const csharpFiles = walkFiles(
-					layout.pkgRoot,
-					(name) => name.endsWith(".cs"),
-					(p) => /\/Schemas\//i.test(p.replace(/\\/g, "/"))
-				);
-				for (const filePath of csharpFiles) {
-					out.push(...this.findingsForCsharpSchema(filePath, csharpSettings));
+				out.push(...result.findings);
+				if (result.occurrence) {
+					entityOccurrences.push(result.occurrence);
 				}
 			}
-			const sqlScriptFiles = walkFiles(
-				layout.pkgRoot,
-				(name) => name === "descriptor.json",
-				(p) => /\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
-			);
-			const sqlFindings = await Promise.all(
-				sqlScriptFiles.map((filePath) =>
-					this.findingsForSqlScript(filePath, layout.pkgRoot, tempMaxAgeDays)
-				)
-			);
-			for (const findings of sqlFindings) {
+
+			const csharpResults = await pMap(csharpFiles, async (filePath) => {
+				const findings = await this.findingsForCsharpSchema(filePath, csharpSettings, previousCache, nextCache);
+				bump();
+				return findings;
+			});
+			for (const findings of csharpResults) {
 				out.push(...findings);
 			}
-			if (dataDiagnosticsOn) {
-				const dataDescriptorFiles = walkFiles(
-					layout.pkgRoot,
-					(name) => name === "descriptor.json",
-					(p) => /\/Data\/[^/]+\/descriptor\.json$/i.test(p.replace(/\\/g, "/"))
+
+			const sqlResults = await pMap(sqlScriptFiles, async (filePath) => {
+				const findings = await this.findingsForSqlScript(
+					filePath,
+					pkgRoot,
+					tempMaxAgeDays,
+					previousCache,
+					nextCache
 				);
-				for (const filePath of dataDescriptorFiles) {
-					out.push(...this.findingsForDataSchema(filePath, sysSettingsOccurrences, sysSettingsValueOccurrences));
-				}
+				bump();
+				return findings;
+			});
+			for (const findings of sqlResults) {
+				out.push(...findings);
+			}
+
+			const dataResults = await pMap(dataDescriptorFiles, async (filePath) => {
+				const findings = await this.findingsForDataSchema(
+					filePath,
+					sysSettingsOccurrences,
+					sysSettingsValueOccurrences,
+					previousCache,
+					nextCache
+				);
+				bump();
+				return findings;
+			});
+			for (const findings of dataResults) {
+				out.push(...findings);
 			}
 		}
 		if (entityDiagnosticsOn) {
@@ -319,6 +468,9 @@ export class NamingIssuesIndex {
 				});
 			}
 		}
+		if (cacheFilePath && this.extensionVersion) {
+			saveNamingIssuesCache(cacheFilePath, this.extensionVersion, settingsFingerprint, nextCache);
+		}
 		return out;
 	}
 
@@ -333,10 +485,10 @@ export class NamingIssuesIndex {
 	private async findingsForFile(filePath: string, prefixes: string[]): Promise<NamingFinding[]> {
 		const normalized = filePath.replace(/\\/g, "/");
 		if (/\/SqlScripts\/[^/]+\/descriptor\.json$/i.test(normalized)) {
-			return this.findingsForSqlScript(filePath, findPkgRoot(filePath), sqlTempScriptMaxAgeDays());
+			return this.findingsForSqlScript(filePath, findPkgRoot(filePath), sqlTempScriptMaxAgeDays(), undefined, undefined);
 		}
 		if (/\/Schemas\/[^/]+\/descriptor\.json$/i.test(normalized)) {
-			const text = readFileSafe(filePath);
+			const text = await readFileSafeAsync(filePath);
 			if (text === undefined) {
 				return [];
 			}
@@ -352,23 +504,31 @@ export class NamingIssuesIndex {
 					dateSuffixes: entityNamingDateSuffixes(),
 					booleanPrefixes: entityNamingBooleanPrefixes()
 				};
-				return this.findingsForEntitySchema(filePath, text, info, entitySettings).findings;
+				return (await this.findingsForEntitySchema(filePath, text, info, entitySettings, undefined, undefined))
+					.findings;
 			}
 			if (info?.managerName === "ProcessSchemaManager") {
 				if (!processNamingDiagnosticsEnabled()) {
 					return [];
 				}
-				return this.findingsForProcessSchema(filePath, text, info, { prefixes });
+				return this.findingsForProcessSchema(filePath, text, info, { prefixes }, undefined, undefined);
 			}
 			if (info?.managerName === "ProcessUserTaskSchemaManager") {
 				if (!processUserTaskNamingDiagnosticsEnabled()) {
 					return [];
 				}
-				return this.findingsForProcessUserTaskSchema(filePath, text, info, {
-					prefixes,
-					actionVerbs: processUserTaskActionVerbs(),
-					checkParameterDirectionSuffix: processUserTaskCheckParameterDirectionSuffix()
-				});
+				return this.findingsForProcessUserTaskSchema(
+					filePath,
+					text,
+					info,
+					{
+						prefixes,
+						actionVerbs: processUserTaskActionVerbs(),
+						checkParameterDirectionSuffix: processUserTaskCheckParameterDirectionSuffix()
+					},
+					undefined,
+					undefined
+				);
 			}
 			return this.findingsForClientSchemaText(filePath, text, {
 				prefixes,
@@ -379,12 +539,17 @@ export class NamingIssuesIndex {
 			if (!csharpNamingDiagnosticsEnabled()) {
 				return [];
 			}
-			return this.findingsForCsharpSchema(filePath, {
-				prefixes,
-				checkRoleSuffix: csharpNamingCheckRoleSuffix(),
-				roleSuffixes: csharpNamingRoleSuffixes(),
-				checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
-			});
+			return this.findingsForCsharpSchema(
+				filePath,
+				{
+					prefixes,
+					checkRoleSuffix: csharpNamingCheckRoleSuffix(),
+					roleSuffixes: csharpNamingRoleSuffixes(),
+					checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
+				},
+				undefined,
+				undefined
+			);
 		}
 		if (/\/Data\/[^/]+\/descriptor\.json$/i.test(normalized)) {
 			if (!dataNamingDiagnosticsEnabled()) {
@@ -394,7 +559,7 @@ export class NamingIssuesIndex {
 			// the workspace at once — same trade-off as the EntitySchemaManager
 			// cross-package uniqueness check above; it settles again on the
 			// next full `refresh()`.
-			return this.findingsForDataSchema(filePath, [], []);
+			return this.findingsForDataSchema(filePath, [], [], undefined, undefined);
 		}
 		return [];
 	}
@@ -440,12 +605,14 @@ export class NamingIssuesIndex {
 	 * own). Returns the `EntityCodeOccurrence` needed for the workspace-wide
 	 * uniqueness check separately, since that needs every occurrence at once.
 	 */
-	private findingsForEntitySchema(
+	private async findingsForEntitySchema(
 		filePath: string,
 		text: string,
 		info: { name?: string; managerName?: string },
-		settings: EntityNamingSettings
-	): { findings: NamingFinding[]; occurrence: EntityCodeOccurrence | undefined } {
+		settings: EntityNamingSettings,
+		previousCache: NamingIssuesCacheData | undefined,
+		nextCache: NamingIssuesCacheData | undefined
+	): Promise<{ findings: NamingFinding[]; occurrence: EntityCodeOccurrence | undefined }> {
 		const schemaName = info.name || path.basename(path.dirname(filePath));
 		if (!schemaName) {
 			return { findings: [], occurrence: undefined };
@@ -453,6 +620,30 @@ export class NamingIssuesIndex {
 		const schemaDir = path.dirname(filePath);
 		const parentName = parseDescriptorParent(text);
 		const isSubstitution = parentName === schemaName;
+		const occurrence: EntityCodeOccurrence = { name: schemaName, filePath, isSubstitution };
+
+		// Everything below reads only metadata.json and this schema's own
+		// resource dirs (`text`/descriptor is already in hand) — `findResourceDirs`
+		// is a cheap directory listing (not content), run fresh every time so a
+		// newly added/removed resource file is never silently missed by the
+		// cache below; only the *content* of these files is what a cache hit
+		// skips reading.
+		const resourceDirs = isSubstitution ? [] : findResourceDirs(schemaDir, schemaName);
+		const metadataPath = path.join(schemaDir, "metadata.json");
+		const dependencyPaths = [
+			filePath,
+			metadataPath,
+			...resourceDirs.flatMap((dir) => [path.join(dir, "resource.ru-RU.xml"), path.join(dir, "resource.en-US.xml")])
+		];
+		const freshStamps = await buildStamps(dependencyPaths);
+		const cached = previousCache?.schemaDescriptors[filePath];
+		if (cached && stampsMatch(cached.stamps, freshStamps)) {
+			if (nextCache) {
+				nextCache.schemaDescriptors[filePath] = cached;
+			}
+			return { findings: cached.findings.map(fromCachedFinding), occurrence: cached.entityOccurrence ?? occurrence };
+		}
+
 		const findings: NamingFinding[] = [];
 		const namePosition = offsetToPosition(text, locateJsonNameOffset(text, schemaName));
 
@@ -478,12 +669,11 @@ export class NamingIssuesIndex {
 		// (SysModule, Opportunity, Contact, …) showed up as "missing a
 		// title" before this guard, none of which is a real issue.
 		if (!isSubstitution) {
-			const resourceDirs = findResourceDirs(schemaDir, schemaName);
 			let hasRu = false;
 			let hasEn = false;
 			for (const dir of resourceDirs) {
-				hasRu = hasRu || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.ru-RU.xml")));
-				hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
+				hasRu = hasRu || hasNonEmptyCaption(await readFileSafeAsync(path.join(dir, "resource.ru-RU.xml")));
+				hasEn = hasEn || hasNonEmptyCaption(await readFileSafeAsync(path.join(dir, "resource.en-US.xml")));
 			}
 			for (const issue of checkCaptionCoverage("Object", schemaName, hasRu, hasEn)) {
 				findings.push({
@@ -496,8 +686,7 @@ export class NamingIssuesIndex {
 			}
 		}
 
-		const metadataPath = path.join(schemaDir, "metadata.json");
-		const metadataText = readFileSafe(metadataPath);
+		const metadataText = await readFileSafeAsync(metadataPath);
 		if (metadataText !== undefined) {
 			const businessName = stripPrefix(schemaName, settings.prefixes);
 			for (const column of parsePkgEntityColumns(metadataText, metadataPath)) {
@@ -521,7 +710,14 @@ export class NamingIssuesIndex {
 			}
 		}
 
-		return { findings, occurrence: { name: schemaName, filePath, isSubstitution } };
+		if (nextCache) {
+			nextCache.schemaDescriptors[filePath] = {
+				stamps: freshStamps,
+				findings: findings.map(toCachedFinding),
+				entityOccurrence: occurrence
+			};
+		}
+		return { findings, occurrence };
 	}
 
 	/**
@@ -534,12 +730,14 @@ export class NamingIssuesIndex {
 	 * `Resources/{Process}.Process/resource.{culture}.xml` as the process's
 	 * own Title, under `BaseElements.{A2}.Caption`.
 	 */
-	private findingsForProcessSchema(
+	private async findingsForProcessSchema(
 		filePath: string,
 		text: string,
 		info: { name?: string; managerName?: string },
-		settings: ProcessNamingSettings
-	): NamingFinding[] {
+		settings: ProcessNamingSettings,
+		previousCache: NamingIssuesCacheData | undefined,
+		nextCache: NamingIssuesCacheData | undefined
+	): Promise<NamingFinding[]> {
 		const schemaName = info.name || path.basename(path.dirname(filePath));
 		if (!schemaName) {
 			return [];
@@ -547,6 +745,23 @@ export class NamingIssuesIndex {
 		const schemaDir = path.dirname(filePath);
 		const parentName = parseDescriptorParent(text);
 		const isSubstitution = parentName === schemaName;
+
+		const resourceDirs = findResourceDirs(schemaDir, schemaName);
+		const metadataPath = path.join(schemaDir, "metadata.json");
+		const dependencyPaths = [
+			filePath,
+			metadataPath,
+			...resourceDirs.flatMap((dir) => [path.join(dir, "resource.ru-RU.xml"), path.join(dir, "resource.en-US.xml")])
+		];
+		const freshStamps = await buildStamps(dependencyPaths);
+		const cached = previousCache?.schemaDescriptors[filePath];
+		if (cached && stampsMatch(cached.stamps, freshStamps)) {
+			if (nextCache) {
+				nextCache.schemaDescriptors[filePath] = cached;
+			}
+			return cached.findings.map(fromCachedFinding);
+		}
+
 		const findings: NamingFinding[] = [];
 		const namePosition = offsetToPosition(text, locateJsonNameOffset(text, schemaName));
 
@@ -562,14 +777,13 @@ export class NamingIssuesIndex {
 			}
 		}
 
-		const resourceDirs = findResourceDirs(schemaDir, schemaName);
 		let hasRu = false;
 		let hasEn = false;
 		let elementResourceText: string | undefined;
 		for (const dir of resourceDirs) {
-			const ruText = readFileSafe(path.join(dir, "resource.ru-RU.xml"));
+			const ruText = await readFileSafeAsync(path.join(dir, "resource.ru-RU.xml"));
 			hasRu = hasRu || hasNonEmptyCaption(ruText);
-			hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
+			hasEn = hasEn || hasNonEmptyCaption(await readFileSafeAsync(path.join(dir, "resource.en-US.xml")));
 			// Element titles are Russian-specific checks (verb prefix, past
 			// tense, closed question) — the ru-RU resource file is the right
 			// one to read them from.
@@ -587,8 +801,7 @@ export class NamingIssuesIndex {
 			}
 		}
 
-		const metadataPath = path.join(schemaDir, "metadata.json");
-		const metadataText = readFileSafe(metadataPath);
+		const metadataText = await readFileSafeAsync(metadataPath);
 		if (metadataText !== undefined) {
 			for (const element of parseProcessSchemaElements(metadataText)) {
 				const caption = elementResourceText
@@ -611,6 +824,9 @@ export class NamingIssuesIndex {
 			}
 		}
 
+		if (nextCache) {
+			nextCache.schemaDescriptors[filePath] = { stamps: freshStamps, findings: findings.map(toCachedFinding) };
+		}
 		return findings;
 	}
 
@@ -627,12 +843,14 @@ export class NamingIssuesIndex {
 	 * just mirror the same parameter Codes already checked here, they don't
 	 * introduce a separate naming surface.
 	 */
-	private findingsForProcessUserTaskSchema(
+	private async findingsForProcessUserTaskSchema(
 		filePath: string,
 		text: string,
 		info: { name?: string; managerName?: string },
-		settings: ProcessUserTaskNamingSettings
-	): NamingFinding[] {
+		settings: ProcessUserTaskNamingSettings,
+		previousCache: NamingIssuesCacheData | undefined,
+		nextCache: NamingIssuesCacheData | undefined
+	): Promise<NamingFinding[]> {
 		const schemaName = info.name || path.basename(path.dirname(filePath));
 		if (!schemaName) {
 			return [];
@@ -640,6 +858,23 @@ export class NamingIssuesIndex {
 		const schemaDir = path.dirname(filePath);
 		const parentName = parseDescriptorParent(text);
 		const isSubstitution = parentName === schemaName;
+
+		const resourceDirs = findResourceDirs(schemaDir, schemaName);
+		const metadataPath = path.join(schemaDir, "metadata.json");
+		const dependencyPaths = [
+			filePath,
+			metadataPath,
+			...resourceDirs.flatMap((dir) => [path.join(dir, "resource.ru-RU.xml"), path.join(dir, "resource.en-US.xml")])
+		];
+		const freshStamps = await buildStamps(dependencyPaths);
+		const cached = previousCache?.schemaDescriptors[filePath];
+		if (cached && stampsMatch(cached.stamps, freshStamps)) {
+			if (nextCache) {
+				nextCache.schemaDescriptors[filePath] = cached;
+			}
+			return cached.findings.map(fromCachedFinding);
+		}
+
 		const findings: NamingFinding[] = [];
 		const namePosition = offsetToPosition(text, locateJsonNameOffset(text, schemaName));
 
@@ -655,14 +890,13 @@ export class NamingIssuesIndex {
 			}
 		}
 
-		const resourceDirs = findResourceDirs(schemaDir, schemaName);
 		let hasRu = false;
 		let hasEn = false;
 		let parameterResourceText: string | undefined;
 		for (const dir of resourceDirs) {
-			const ruText = readFileSafe(path.join(dir, "resource.ru-RU.xml"));
+			const ruText = await readFileSafeAsync(path.join(dir, "resource.ru-RU.xml"));
 			hasRu = hasRu || hasNonEmptyCaption(ruText);
-			hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
+			hasEn = hasEn || hasNonEmptyCaption(await readFileSafeAsync(path.join(dir, "resource.en-US.xml")));
 			parameterResourceText = parameterResourceText || ruText;
 		}
 		if (!isSubstitution) {
@@ -677,8 +911,7 @@ export class NamingIssuesIndex {
 			}
 		}
 
-		const metadataPath = path.join(schemaDir, "metadata.json");
-		const metadataText = readFileSafe(metadataPath);
+		const metadataText = await readFileSafeAsync(metadataPath);
 		if (metadataText !== undefined) {
 			const parameterNames = parseProcessMetadataItemsByClassName(metadataText, "ProcessSchemaParameter");
 			for (const paramName of parameterNames) {
@@ -706,6 +939,9 @@ export class NamingIssuesIndex {
 			}
 		}
 
+		if (nextCache) {
+			nextCache.schemaDescriptors[filePath] = { stamps: freshStamps, findings: findings.map(toCachedFinding) };
+		}
 		return findings;
 	}
 
@@ -731,17 +967,43 @@ export class NamingIssuesIndex {
 	 * inherited from the platform, not chosen in this package) — same
 	 * reasoning as every other schema type's own substitution guard.
 	 */
-	private findingsForCsharpSchema(filePath: string, settings: CsharpNamingSettings): NamingFinding[] {
-		const text = readFileSafe(filePath);
-		if (text === undefined) {
-			return [];
-		}
+	private async findingsForCsharpSchema(
+		filePath: string,
+		settings: CsharpNamingSettings,
+		previousCache: NamingIssuesCacheData | undefined,
+		nextCache: NamingIssuesCacheData | undefined
+	): Promise<NamingFinding[]> {
+		// Descriptor content is read unconditionally (small, cheap) to
+		// determine manager type/substitution/resource dirs *before* the
+		// cache check — the payoff is skipping the .cs file's own (often
+		// much larger) content read entirely on a hit.
 		const schema = findSchemaDir(filePath);
 		const descriptorPath = schema ? path.join(schema.schemaDir, "descriptor.json") : undefined;
-		const descriptorText = descriptorPath ? readFileSafe(descriptorPath) : undefined;
+		const descriptorText = descriptorPath ? await readFileSafeAsync(descriptorPath) : undefined;
 		const info = descriptorText ? parseDescriptorInfo(descriptorText) : undefined;
 		const schemaName = info?.name;
 		if (schemaName && descriptorText && parseDescriptorParent(descriptorText) === schemaName) {
+			return [];
+		}
+		const isSourceCode = info?.managerName === "SourceCodeSchemaManager";
+		const name = schemaName || schema?.schemaName;
+		const resourceDirs = isSourceCode && schema && name ? findResourceDirs(schema.schemaDir, name) : [];
+		const dependencyPaths = [
+			filePath,
+			...(descriptorPath ? [descriptorPath] : []),
+			...resourceDirs.flatMap((dir) => [path.join(dir, "resource.ru-RU.xml"), path.join(dir, "resource.en-US.xml")])
+		];
+		const freshStamps = await buildStamps(dependencyPaths);
+		const cached = previousCache?.csharpFiles[filePath];
+		if (cached && stampsMatch(cached.stamps, freshStamps)) {
+			if (nextCache) {
+				nextCache.csharpFiles[filePath] = cached;
+			}
+			return cached.findings.map(fromCachedFinding);
+		}
+
+		const text = await readFileSafeAsync(filePath);
+		if (text === undefined) {
 			return [];
 		}
 		// The role-suffix vocabulary is naming-guidelines.md §4's own — a
@@ -752,7 +1014,7 @@ export class NamingIssuesIndex {
 		// check below.
 		const effectiveSettings: CsharpNamingSettings = {
 			...settings,
-			checkRoleSuffix: settings.checkRoleSuffix && info?.managerName === "SourceCodeSchemaManager"
+			checkRoleSuffix: settings.checkRoleSuffix && isSourceCode
 		};
 		const findings = checkCsharpSchemaNaming(text, effectiveSettings, schemaName).map((issue) => ({
 			packageName: packageFromPath(filePath),
@@ -762,14 +1024,13 @@ export class NamingIssuesIndex {
 			position: offsetToPosition(text, issue.start)
 		}));
 
-		if (info?.managerName === "SourceCodeSchemaManager" && schema && descriptorPath && descriptorText) {
-			const name = schemaName || schema.schemaName;
+		if (isSourceCode && schema && descriptorPath && descriptorText && name) {
 			const namePosition = offsetToPosition(descriptorText, locateJsonNameOffset(descriptorText, name));
 			let hasRu = false;
 			let hasEn = false;
-			for (const dir of findResourceDirs(schema.schemaDir, name)) {
-				hasRu = hasRu || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.ru-RU.xml")));
-				hasEn = hasEn || hasNonEmptyCaption(readFileSafe(path.join(dir, "resource.en-US.xml")));
+			for (const dir of resourceDirs) {
+				hasRu = hasRu || hasNonEmptyCaption(await readFileSafeAsync(path.join(dir, "resource.ru-RU.xml")));
+				hasEn = hasEn || hasNonEmptyCaption(await readFileSafeAsync(path.join(dir, "resource.en-US.xml")));
 			}
 			if (!hasRu) {
 				findings.push({
@@ -791,15 +1052,20 @@ export class NamingIssuesIndex {
 			}
 		}
 
+		if (nextCache) {
+			nextCache.csharpFiles[filePath] = { stamps: freshStamps, findings: findings.map(toCachedFinding) };
+		}
 		return findings;
 	}
 
 	private async findingsForSqlScript(
 		filePath: string,
 		gitRoot: string | undefined,
-		tempMaxAgeDays: number
+		tempMaxAgeDays: number,
+		previousCache: NamingIssuesCacheData | undefined,
+		nextCache: NamingIssuesCacheData | undefined
 	): Promise<NamingFinding[]> {
-		const text = readFileSafe(filePath);
+		const text = await readFileSafeAsync(filePath);
 		if (text === undefined) {
 			return [];
 		}
@@ -807,13 +1073,26 @@ export class NamingIssuesIndex {
 		if (!scriptName) {
 			return [];
 		}
-		const findings = checkSqlScriptNaming(scriptName).map((issue) => ({
-			packageName: packageFromPath(filePath),
-			label: scriptName,
-			message: issue.message,
-			filePath,
-			position: offsetToPosition(text, locateJsonNameOffset(text, scriptName))
-		}));
+
+		// Only the naming-pattern part is cacheable — the `_Temp` age check
+		// below is time-dependent (crosses `tempMaxAgeDays` with no file
+		// changing at all) and always runs fresh, cache hit or not.
+		const freshStamps = await buildStamps([filePath]);
+		const cached = previousCache?.sqlScripts[filePath];
+		const findings =
+			cached && stampsMatch(cached.stamps, freshStamps)
+				? cached.findings.map(fromCachedFinding)
+				: checkSqlScriptNaming(scriptName).map((issue) => ({
+						packageName: packageFromPath(filePath),
+						label: scriptName,
+						message: issue.message,
+						filePath,
+						position: offsetToPosition(text, locateJsonNameOffset(text, scriptName))
+					}));
+		if (nextCache) {
+			nextCache.sqlScripts[filePath] = { stamps: freshStamps, findings: findings.map(toCachedFinding) };
+		}
+
 		if (scriptName.endsWith("_Temp") && gitRoot && tempMaxAgeDays > 0) {
 			const ageDays = await gitFileFirstAddedAgeDays(gitRoot, filePath);
 			if (ageDays !== undefined && ageDays > tempMaxAgeDays) {
@@ -840,12 +1119,18 @@ export class NamingIssuesIndex {
 	 * it once after the whole workspace has been walked (same pattern as
 	 * `findEntityCodeCollisions`).
 	 */
-	private findingsForDataSchema(
+	private async findingsForDataSchema(
 		filePath: string,
 		sysSettingsOccurrences: SysSettingsOccurrence[],
-		sysSettingsValueOccurrences: SysSettingsValueOccurrence[]
-	): NamingFinding[] {
-		const text = readFileSafe(filePath);
+		sysSettingsValueOccurrences: SysSettingsValueOccurrence[],
+		previousCache: NamingIssuesCacheData | undefined,
+		nextCache: NamingIssuesCacheData | undefined
+	): Promise<NamingFinding[]> {
+		// Descriptor content is read unconditionally (needed either way, to
+		// know `tableName`/`code` — cheap, small JSON); a cache hit then
+		// skips reading the sibling data.json (which, for a SysSettings row,
+		// carries the actual configured value and can be sizable).
+		const text = await readFileSafeAsync(filePath);
 		if (text === undefined) {
 			return [];
 		}
@@ -853,6 +1138,24 @@ export class NamingIssuesIndex {
 		if (!info) {
 			return [];
 		}
+		const isSysSettingsRow = info.tableName === "SysSettings" || info.tableName === "SysSettingsValue";
+		const dataJsonPath = path.join(path.dirname(filePath), "data.json");
+		const dependencyPaths = [filePath, ...(isSysSettingsRow ? [dataJsonPath] : [])];
+		const freshStamps = await buildStamps(dependencyPaths);
+		const cached = previousCache?.dataDescriptors[filePath];
+		if (cached && stampsMatch(cached.stamps, freshStamps)) {
+			if (nextCache) {
+				nextCache.dataDescriptors[filePath] = cached;
+			}
+			if (cached.sysSettingsOccurrence) {
+				sysSettingsOccurrences.push(cached.sysSettingsOccurrence);
+			}
+			if (cached.sysSettingsValueOccurrence) {
+				sysSettingsValueOccurrences.push(cached.sysSettingsValueOccurrence);
+			}
+			return cached.findings.map(fromCachedFinding);
+		}
+
 		const findings = checkDataSchemaCodeNaming(info.code, info.tableName).map((issue) => ({
 			packageName: packageFromPath(filePath),
 			label: info.code,
@@ -861,25 +1164,33 @@ export class NamingIssuesIndex {
 			position: offsetToPosition(text, locateJsonNameOffset(text, info.code))
 		}));
 
-		if (info.tableName === "SysSettings" || info.tableName === "SysSettingsValue") {
-			const dataText = readFileSafe(path.join(path.dirname(filePath), "data.json"));
+		let sysSettingsOccurrence: SysSettingsOccurrence | undefined;
+		let sysSettingsValueOccurrence: SysSettingsValueOccurrence | undefined;
+		if (isSysSettingsRow) {
+			const dataText = await readFileSafeAsync(dataJsonPath);
 			if (dataText !== undefined) {
 				if (info.tableName === "SysSettings") {
-					sysSettingsOccurrences.push({
-						code: info.code,
-						filePath,
-						rowId: readDataRowColumnValue(text, dataText, "Id")
-					});
+					sysSettingsOccurrence = { code: info.code, filePath, rowId: readDataRowColumnValue(text, dataText, "Id") };
+					sysSettingsOccurrences.push(sysSettingsOccurrence);
 				} else {
-					sysSettingsValueOccurrences.push({
+					sysSettingsValueOccurrence = {
 						code: info.code,
 						filePath,
 						referencedSysSettingsId: readDataRowColumnValue(text, dataText, "SysSettings")
-					});
+					};
+					sysSettingsValueOccurrences.push(sysSettingsValueOccurrence);
 				}
 			}
 		}
 
+		if (nextCache) {
+			nextCache.dataDescriptors[filePath] = {
+				stamps: freshStamps,
+				findings: findings.map(toCachedFinding),
+				sysSettingsOccurrence,
+				sysSettingsValueOccurrence
+			};
+		}
 		return findings;
 	}
 }
