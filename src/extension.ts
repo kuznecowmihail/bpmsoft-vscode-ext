@@ -12,6 +12,7 @@ import { CompletionProvider } from "./providers/CompletionProvider";
 import { DefinitionProvider } from "./providers/DefinitionProvider";
 import { HoverProvider } from "./providers/HoverProvider";
 import { CsharpHoverProvider } from "./providers/CsharpHoverProvider";
+import { CsharpCompletionProvider } from "./providers/CsharpCompletionProvider";
 import { resetLocalizationCaches } from "./index/localizationLookup";
 import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
 import { StyleDiagnostics } from "./providers/StyleDiagnostics";
@@ -30,6 +31,7 @@ import { NamingDecorationProvider } from "./providers/NamingDecorationProvider";
 import { ViewModelOutlineProvider } from "./providers/ViewModelOutlineProvider";
 import { GitFlowStatusBar } from "./providers/GitFlowStatusBar";
 import { PackageOwnershipStatusBar } from "./providers/PackageOwnershipStatusBar";
+import { IndexingStatusBar } from "./providers/IndexingStatusBar";
 import {
 	EDIT_PACKAGE_SETTING_COMMAND,
 	PackageSettingsTreeProvider,
@@ -97,11 +99,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 		index = new SymbolIndex();
 		const cacheDir = ensurePlatformIndexCacheDir(context);
-		indexer = new ModuleIndexer(index, cacheDir, context.extension.packageJSON.version);
+		const indexingStatusBar = new IndexingStatusBar();
+		indexer = new ModuleIndexer(index, cacheDir, context.extension.packageJSON.version, indexingStatusBar);
 		diagnostics = new MissingMemberDiagnostics(index);
 		styleDiagnostics = new StyleDiagnostics(index);
 		namingDiagnostics = new NamingDiagnostics(index);
-		namingIndex = new NamingIssuesIndex(index);
+		namingIndex = new NamingIssuesIndex(index, cacheDir, context.extension.packageJSON.version, indexingStatusBar);
 		const namingTree = new NamingIssuesTreeProvider(namingIndex);
 		const packagesTree = new PackagesTreeProvider(index, namingIndex);
 		const packagesTreeView = vscode.window.createTreeView("bpmsoftPackages", {
@@ -176,6 +179,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		];
 
 		const completionProvider = new CompletionProvider(index);
+		const csharpCompletionProvider = new CsharpCompletionProvider(index);
 
 		const gitFlowCandidateRoots = layouts
 			.map((l) => l.pkgRoot || l.configurationRoot || l.appRoot || l.workspaceRoot)
@@ -185,6 +189,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		const packageSettingsTree = new PackageSettingsTreeProvider();
 
 		context.subscriptions.push(
+			indexingStatusBar,
 			diagnostics,
 			styleDiagnostics,
 			namingDiagnostics,
@@ -316,7 +321,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				"$",
 				"\"",
 				"'",
-				"("
+				"(",
+				"[",
+				":"
+			),
+			vscode.languages.registerCompletionItemProvider(
+				csharpSelector,
+				csharpCompletionProvider,
+				".",
+				"\"",
+				"'",
+				"(",
+				"[",
+				":"
 			),
 			vscode.languages.registerDefinitionProvider(
 				jsSelector,
@@ -514,7 +531,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		registerWatchers(context, folders, layouts, packagesTree);
 		styleDiagnostics.refreshOpenDocuments();
 		namingDiagnostics.refreshOpenDocuments();
-		void namingIndex.refresh();
 		outlineTree.refresh();
 		void plainOutlineTree.refresh();
 		schemaHistoryTree.refresh();
@@ -522,6 +538,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		packageOwnershipStatusBar.refresh();
 
 		void preferIndexedCompletions();
+		// `rebuildWithProgress` runs `namingIndex.refresh()` itself, after
+		// `indexer.rebuild()` — sequenced on purpose (some naming checks,
+		// e.g. `findingsForClientSchemaText`'s MODULE-schema check, query
+		// `index.hierarchy`, which is only populated once the rebuild
+		// completes). A separate `void namingIndex.refresh()` used to also
+		// fire right here, racing this one — same cache, same status bar,
+		// just two full workspace scans running concurrently for no benefit.
 		void rebuildWithProgress();
 		void ensureDotnetSolution(layouts);
 		const active = vscode.window.activeTextEditor?.document;
@@ -843,7 +866,7 @@ async function rebuildWithProgress(forceFresh = false): Promise<void> {
 			diagnostics.refreshOpenDocuments();
 			styleDiagnostics.refreshOpenDocuments();
 			namingDiagnostics.refreshOpenDocuments();
-			void namingIndex.refresh();
+			void namingIndex.refresh(forceFresh);
 			outlineTree.refresh();
 			void plainOutlineTree.refresh();
 			schemaHistoryTree.refresh();

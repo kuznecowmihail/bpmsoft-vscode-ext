@@ -183,7 +183,7 @@ export interface EntityColumnCaption {
 	description?: string;
 }
 
-function localeRank(locale: string): number {
+export function localeRank(locale: string): number {
 	const lower = locale.toLowerCase();
 	if (lower === "ru-ru") {
 		return 0;
@@ -279,6 +279,11 @@ export function loadEntityColumnCaptions(
 	return out;
 }
 
+/** Description + lookup note only - deliberately excludes the column's own
+ * `caption` (unlike its earlier shape), since callers now surface that
+ * separately as `IndexedMember.caption` (shown prominently in a hover's own
+ * header/subtitle) rather than folded into the general documentation body,
+ * where it would otherwise be repeated. */
 export function entityColumnDocumentation(
 	captions: Map<string, EntityColumnCaption>,
 	name: string,
@@ -286,9 +291,6 @@ export function entityColumnDocumentation(
 ): string | undefined {
 	const text = captions.get(name);
 	const bits: string[] = [];
-	if (text?.caption) {
-		bits.push(text.caption);
-	}
 	if (text?.description) {
 		bits.push(text.description);
 	}
@@ -296,4 +298,32 @@ export function entityColumnDocumentation(
 		bits.push("fields: value, displayValue");
 	}
 	return bits.length ? bits.join("\n\n") : undefined;
+}
+
+const SCHEMA_CAPTION_RE = /<Item\s+Name="Caption"\s+Value="([^"]*)"\s*\/>/;
+
+/** `<Item Name="Caption" Value="..." />` at the top level of an entity's own
+ * `Resources/{Entity}.Entity/resource.{culture}.xml` - the entity's own
+ * human-readable title, as opposed to the per-column `Columns.X.Caption`
+ * items `parseEntityResourceCaptions` reads from the same file. */
+export function parseEntitySchemaCaption(xml: string): string | undefined {
+	const match = SCHEMA_CAPTION_RE.exec(xml);
+	const value = match?.[1] ? unescapeXml(match[1]) : undefined;
+	return value?.trim() ? value : undefined;
+}
+
+export function loadEntitySchemaCaption(resourceDirs: string[]): string | undefined {
+	for (const file of collectEntityResourceFiles(resourceDirs)) {
+		let xml: string;
+		try {
+			xml = fs.readFileSync(file, "utf8");
+		} catch {
+			continue;
+		}
+		const caption = parseEntitySchemaCaption(xml);
+		if (caption) {
+			return caption;
+		}
+	}
+	return undefined;
 }

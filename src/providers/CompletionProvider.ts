@@ -4,6 +4,14 @@ import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirection
 import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
 import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, EsqNameSpan } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
+import {
+	EsqBracketContext,
+	getEsqBracketContext,
+	toEntityNameItems,
+	toEsqBracketItems,
+	toEsqColumnItems,
+	TRIGGER_SUGGEST
+} from "./esqCompletion";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -22,11 +30,6 @@ const GLOBAL_IDENTIFIERS = [
 		documentation: "define(\"ModuleName\", deps, factory)"
 	}
 ];
-
-const TRIGGER_SUGGEST: vscode.Command = {
-	title: "Suggest",
-	command: "editor.action.triggerSuggest"
-};
 
 function kindToCompletion(
 	kind: MemberKind
@@ -80,153 +83,6 @@ function toItems(
 			item.insertText = new vscode.SnippetString(`${m.name}($0)`);
 		} else if (isAttr) {
 			item.insertText = `$${m.name}`;
-		}
-		return item;
-	});
-}
-
-function toEntityNameItems(
-	names: string[],
-	ctx: EsqNameSpan,
-	document: vscode.TextDocument
-): vscode.CompletionItem[] {
-	const typed = ctx.name.toLowerCase();
-	const range = new vscode.Range(
-		document.positionAt(ctx.nameStart),
-		document.positionAt(ctx.nameEnd)
-	);
-	return names
-		.filter((name) => !typed || name.toLowerCase().startsWith(typed))
-		.map((name, i) => {
-			const item = new vscode.CompletionItem(
-				name,
-				vscode.CompletionItemKind.Class
-			);
-			item.detail = `BPMSoft · entity`;
-			item.sortText = `!${String(i).padStart(5, "0")}_${name}`;
-			item.filterText = name;
-			item.preselect = i === 0;
-			item.insertText = ctx.quote ? name : `"${name}"`;
-			item.range = range;
-			return item;
-		});
-}
-
-/**
- * Detects "still typing a `[Schema:Col:Col]` reverse-link segment" inside an
- * ESQ column-path string (see `esqColumnPath.ts` for the grammar) and which
- * of the three colon-separated parts is currently being typed — schema name,
- * the schema's own link column, or (rarer — a 2-part `[Schema:Col]` already
- * covers the common case, defaulting the current-schema column to `"Id"`)
- * the current schema's link column. `undefined` when the path's last
- * dot-segment isn't inside an *unclosed* bracket at all (a plain column name,
- * or a bracket segment already closed with `]`).
- */
-interface EsqBracketContext {
-	stage: "schema" | "schemaLinkColumn" | "currentLinkColumn";
-	/** Already-typed, complete colon-parts before the one being completed. */
-	rawSegs: string[];
-	/** The in-progress part being completed (may be empty). */
-	prefix: string;
-	/** 0-2 char join-type symbol before the `[`, e.g. `"="`, `">"`, `""`. */
-	joinPrefix: string;
-	/** Dot-segments before this one - already-resolved path prefix. */
-	parentSegments: string[];
-}
-
-const BRACKET_IN_PROGRESS_RE = /^([<>=*]{0,2})\[([^[\]]*)$/;
-
-function getEsqBracketContext(fullName: string): EsqBracketContext | undefined {
-	const parts = fullName.split(".");
-	const last = parts[parts.length - 1] || "";
-	const m = BRACKET_IN_PROGRESS_RE.exec(last);
-	if (!m) {
-		return undefined;
-	}
-	const [, joinPrefix, inner] = m;
-	const rawSegs = inner.split(":");
-	const stage: EsqBracketContext["stage"] =
-		rawSegs.length <= 1 ? "schema" : rawSegs.length === 2 ? "schemaLinkColumn" : "currentLinkColumn";
-	return {
-		stage,
-		rawSegs: rawSegs.slice(0, -1),
-		prefix: rawSegs[rawSegs.length - 1] || "",
-		joinPrefix,
-		parentSegments: parts.slice(0, -1).filter(Boolean)
-	};
-}
-
-function toEsqColumnItems(
-	members: IndexedMember[],
-	ctx: EsqNameSpan,
-	parentPath: string[],
-	document: vscode.TextDocument
-): vscode.CompletionItem[] {
-	const range = new vscode.Range(
-		document.positionAt(ctx.nameStart),
-		document.positionAt(ctx.nameEnd)
-	);
-	return members.map((m, i) => {
-		const completed = parentPath.length
-			? [...parentPath, m.name].join(".")
-			: m.name;
-		const item = new vscode.CompletionItem(
-			m.name,
-			vscode.CompletionItemKind.Field
-		);
-		item.detail = m.detail || `entity column`;
-		item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
-		item.filterText = m.name;
-		item.preselect = i === 0;
-		if (m.documentation) {
-			item.documentation = new vscode.MarkdownString(m.documentation);
-		}
-		item.insertText = ctx.quote ? completed : `"${completed}"`;
-		item.range = range;
-		return item;
-	});
-}
-
-/** Completion for the 3 stages of typing a `[Schema:Col:Col]` reverse-link
- * segment (see `getEsqBracketContext`). Each candidate closes the bracket
- * with a syntactically complete value - the 2-part `[Schema:Col]` shorthand
- * for `schema`/`schemaLinkColumn` stages (the real, common case - defaults
- * the current-schema link column to `"Id"`), the full 3-part form when the
- * user explicitly typed a second `:` (`currentLinkColumn` stage). */
-function toEsqBracketItems(
-	bracket: EsqBracketContext,
-	candidates: { name: string; detail?: string; documentation?: string; kind: vscode.CompletionItemKind }[],
-	ctx: EsqNameSpan,
-	document: vscode.TextDocument
-): vscode.CompletionItem[] {
-	const range = new vscode.Range(
-		document.positionAt(ctx.nameStart),
-		document.positionAt(ctx.nameEnd)
-	);
-	const rebuild = (finalValue: string, closeBracket: boolean): string => {
-		const allSegs = [...bracket.rawSegs, finalValue];
-		// Not closing yet (just finished the schema-name stage) means there's
-		// more to type - append the next segment's leading ":" so suggest can
-		// immediately re-trigger for it, rather than leaving the bracket
-		// dangling with nothing to prompt the next keystroke.
-		const body = `${bracket.joinPrefix}[${allSegs.join(":")}${closeBracket ? "]" : ":"}`;
-		return [...bracket.parentSegments, body].join(".");
-	};
-	return candidates.map((c, i) => {
-		const item = new vscode.CompletionItem(c.name, c.kind);
-		item.detail = c.detail;
-		item.sortText = `!${String(i).padStart(5, "0")}_${c.name}`;
-		item.filterText = c.name;
-		item.preselect = i === 0;
-		if (c.documentation) {
-			item.documentation = new vscode.MarkdownString(c.documentation);
-		}
-		const closeBracket = bracket.stage !== "schema";
-		const completed = rebuild(c.name, closeBracket);
-		item.insertText = ctx.quote ? completed : `"${completed}"`;
-		item.range = range;
-		if (!closeBracket) {
-			item.command = TRIGGER_SUGGEST;
 		}
 		return item;
 	});
@@ -523,48 +379,52 @@ export class CompletionProvider implements vscode.CompletionItemProvider {
 		return undefined;
 	}
 
-	/** The 3 stages of `getEsqBracketContext` each draw candidates from a
-	 * different source: entity names for `schema`, the named schema's own
-	 * columns for `schemaLinkColumn`, the *current* schema's columns (the one
-	 * reached by `parentSegments`, defaulting to the root query entities) for
+	/** The schema this bracket hops *from* - `parentSegments` resolved
+	 * (whatever schema an earlier part of the same path already landed on)
+	 * when non-empty, else the root query entity/entities. Needed by every
+	 * stage of `SymbolIndex.resolveEsqBracketCandidates`: it's the "must
+	 * actually link back to here" filter target for `schema`/
+	 * `schemaLinkColumn`, and the candidate source itself for
 	 * `currentLinkColumn`. */
+	private currentSchemaCandidates(bracket: EsqBracketContext, entities: string[]): string[] {
+		if (!bracket.parentSegments.length) {
+			return entities;
+		}
+		const resolved = this.index.resolveEsqPathSchema(entities, bracket.parentSegments.join("."));
+		return resolved ? [resolved] : [];
+	}
+
 	private esqBracketItems(
 		bracket: EsqBracketContext,
 		entities: string[],
 		colCtx: EsqNameSpan,
 		document: vscode.TextDocument
 	): vscode.CompletionItem[] {
-		if (bracket.stage === "schema") {
-			const names = this.index
-				.listEntityNames(bracket.prefix)
-				.map((name) => ({ name, kind: vscode.CompletionItemKind.Class, detail: "BPMSoft · entity (reverse join)" }));
-			return toEsqBracketItems(bracket, names, colCtx, document);
+		const result = this.index.resolveEsqBracketCandidates(
+			bracket,
+			this.currentSchemaCandidates(bracket, entities)
+		);
+		if (result.kind === "schema") {
+			const candidates = result.names.map((name) => {
+				const caption = this.index.resolveEntityCaption(name);
+				return {
+					name,
+					kind: vscode.CompletionItemKind.Class,
+					detail: "BPMSoft · entity (reverse join)",
+					documentation: caption ? `*${caption}*` : undefined
+				};
+			});
+			return toEsqBracketItems(bracket, candidates, colCtx, document);
 		}
-
-		let schemaNames: string[];
-		if (bracket.stage === "schemaLinkColumn") {
-			schemaNames = [bracket.rawSegs[0]];
-		} else if (bracket.parentSegments.length) {
-			const resolved = this.index.resolveEsqPathSchema(entities, bracket.parentSegments.join("."));
-			schemaNames = resolved ? [resolved] : [];
-		} else {
-			schemaNames = entities;
-		}
-		const byName = new Map<string, IndexedMember>();
-		for (const schemaName of schemaNames) {
-			for (const m of this.index.resolveEntityColumns(schemaName)) {
-				byName.set(m.name, m);
-			}
-		}
-		const members = [...byName.values()]
-			.filter((m) => m.name.toLowerCase().startsWith(bracket.prefix.toLowerCase()))
-			.map((m) => ({
-				name: m.name,
-				kind: vscode.CompletionItemKind.Field,
-				detail: m.detail || "entity column",
-				documentation: m.documentation
-			}));
-		return toEsqBracketItems(bracket, members, colCtx, document);
+		const candidates = result.members.map((m) => ({
+			name: m.name,
+			kind: vscode.CompletionItemKind.Field,
+			detail: m.detail || "entity column",
+			documentation: m.caption
+				? `*${m.caption}*${m.documentation ? `\n\n${m.documentation}` : ""}`
+				: m.documentation
+		}));
+		return toEsqBracketItems(bracket, candidates, colCtx, document);
 	}
 
 	private memberCompletions(

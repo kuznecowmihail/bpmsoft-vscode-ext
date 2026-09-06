@@ -40,6 +40,11 @@
         },
         "javascript.suggest.names": false,
         "javascript.suggestionActions.enabled": false
+      },
+      "[csharp]": {
+        "editor.quickSuggestions": {
+          "strings": true
+        }
       }
     },
     "commands": [

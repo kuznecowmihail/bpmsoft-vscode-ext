@@ -4,7 +4,7 @@ import { IndexedMember, schemaMessageDirectionLabel } from "../parse/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 import { getQueryColumnContext, getRootSchemaNameContext, resolveQueryClassNames, resolveQueryEntities } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
-import { isPlatformPrefix, markdownHover, modulesFromExpr } from "./platformLookup";
+import { columnHover, entityHover, isPlatformPrefix, markdownHover, modulesFromExpr } from "./platformLookup";
 import { findSchemaDir } from "../index/schemaResourceLookup";
 import { resolveLocalizedString, resolveLocalizedImage } from "../index/localizationLookup";
 
@@ -34,23 +34,29 @@ export class HoverProvider implements vscode.HoverProvider {
 
 		const rootCtx = getRootSchemaNameContext(text, offset);
 		if (rootCtx?.name) {
-			const def = this.index.findEntityDefinition(rootCtx.name);
-			const cols = this.index.resolveEntityColumns(rootCtx.name);
-			if (def || cols.length) {
-				const lines = [`**${rootCtx.name}** *(entity)*`];
-				if (def) {
-					lines.push(`\`${def.filePath}\``);
-				}
-				if (cols.length) {
-					lines.push(`${cols.length} column(s)`);
-				}
-				return markdownHover(lines);
+			const hover = this.entityHoverFor(rootCtx.name);
+			if (hover) {
+				return hover;
 			}
 		}
 
 		const colCtx = getQueryColumnContext(text, offset);
 		if (colCtx?.name) {
 			const entities = resolveQueryEntities(text, offset, colCtx.queryIdent);
+			const relOffset = offset - colCtx.nameStart;
+			const target = this.index.resolveEsqTargetAtOffset(entities, colCtx.name, relOffset);
+			if (target?.kind === "schema") {
+				const hover = this.entityHoverFor(target.schemaName);
+				if (hover) {
+					return hover;
+				}
+			} else if (target?.kind === "column") {
+				return columnHover(target.member.name, target.schemaName, target.member);
+			}
+
+			// Fell on path punctuation, or the granular walk couldn't
+			// resolve a hop - fall back to the whole path's own final
+			// column, same as before this method knew about cursor position.
 			const resolved = this.index.resolveEsqColumnFull(entities, colCtx.name);
 			if (resolved) {
 				const extra: string[] = [];
@@ -62,11 +68,7 @@ export class HoverProvider implements vscode.HoverProvider {
 						`join: ${resolved.hops.map((h) => `${h.joinType} → ${h.schemaName}`).join(", ")}`
 					);
 				}
-				return memberHover(
-					`**${colCtx.name}** *(entity column)*`,
-					resolved.member,
-					extra
-				);
+				return columnHover(colCtx.name, entities[0] ?? "", resolved.member, extra);
 			}
 		}
 
@@ -229,6 +231,23 @@ export class HoverProvider implements vscode.HoverProvider {
 		}
 
 		return undefined;
+	}
+
+	/** Entity/schema hover (root ESQ argument, or a schema landed on mid-path
+	 * via a `[Schema:...]` reverse-link segment) - `undefined` when nothing
+	 * is actually known about `schemaName`, so callers can fall through to
+	 * whatever else might explain the hover. */
+	private entityHoverFor(schemaName: string): vscode.Hover | undefined {
+		const def = this.index.findEntityDefinition(schemaName);
+		const cols = this.index.resolveEntityColumns(schemaName);
+		if (!def && !cols.length) {
+			return undefined;
+		}
+		return entityHover(schemaName, {
+			filePath: def?.filePath,
+			caption: this.index.resolveEntityCaption(schemaName),
+			columnCount: cols.length
+		});
 	}
 
 /** `Resources.Strings.<key>` / `Resources.Images.<key>` (bare expression or

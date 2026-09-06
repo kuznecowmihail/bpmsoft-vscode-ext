@@ -47,6 +47,12 @@ export interface IndexedMember {
 	 * its real control via `ViewControlsIndex.resolveControlByDataValueType`
 	 * — see CLAUDE.md §4b's `generateEditControl` writeup. */
 	dataValueType?: string;
+	/** Entity column only: the human-readable title from the owning
+	 * package's own `Resources/{Entity}.Entity/resource.{culture}.xml`
+	 * (`Columns.<Name>.Caption`) — the business name, not the code name.
+	 * Only available for custom (Pkg) entities; stock/compiled entities
+	 * have no locally readable resource bundle for this. */
+	caption?: string;
 }
 
 export function memberDedupeKey(member: IndexedMember): string {
@@ -96,6 +102,10 @@ export interface IndexedModule {
 	extend?: string;
 	/** Client schema entity, e.g. Account → conf/content/Account.js columns */
 	entitySchemaName?: string;
+	/** Entity's own human-readable title (`Resources/{Entity}.Entity`'s
+	 * top-level `Caption` item) - only available for custom (Pkg) entities,
+	 * same reason as `IndexedMember.caption`. */
+	caption?: string;
 	/**
 	 * Ext.define members of conf/content/{Entity}.js for `this.entitySchema`
 	 * (name, uId, caption, …). Columns stay on `members`.

@@ -271,6 +271,35 @@ export function findEsqDeclarationForOffset(
 	return best;
 }
 
+export interface EsqLiteralContentRange {
+	start: number;
+	end: number;
+}
+
+/** Absolute document offsets where a literal argument's own *content*
+ * actually starts/ends - `arg.start`/`arg.end` (from `firstDirectLiteralArg`)
+ * span the *whole* token, which for a plain string literal still includes
+ * its quotes (and, for `@"`/`$"`/`$@"`, a prefix char too), but for the
+ * `nameof(Schema.Column)` shape is already just the bare identifier with
+ * nothing to trim. Lets a caller turn a document offset inside the literal
+ * into an offset *within* the decoded value (`offset - range.start`) for
+ * position-aware resolution (`resolveEsqPathAtOffset`) or completion. */
+export function esqLiteralContentRange(
+	source: string,
+	arg: { start: number; end: number }
+): EsqLiteralContentRange {
+	const ch = source[arg.start];
+	if (ch !== '"' && ch !== "'" && ch !== "@" && ch !== "$") {
+		// nameof(...)'s identifier token - no quotes to trim at all.
+		return { start: arg.start, end: arg.end };
+	}
+	let i = arg.start;
+	while (i < source.length && source[i] !== '"') {
+		i++;
+	}
+	return { start: i + 1, end: Math.max(i + 1, arg.end - 1) };
+}
+
 /** `<esqVar>.AddColumn("path")` (or any other `COLUMN_PATH_METHODS` call)
  * at `offset` — `undefined` unless `offset` actually falls on that call's
  * own qualifying string-literal argument (not merely somewhere in its
@@ -301,6 +330,142 @@ export function getCsharpEsqColumnContext(source: string, offset: number): Cshar
 			return undefined;
 		}
 		return { varName: varTok.value, path: pathArg.value, start: pathArg.start, end: pathArg.end };
+	}
+	return undefined;
+}
+
+/** The direct (depth-1, same reasoning as `firstDirectLiteralArg`) plain
+ * `"..."`-style string token — `'...'` char literals and `nameof(...)`
+ * excluded, neither is a free-text path a user would type/complete into —
+ * among `(openParen, closeParen)`'s own arguments that `offset` actually
+ * falls inside. Deliberately doesn't go through `firstDirectLiteralArg`:
+ * that helper treats a still-empty `""` as "nothing found" (its decoded
+ * value is falsy), which is exactly the moment completion needs to fire —
+ * right after typing the opening quote, before any real character. */
+function directStringTokenAtOffset(
+	tokens: Token[],
+	openParen: number,
+	closeParen: number,
+	offset: number
+): Token | undefined {
+	let depth = 0;
+	for (let j = openParen; j <= closeParen; j++) {
+		const v = tokens[j].value;
+		if (v === "(") {
+			depth++;
+			continue;
+		}
+		if (v === ")") {
+			depth--;
+			continue;
+		}
+		if (depth !== 1) {
+			continue;
+		}
+		if (
+			tokens[j].kind === "str" &&
+			!v.startsWith("'") &&
+			offset >= tokens[j].start &&
+			offset <= tokens[j].end
+		) {
+			return tokens[j];
+		}
+	}
+	return undefined;
+}
+
+export interface CsharpEsqCompletionContext {
+	/** Content typed so far, from the string's own opening quote up to the
+	 * cursor - completion only ever needs "what's already there before the
+	 * cursor", unlike hover's "what's the whole already-written path". */
+	typed: string;
+	/** Absolute document offset of the string's own content start (right
+	 * after its opening quote) - the left edge of the replace range. */
+	contentStart: number;
+	/** Absolute document offset of the string's own content end (right
+	 * before its closing quote) - the right edge of the replace range, so a
+	 * completion replaces the whole existing value rather than just
+	 * inserting before it. */
+	contentEnd: number;
+}
+
+/** Completion context for the root-schema-name argument of
+ * `new EntitySchemaQuery(<manager>, "<SchemaName>")` — `undefined` unless
+ * `offset` falls inside that constructor call's own string-literal
+ * argument. Doesn't require the result to be assigned to a variable (unlike
+ * `collectCsharpEsqDeclarations`) since naming the schema doesn't depend on
+ * that. */
+export function getCsharpEsqRootNameCompletionContext(
+	source: string,
+	offset: number
+): CsharpEsqCompletionContext | undefined {
+	const { tokens } = tokenize(source);
+	for (let i = 0; i < tokens.length; i++) {
+		if (
+			tokens[i].value !== "new" ||
+			tokens[i + 1]?.value !== "EntitySchemaQuery" ||
+			tokens[i + 2]?.value !== "("
+		) {
+			continue;
+		}
+		const openParen = i + 2;
+		const closeParen = matchForwardParen(tokens, openParen);
+		if (closeParen < 0 || offset < tokens[openParen].start || offset > tokens[closeParen].end) {
+			continue;
+		}
+		const strTok = directStringTokenAtOffset(tokens, openParen, closeParen, offset);
+		if (!strTok) {
+			return undefined;
+		}
+		const range = esqLiteralContentRange(source, strTok);
+		return {
+			typed: source.slice(range.start, offset),
+			contentStart: range.start,
+			contentEnd: range.end
+		};
+	}
+	return undefined;
+}
+
+/** Completion context for a `<esqVar>.AddColumn("path")`-style call's own
+ * column-path argument — `undefined` unless `offset` falls inside a real
+ * `COLUMN_PATH_METHODS` call's string-literal argument (regardless of
+ * whether `esqVar` resolves to a known declaration - the caller decides
+ * that separately, same division of labour as `getCsharpEsqColumnContext`
+ * vs. `findEsqDeclarationForOffset`). */
+export function getCsharpEsqColumnCompletionContext(
+	source: string,
+	offset: number
+): (CsharpEsqCompletionContext & { varName: string }) | undefined {
+	const { tokens } = tokenize(source);
+	for (let i = 0; i < tokens.length; i++) {
+		const tok = tokens[i];
+		if (tok.kind !== "ident" || !COLUMN_PATH_METHODS.has(tok.value)) {
+			continue;
+		}
+		if (tokens[i - 1]?.value !== "." || tokens[i + 1]?.value !== "(") {
+			continue;
+		}
+		const varTok = tokens[i - 2];
+		if (!varTok || varTok.kind !== "ident") {
+			continue;
+		}
+		const openParen = i + 1;
+		const closeParen = matchForwardParen(tokens, openParen);
+		if (closeParen < 0 || offset < tokens[openParen].start || offset > tokens[closeParen].end) {
+			continue;
+		}
+		const strTok = directStringTokenAtOffset(tokens, openParen, closeParen, offset);
+		if (!strTok) {
+			return undefined;
+		}
+		const range = esqLiteralContentRange(source, strTok);
+		return {
+			varName: varTok.value,
+			typed: source.slice(range.start, offset),
+			contentStart: range.start,
+			contentEnd: range.end
+		};
 	}
 	return undefined;
 }

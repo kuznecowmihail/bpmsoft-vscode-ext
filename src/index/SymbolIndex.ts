@@ -1,6 +1,15 @@
 import * as fs from "fs";
 import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember, memberDedupeKey, schemaMessageSupports } from "../parse/types";
-import { EsqColumnResolution, resolveEsqColumnPath, resolveEsqPathSchema } from "../parse/esqColumnPath";
+import {
+	EsqBracketCandidates,
+	EsqBracketContext,
+	EsqColumnResolution,
+	EsqPathHoverTarget,
+	resolveEsqBracketCandidates,
+	resolveEsqColumnPath,
+	resolveEsqPathAtOffset,
+	resolveEsqPathSchema
+} from "../parse/esqColumnPath";
 import {
 	NO_ENTITY_COLUMN_SCHEMA_TYPES,
 	SchemaHierarchyResolver
@@ -10,8 +19,10 @@ import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
 import {
 	entityColumnDocumentation,
 	loadEntityColumnCaptions,
+	loadEntitySchemaCaption,
 	parsePkgEntityColumns
 } from "../parse/entityMetadata";
+import { loadStockEntityCaptions } from "../parse/stockEntityResources";
 import { buildSandboxStubs } from "../stubs/sandboxGlobals";
 import {
 	inheritdocTarget,
@@ -1602,21 +1613,34 @@ export class SymbolIndex {
 		try {
 			const byName = new Map<string, IndexedMember>();
 			let classMembers: IndexedMember[] = [];
+			// A stock (conf/content) entity has no Pkg/ folder at all, so its
+			// own captions live in the already-compiled
+			// conf/content/resources/{culture}/{Entity}Resources.js bundle
+			// instead of a Pkg entity's XML resources - see
+			// stockEntityResources.ts. Computed regardless of whether this
+			// entity actually has one (a purely custom entity just gets an
+			// empty result back), so both column loops below can fall back to
+			// it uniformly.
+			const stockCaptions = loadStockEntityCaptions(
+				this.hierarchy.resolveEntityConfResourcePaths(entityName),
+				entityName
+			);
 			if (confPath) {
 				const source = fs.readFileSync(confPath, "utf8");
 				for (const member of parseEntityColumns(source, confPath)) {
 					byName.set(member.name, {
 						...member,
 						filePath: member.filePath || confPath,
-						detail: member.detail || `entity ${entityName}`
+						detail: member.detail || `entity ${entityName}`,
+						caption: stockCaptions.columnCaptions.get(member.name)
 					});
 				}
 				const api = parseAmdModule(source, confPath);
 				classMembers = api?.members || [];
 			}
-			const captions = loadEntityColumnCaptions(
-				this.hierarchy.resolveEntityPkgResourceDirs(entityName)
-			);
+			const resourceDirs = this.hierarchy.resolveEntityPkgResourceDirs(entityName);
+			const captions = loadEntityColumnCaptions(resourceDirs);
+			const entityCaption = loadEntitySchemaCaption(resourceDirs) ?? stockCaptions.entityCaption;
 			for (const metaPath of metaPaths) {
 				const source = fs.readFileSync(metaPath, "utf8");
 				for (const column of parsePkgEntityColumns(source, metaPath)) {
@@ -1627,6 +1651,9 @@ export class SymbolIndex {
 					byName.set(column.name, {
 						...column,
 						detail: column.detail || `entity ${entityName}`,
+						caption:
+							captions.get(column.name)?.caption ??
+							stockCaptions.columnCaptions.get(column.name),
 						documentation: entityColumnDocumentation(
 							captions,
 							column.name,
@@ -1639,6 +1666,10 @@ export class SymbolIndex {
 				const basePath = this.hierarchy.resolveEntitySchemaPath("BaseEntity");
 				if (basePath) {
 					const source = fs.readFileSync(basePath, "utf8");
+					const baseCaptions = loadStockEntityCaptions(
+						this.hierarchy.resolveEntityConfResourcePaths("BaseEntity"),
+						"BaseEntity"
+					);
 					for (const member of parseEntityColumns(source, basePath)) {
 						if (byName.has(member.name)) {
 							continue;
@@ -1646,7 +1677,8 @@ export class SymbolIndex {
 						byName.set(member.name, {
 							...member,
 							filePath: basePath,
-							detail: member.detail || `entity ${entityName}`
+							detail: member.detail || `entity ${entityName}`,
+							caption: baseCaptions.columnCaptions.get(member.name)
 						});
 					}
 				}
@@ -1666,7 +1698,8 @@ export class SymbolIndex {
 				entityClassMembers: classMembers,
 				mixins: {},
 				messages: {},
-				entitySchemaName: entityName
+				entitySchemaName: entityName,
+				caption: entityCaption
 			};
 			this.entityCache.set(entityName, mod);
 			return mod;
@@ -1682,6 +1715,14 @@ export class SymbolIndex {
 
 	resolveEntityColumns(entityName: string): IndexedMember[] {
 		return this.getEntityModule(entityName)?.members.slice() || [];
+	}
+
+	/** Human-readable title of the entity itself (not a column) - see
+	 * `IndexedModule.caption`. `undefined` for stock/compiled entities (no
+	 * locally readable resource bundle) or an entity with no `Caption` item
+	 * set. */
+	resolveEntityCaption(entityName: string): string | undefined {
+		return this.getEntityModule(entityName)?.caption;
 	}
 
 	findEntityDefinition(
@@ -1727,6 +1768,30 @@ export class SymbolIndex {
 		return this.resolveEsqColumnFull(entityNames, columnPath)?.member;
 	}
 
+	/** Position-aware counterpart to `resolveEsqColumnFull` - what the
+	 * *specific* schema/column name at `offset` (a character offset within
+	 * `columnPath`) actually is, rather than always the path's final column.
+	 * See `esqColumnPath.ts#resolveEsqPathAtOffset`. Tries each of
+	 * `entityNames` in turn, same as the other `resolveEsq*` methods. */
+	resolveEsqTargetAtOffset(
+		entityNames: string[],
+		columnPath: string,
+		offset: number
+	): EsqPathHoverTarget | undefined {
+		for (const entityName of entityNames) {
+			const resolved = resolveEsqPathAtOffset(
+				(schemaName) => this.getEntityModule(schemaName)?.members,
+				entityName,
+				columnPath,
+				offset
+			);
+			if (resolved) {
+				return resolved;
+			}
+		}
+		return undefined;
+	}
+
 	/** Schema reached after `columnPath` (which may end in an unfinished/reverse
 	 * segment) — completion's "what should I suggest next" question, as
 	 * opposed to `resolveEsqColumnFull`'s "what column does this fully name".
@@ -1743,6 +1808,23 @@ export class SymbolIndex {
 			}
 		}
 		return undefined;
+	}
+
+	/** Real candidates for an in-progress `[Schema:Col:Col]` bracket segment
+	 * (see `esqColumnPath.ts#resolveEsqBracketCandidates` for the actual
+	 * filtering rules per stage) - the completion-time counterpart to
+	 * `resolveEsqPathSchema`, which only cares about *already-typed*
+	 * segments. */
+	resolveEsqBracketCandidates(
+		bracket: EsqBracketContext,
+		currentSchemaCandidates: string[]
+	): EsqBracketCandidates {
+		return resolveEsqBracketCandidates(
+			bracket,
+			currentSchemaCandidates,
+			(prefix) => this.hierarchy.listEntityNames(prefix),
+			(schemaName) => this.getEntityModule(schemaName)?.members
+		);
 	}
 
 	isKnownEsqColumn(entityNames: string[], columnPath: string): boolean {

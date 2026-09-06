@@ -2,10 +2,11 @@ import * as vscode from "vscode";
 import { csharpStringLiteralAt } from "../parse/csharpStyleAnalyzer";
 import { findSchemaDir } from "../index/schemaResourceLookup";
 import { resolveLocalizedString } from "../index/localizationLookup";
-import { markdownHover } from "./platformLookup";
+import { columnHover, entityHover, markdownHover } from "./platformLookup";
 import { SymbolIndex } from "../index/SymbolIndex";
 import {
 	collectCsharpEsqDeclarations,
+	esqLiteralContentRange,
 	findEsqDeclarationForOffset,
 	getCsharpEsqColumnContext
 } from "../parse/esqCsharp";
@@ -66,9 +67,9 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 			return esqHover;
 		}
 
-		const entityHover = this.resolveEntityColumnHover(text, offset);
-		if (entityHover) {
-			return entityHover;
+		const entityColumnHover = this.resolveEntityColumnHover(text, offset);
+		if (entityColumnHover) {
+			return entityColumnHover;
 		}
 
 		const dbQueryHover = this.resolveDbQueryHover(text, offset);
@@ -106,19 +107,7 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 			(d) => offset >= d.nameLiteralStart && offset <= d.nameLiteralEnd
 		);
 		if (onRootName) {
-			const def = this.index.findEntityDefinition(onRootName.schemaName);
-			const cols = this.index.resolveEntityColumns(onRootName.schemaName);
-			if (def || cols.length) {
-				const lines = [`**${onRootName.schemaName}** *(entity)*`];
-				if (def) {
-					lines.push(`\`${def.filePath}\``);
-				}
-				if (cols.length) {
-					lines.push(`${cols.length} column(s)`);
-				}
-				return markdownHover(lines);
-			}
-			return undefined;
+			return this.entityHoverFor(onRootName.schemaName);
 		}
 
 		const colCtx = getCsharpEsqColumnContext(text, offset);
@@ -129,19 +118,49 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 		if (!decl) {
 			return undefined;
 		}
+
+		const relOffset = offset - esqLiteralContentRange(text, colCtx).start;
+		const target = this.index.resolveEsqTargetAtOffset(
+			[decl.schemaName],
+			colCtx.path,
+			relOffset
+		);
+		if (target?.kind === "schema") {
+			const hover = this.entityHoverFor(target.schemaName);
+			if (hover) {
+				return hover;
+			}
+		} else if (target?.kind === "column") {
+			return columnHover(target.member.name, target.schemaName, target.member);
+		}
+
+		// Fell on path punctuation, or the granular walk couldn't resolve a
+		// hop - fall back to the whole path's own final column.
 		const resolved = this.index.resolveEsqColumnFull([decl.schemaName], colCtx.path);
 		if (!resolved) {
 			return undefined;
 		}
-		const lines = [
-			`**${colCtx.path}** *(entity column, ${decl.schemaName})*`,
-			...(resolved.member.detail ? [resolved.member.detail] : []),
-			...(resolved.member.documentation ? ["", resolved.member.documentation] : [])
-		];
+		const extra: string[] = [];
 		if (resolved.hops.length) {
-			lines.push(`join: ${resolved.hops.map((h) => `${h.joinType} → ${h.schemaName}`).join(", ")}`);
+			extra.push(`join: ${resolved.hops.map((h) => `${h.joinType} → ${h.schemaName}`).join(", ")}`);
 		}
-		return markdownHover(lines);
+		return columnHover(colCtx.path, decl.schemaName, resolved.member, extra);
+	}
+
+	/** Entity/schema hover shared by the root-name and mid-path (bracket
+	 * `[Schema:...]`) cases - `undefined` when nothing is actually known
+	 * about `schemaName`. */
+	private entityHoverFor(schemaName: string): vscode.Hover | undefined {
+		const def = this.index.findEntityDefinition(schemaName);
+		const cols = this.index.resolveEntityColumns(schemaName);
+		if (!def && !cols.length) {
+			return undefined;
+		}
+		return entityHover(schemaName, {
+			filePath: def?.filePath,
+			caption: this.index.resolveEntityCaption(schemaName),
+			columnCount: cols.length
+		});
 	}
 
 	private resolveEntityColumnHover(text: string, offset: number): vscode.Hover | undefined {
@@ -168,11 +187,7 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 		if (!member) {
 			return undefined;
 		}
-		return markdownHover([
-			`**${colCtx.columnName}** *(entity column, ${schemaName})*`,
-			...(member.detail ? [member.detail] : []),
-			...(member.documentation ? ["", member.documentation] : [])
-		]);
+		return columnHover(colCtx.columnName, schemaName, member);
 	}
 
 	private resolveDbQueryHover(text: string, offset: number): vscode.Hover | undefined {
@@ -187,19 +202,7 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 				offset <= c.schemaNameEnd
 		);
 		if (onSchemaName) {
-			const def = this.index.findEntityDefinition(onSchemaName.schemaName!);
-			const cols = this.index.resolveEntityColumns(onSchemaName.schemaName!);
-			if (def || cols.length) {
-				const lines = [`**${onSchemaName.schemaName}** *(entity)*`];
-				if (def) {
-					lines.push(`\`${def.filePath}\``);
-				}
-				if (cols.length) {
-					lines.push(`${cols.length} column(s)`);
-				}
-				return markdownHover(lines);
-			}
-			return undefined;
+			return this.entityHoverFor(onSchemaName.schemaName!);
 		}
 
 		const colCtx = getDbQueryColumnContext(text, offset, chains);
@@ -212,10 +215,6 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 		if (!member) {
 			return undefined;
 		}
-		return markdownHover([
-			`**${colCtx.columnName}** *(entity column, ${colCtx.schemaName})*`,
-			...(member.detail ? [member.detail] : []),
-			...(member.documentation ? ["", member.documentation] : [])
-		]);
+		return columnHover(colCtx.columnName, colCtx.schemaName, member);
 	}
 }
