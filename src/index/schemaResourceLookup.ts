@@ -69,6 +69,27 @@ export function findSchemaDir(filePath: string): { schemaDir: string; schemaName
 	return { schemaDir: match[1].replace(/\//g, path.sep), schemaName: match[2] };
 }
 
+/** `findSchemaDir`, extended to also resolve a `Resources/{SchemaName}.
+ * {Suffix}/resource.{culture}.xml` file back to its owning schema (via
+ * `findOwningSchemaDescriptor`) — the localization wizards' own entry
+ * points (editor title-bar button, editor context menu, hover links) need
+ * to work from a resource XML file open in the editor just as well as from
+ * the schema's own `.js`/`.cs`, and `findSchemaDir` alone only covers the
+ * `Schemas/{Name}/` half of that (a resource file physically lives in a
+ * sibling `Resources/` folder, not under `Schemas/` at all). */
+export function findSchemaDirForAnyPath(filePath: string): { schemaDir: string; schemaName: string } | undefined {
+	const direct = findSchemaDir(filePath);
+	if (direct) {
+		return direct;
+	}
+	const descriptorPath = findOwningSchemaDescriptor(filePath);
+	if (!descriptorPath) {
+		return undefined;
+	}
+	const schemaDir = path.dirname(descriptorPath);
+	return { schemaDir, schemaName: path.basename(schemaDir) };
+}
+
 export interface PackageItemRef {
 	packageName: string;
 	itemType: "Schemas" | "SqlScripts" | "Data" | "Resources";

@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { csharpStringLiteralAt } from "../parse/csharpStyleAnalyzer";
 import { findSchemaDir } from "../index/schemaResourceLookup";
 import { resolveLocalizedString } from "../index/localizationLookup";
-import { columnHover, entityHover, markdownHover } from "./platformLookup";
+import { columnHover, editLocalizedStringLink, entityHover, markdownHover } from "./platformLookup";
 import { SymbolIndex } from "../index/SymbolIndex";
 import {
 	collectCsharpEsqDeclarations,
@@ -92,10 +92,15 @@ export class CsharpHoverProvider implements vscode.HoverProvider {
 		if (!localized) {
 			return undefined;
 		}
-		return markdownHover([
-			`**${key}** *(Resources.Strings, ${schema.schemaName})*`,
-			...localized.values.map((v) => `**${v.culture}:** ${v.value}`)
-		]);
+		return markdownHover(
+			[
+				`**${key}** *(Resources.Strings, ${schema.schemaName})*`,
+				...localized.values.map((v) => `**${v.culture}:** ${v.value}`),
+				editLocalizedStringLink(schema.schemaDir, schema.schemaName, key)
+			],
+			false,
+			true
+		);
 	}
 
 	private resolveEsqHover(text: string, offset: number): vscode.Hover | undefined {

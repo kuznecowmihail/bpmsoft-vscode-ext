@@ -1,13 +1,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import { findResourceDirs } from "./schemaResourceLookup";
-import { stripBom } from "../textUtils";
+import { stripBom, parseJsonNoBom } from "../textUtils";
 import { isBoxedPackage } from "./packageOwnershipCheck";
 
 /** RU/EN shown first regardless of file order — the team's own language
  * plus the platform default; any other culture found still shows, just
  * after these two. */
-const PREFERRED_CULTURE_ORDER = ["ru-RU", "en-US"];
+export const PREFERRED_CULTURE_ORDER = ["ru-RU", "en-US"];
 
 export interface LocalizedCultureValue {
 	culture: string;
@@ -25,7 +25,7 @@ export interface LocalizedImage {
 	base64: string;
 }
 
-interface ResourceItem {
+export interface ResourceItem {
 	value: string;
 	type?: string;
 	contentType?: string;
@@ -44,7 +44,7 @@ const fileCache = new Map<string, ResourceFileCache>();
  * a real limit seen in practice (every real icon sampled was a few KB). */
 const MAX_IMAGE_BASE64_LENGTH = 500_000;
 
-const MIME_BY_EXTENSION: Record<string, string> = {
+export const MIME_BY_EXTENSION: Record<string, string> = {
 	".svg": "image/svg+xml",
 	".png": "image/png",
 	".jpg": "image/jpeg",
@@ -72,12 +72,24 @@ function unescapeXmlAttr(value: string): string {
 		.replace(/&amp;/g, "&");
 }
 
+/** Inverse of `unescapeXmlAttr` — `&` first, same as every real XML
+ * serializer, so a value that already contains `&amp;` doesn't get
+ * double-escaped into `&amp;amp;`. Exported for `localizationEditor.ts`,
+ * which writes `<Item .../>` attribute values back into these same files. */
+export function escapeXmlAttr(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/"/g, "&quot;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
 /** BPMSoft's own resource XML is flat enough (`<Item Name="..." Value="..." />`,
  * optionally with `Type`/`ContentType`/`FileExtension` on an image item) that
  * a real XML parser is unnecessary — a per-tag attribute scan, same
  * lightweight-parsing spirit as this codebase's other analyzers. Attribute
  * order isn't assumed. */
-function parseResourceItems(xml: string): Map<string, ResourceItem> {
+export function parseResourceItems(xml: string): Map<string, ResourceItem> {
 	const items = new Map<string, ResourceItem>();
 	const itemRe = /<Item\b([^>]*)\/?>/g;
 	let m: RegExpExecArray | null;
@@ -123,6 +135,38 @@ function readResourceItemsCached(filePath: string): Map<string, ResourceItem> {
 	const items = parseResourceItems(text);
 	fileCache.set(filePath, { mtimeMs, items });
 	return items;
+}
+
+export interface ResourceCultureFile {
+	culture: string;
+	filePath: string;
+}
+
+/** Every `resource.{culture}.xml` file directly under one of `schemaName`'s
+ * own resource dirs — just the culture/path pairs, no parsing. Exported for
+ * `localizationEditor.ts`, which needs a real file path to write into (unlike
+ * `eachCultureFile` below, built for read-only lookups that only ever need
+ * the already-parsed items). Only the *first* matching resource dir is used
+ * when `findResourceDirs` returns more than one (a real schema has exactly
+ * one in practice) — picking one consistently matters for writes, unlike
+ * reads, which can safely merge across all of them. */
+export function listSchemaCultures(schemaDir: string, schemaName: string): ResourceCultureFile[] {
+	const dirs = findResourceDirs(schemaDir, schemaName);
+	const dir = dirs[0];
+	if (!dir) {
+		return [];
+	}
+	const out: ResourceCultureFile[] = [];
+	for (const entry of readDirSafe(dir)) {
+		if (!entry.isFile()) {
+			continue;
+		}
+		const m = /^resource\.([a-zA-Z]+(?:-[a-zA-Z]+)?)\.xml$/i.exec(entry.name);
+		if (m) {
+			out.push({ culture: m[1], filePath: path.join(dir, entry.name) });
+		}
+	}
+	return out;
 }
 
 /** Every `resource.{culture}.xml` file directly under one of `schemaName`'s
@@ -180,32 +224,100 @@ export function resolveLocalizedString(
 	return { key, values };
 }
 
-/** Finds `key` as an `A2` field inside one of the schema's own
- * `metadata.json` `MetaData.Schema.HD8 { "UId": ..., "A2": <name>, ... }`
- * entries (a diff-insert block, real JSON once isolated) and returns that
- * entry's own `UId` — the real image GUID. This is the Designer's actual
- * name→image registration record (confirmed directly against a real
- * example: BasePageV2's own HD8 entry for "AnRefreshDataButtonIcon" carries
- * `UId: "d320e098-..."`, the exact same GUID its `Images.<guid>.Image` item
- * uses) — a more reliable source than the resource XML's own optional
- * `Images.<guid>.Caption` (plenty of real images have no Caption at all,
- * `metadata.json`'s HD8 still names them). `metadata.json` also carries
- * unrelated `~ MetaData.Schema.HD8 [...]` array entries (bookkeeping, not
- * name records) — skipped by requiring an actual `{` object, not `[`,
- * right after the marker. */
-function findImageGuidInMetadata(schemaDir: string, key: string): string | undefined {
+export interface MetadataNameRegistration {
+	uid: string;
+	name: string;
+}
+
+/** Balanced-brace slice starting at `source[braceStart]` (which must be
+ * `{`), string/escape-aware so a `}` inside a quoted value (or an escaped
+ * quote) doesn't end the match early. Same approach as `entityMetadata.ts`'s
+ * own private `sliceJsonObject` (not exported there, so this is a from-first-
+ * principles rewrite rather than a cross-file reach for a ~15-line helper).
+ * `undefined` if the braces never balance before the string ends. */
+function sliceBalancedBraces(source: string, braceStart: number): string | undefined {
+	let depth = 0;
+	let inString = false;
+	let escape = false;
+	for (let i = braceStart; i < source.length; i++) {
+		const ch = source[i];
+		if (inString) {
+			if (escape) {
+				escape = false;
+			} else if (ch === "\\") {
+				escape = true;
+			} else if (ch === '"') {
+				inString = false;
+			}
+			continue;
+		}
+		if (ch === '"') {
+			inString = true;
+		} else if (ch === "{") {
+			depth++;
+		} else if (ch === "}") {
+			depth--;
+			if (depth === 0) {
+				return source.slice(braceStart, i + 1);
+			}
+		}
+	}
+	return undefined;
+}
+
+/** Every `{UId, A2, ...}` record under `MetaData.Schema.{recordKey}` in a
+ * schema's own `metadata.json` — the shared shape behind both the string
+ * name→key registry (`recordKey: "B2"`) and the image name→key registry
+ * (`recordKey: "HD8"`), across *both* real on-disk formats:
+ *
+ * - Full JSON (a root schema with no parent — confirmed real, e.g.
+ *   `GoTicketRowItem`'s own `metadata.json`): `MetaData.Schema.{recordKey}`
+ *   is a plain JSON array, so a straight `JSON.parse` + array walk suffices
+ *   (same shape `processElementsMetadata.ts` already walks for a Process
+ *   schema's own array-valued `MetaData.Schema` keys).
+ * - Diff-DSL (a schema with a parent — confirmed real, e.g. `AccountPageV2`):
+ *   each record is its own `+ MetaData.Schema.{recordKey} { ... }` line
+ *   block; a `~ MetaData.Schema.{recordKey} [...]` aggregate-tracking line
+ *   (a plain array of UIds, not object records) also exists but is skipped
+ *   automatically here by requiring an actual `{` right after the marker,
+ *   not `[`.
+ *
+ * Read-only by design — see `localizationEditor.ts`'s module doc for why
+ * this feature deliberately never *writes* to either metadata.json shape. */
+export function parseMetadataNameRegistrations(
+	schemaDir: string,
+	recordKey: "B2" | "HD8"
+): MetadataNameRegistration[] {
 	let text: string;
 	try {
 		text = stripBom(fs.readFileSync(path.join(schemaDir, "metadata.json"), "utf8"));
 	} catch {
-		return undefined;
+		return [];
 	}
-	const marker = "MetaData.Schema.HD8";
+
+	const asJson = parseJsonNoBom<{ MetaData?: { Schema?: Record<string, unknown> } }>(text);
+	if (asJson) {
+		const arr = asJson.MetaData?.Schema?.[recordKey];
+		if (!Array.isArray(arr)) {
+			return [];
+		}
+		const out: MetadataNameRegistration[] = [];
+		for (const item of arr) {
+			if (item && typeof item === "object" && typeof item.UId === "string" && typeof item.A2 === "string") {
+				out.push({ uid: item.UId, name: item.A2 });
+			}
+		}
+		return out;
+	}
+
+	// Diff-DSL fallback.
+	const out: MetadataNameRegistration[] = [];
+	const marker = `MetaData.Schema.${recordKey}`;
 	let searchFrom = 0;
 	while (true) {
 		const markerIdx = text.indexOf(marker, searchFrom);
 		if (markerIdx < 0) {
-			return undefined;
+			break;
 		}
 		let i = markerIdx + marker.length;
 		while (text[i] === " " || text[i] === "\t") {
@@ -215,29 +327,34 @@ function findImageGuidInMetadata(schemaDir: string, key: string): string | undef
 			searchFrom = markerIdx + marker.length;
 			continue;
 		}
-		const braceStart = i;
-		let depth = 0;
-		for (; i < text.length; i++) {
-			if (text[i] === "{") {
-				depth++;
-			} else if (text[i] === "}") {
-				depth--;
-				if (depth === 0) {
-					i++;
-					break;
-				}
-			}
+		const block = sliceBalancedBraces(text, i);
+		searchFrom = block ? i + block.length : markerIdx + marker.length;
+		if (!block) {
+			continue;
 		}
-		searchFrom = i;
 		try {
-			const obj = JSON.parse(text.slice(braceStart, i));
-			if (obj && obj.A2 === key && typeof obj.UId === "string") {
-				return obj.UId;
+			const obj = JSON.parse(block);
+			if (obj && typeof obj.UId === "string" && typeof obj.A2 === "string") {
+				out.push({ uid: obj.UId, name: obj.A2 });
 			}
 		} catch {
 			// Malformed/unexpected block shape - skip, keep scanning.
 		}
 	}
+	return out;
+}
+
+/** Finds `key` as an `A2` field among the schema's own `HD8` registrations
+ * (see `parseMetadataNameRegistrations`) and returns that entry's own `UId`
+ * — the real image GUID. This is the Designer's actual name→image
+ * registration record (confirmed directly against a real example: BasePageV2's
+ * own HD8 entry for "AnRefreshDataButtonIcon" carries `UId: "d320e098-..."`,
+ * the exact same GUID its `Images.<guid>.Image` item uses) — a more reliable
+ * source than the resource XML's own optional `Images.<guid>.Caption` (plenty
+ * of real images have no Caption at all, `metadata.json`'s HD8 still names
+ * them). */
+function findImageGuidInMetadata(schemaDir: string, key: string): string | undefined {
+	return parseMetadataNameRegistrations(schemaDir, "HD8").find((r) => r.name === key)?.uid;
 }
 
 /** Fallback for when `metadata.json` has no HD8 record for `key` (real

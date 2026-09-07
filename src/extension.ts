@@ -25,7 +25,8 @@ import { NamingCodeActionProvider } from "./providers/NamingCodeActionProvider";
 import { NamingIssuesTreeProvider } from "./providers/NamingIssuesTreeProvider";
 import { NamingFinding, NamingIssuesIndex } from "./index/NamingIssuesIndex";
 import { extractNamingSubject } from "./parse/namingCommon";
-import { findOwningSchemaDescriptor } from "./index/schemaResourceLookup";
+import { findOwningSchemaDescriptor, findSchemaDirForAnyPath } from "./index/schemaResourceLookup";
+import { LocalizationWizardPanel } from "./providers/LocalizationWizardPanel";
 import { PackagesTreeProvider } from "./providers/PackagesTreeProvider";
 import { NamingDecorationProvider } from "./providers/NamingDecorationProvider";
 import { ViewModelOutlineProvider } from "./providers/ViewModelOutlineProvider";
@@ -159,6 +160,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		// Mirrors PlainOutlineProvider's own default sort mode ("position")
 		// onto the Sort By submenu's checkmarks, same reasoning as above.
 		void vscode.commands.executeCommand("setContext", "bpmsoftPlainOutlineSortPosition", true);
+		updateActiveSchemaContext(vscode.window.activeTextEditor);
 		const openSchemasTree = new OpenSchemasTreeProvider();
 		const formatterTree = new FormatterSettingsTreeProvider(context.extension.id);
 
@@ -483,6 +485,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					packageOwnershipStatusBar.refresh();
 				}
 			}),
+			vscode.commands.registerCommand(
+				"bpmsoft.editLocalizedStrings",
+				(node?: { name?: string; path?: string; key?: string }) => {
+					const schema = resolveWizardSchema(node);
+					if (!schema) {
+						void vscode.window.showWarningMessage(
+							"Откройте файл схемы (.cs/.js) или выберите схему в дереве пакетов"
+						);
+						return;
+					}
+					LocalizationWizardPanel.show("strings", schema.schemaDir, schema.schemaName, node?.key);
+				}
+			),
+			vscode.commands.registerCommand(
+				"bpmsoft.editLocalizedImages",
+				(node?: { name?: string; path?: string; key?: string }) => {
+					const schema = resolveWizardSchema(node);
+					if (!schema) {
+						void vscode.window.showWarningMessage(
+							"Откройте файл схемы (.cs/.js) или выберите схему в дереве пакетов"
+						);
+						return;
+					}
+					if (!fs.existsSync(path.join(schema.schemaDir, `${schema.schemaName}.js`))) {
+						void vscode.window.showWarningMessage("Локализуемые изображения доступны только для JS-схем");
+						return;
+					}
+					LocalizationWizardPanel.show("images", schema.schemaDir, schema.schemaName, node?.key);
+				}
+			),
+			vscode.window.onDidChangeActiveTextEditor(updateActiveSchemaContext),
 			vscode.workspace.onDidCloseTextDocument((document) => {
 				diagnostics.clear(document.uri);
 				styleDiagnostics.clear(document.uri);
@@ -640,6 +673,50 @@ function onWatchedFile(uri: vscode.Uri, deleted: boolean): void {
 		return;
 	}
 	void indexer.indexFile(uri.fsPath);
+}
+
+/** Resolves the schema a localization-wizard command should act on: the
+ * `PackagesTreeProvider` schema node it was invoked from (`view/item/context`
+ * — carries `name`/`path` directly, no filesystem lookup needed), a hover's
+ * own command link (carries `name`/`path`/`key` — see `platformLookup.ts`'s
+ * `editLocalizedStringLink`/`editLocalizedImageLink`), or, when invoked with
+ * no argument (command palette / editor toolbar / editor context menu), the
+ * active editor's own file via `findSchemaDirForAnyPath` — covers both a
+ * schema's own `.js`/`.cs`/`metadata.json`/`descriptor.json` *and* one of its
+ * `Resources/{Name}.{Suffix}/resource.{culture}.xml` files opened directly
+ * (real complaint: those live under a sibling `Resources/` folder, not
+ * `Schemas/`, so the plain `findSchemaDir` this used originally left the
+ * toolbar button/context-menu entry missing for exactly the files a dev
+ * would most expect them on while translating). `undefined` when neither is
+ * available. */
+function resolveWizardSchema(
+	node?: { name?: string; path?: string }
+): { schemaDir: string; schemaName: string } | undefined {
+	if (node?.name && node?.path) {
+		return { schemaDir: node.path, schemaName: node.name };
+	}
+	const activePath = vscode.window.activeTextEditor?.document.uri.fsPath;
+	return activePath ? findSchemaDirForAnyPath(activePath) : undefined;
+}
+
+/** Drives the `bpmsoftActiveSchema`/`bpmsoftActiveSchemaIsJs` `when`-clause
+ * context keys the editor toolbar/context-menu buttons for the localization
+ * wizards are gated on (`package.json`'s `editor/title`/`editor/context`) —
+ * plain `resourceLangId == javascript` would light the button up for *any*
+ * JS file in the workspace, not just a real package schema, which is
+ * exactly the "unintuitive to find" complaint these buttons exist to fix in
+ * the first place; scoping to a real schema (via `findSchemaDirForAnyPath`,
+ * see `resolveWizardSchema`'s own doc for why that also covers resource XML
+ * files) keeps them from becoming just as easy to miss amid irrelevant
+ * noise. */
+function updateActiveSchemaContext(editor: vscode.TextEditor | undefined): void {
+	const schema = editor ? findSchemaDirForAnyPath(editor.document.uri.fsPath) : undefined;
+	void vscode.commands.executeCommand("setContext", "bpmsoftActiveSchema", !!schema);
+	void vscode.commands.executeCommand(
+		"setContext",
+		"bpmsoftActiveSchemaIsJs",
+		!!schema && fs.existsSync(path.join(schema.schemaDir, `${schema.schemaName}.js`))
+	);
 }
 
 /** Rewrites just the `ModifiedOnUtc` value in a schema's own descriptor.json

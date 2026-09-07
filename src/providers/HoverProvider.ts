@@ -4,7 +4,15 @@ import { IndexedMember, schemaMessageDirectionLabel } from "../parse/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 import { getQueryColumnContext, getRootSchemaNameContext, resolveQueryClassNames, resolveQueryEntities } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
-import { columnHover, entityHover, isPlatformPrefix, markdownHover, modulesFromExpr } from "./platformLookup";
+import {
+	columnHover,
+	editLocalizedImageLink,
+	editLocalizedStringLink,
+	entityHover,
+	isPlatformPrefix,
+	markdownHover,
+	modulesFromExpr
+} from "./platformLookup";
 import { findSchemaDir } from "../index/schemaResourceLookup";
 import { resolveLocalizedString, resolveLocalizedImage } from "../index/localizationLookup";
 
@@ -308,10 +316,15 @@ export class HoverProvider implements vscode.HoverProvider {
 		if (!localized) {
 			return undefined;
 		}
-		return markdownHover([
-			`**${key}** *(Resources.Strings, ${schemaName})*`,
-			...localized.values.map((v) => `**${v.culture}:** ${v.value}`)
-		]);
+		return markdownHover(
+			[
+				`**${key}** *(Resources.Strings, ${schemaName})*`,
+				...localized.values.map((v) => `**${v.culture}:** ${v.value}`),
+				editLocalizedStringLink(schemaDir, schemaName, key)
+			],
+			false,
+			true
+		);
 	}
 
 	private imageHover(schemaDir: string, schemaName: string, key: string): vscode.Hover | undefined {
@@ -340,7 +353,8 @@ export class HoverProvider implements vscode.HoverProvider {
 			// supportHtml on the MarkdownString.
 			lines.push(`<img src="data:${mimeType};base64,${base64}" width="32" />`);
 		}
-		return markdownHover(lines, true);
+		lines.push(editLocalizedImageLink(schemaDir, schemaName, key));
+		return markdownHover(lines, true, true);
 	}
 
 	private findSchemaDirByName(schemaName: string): string | undefined {

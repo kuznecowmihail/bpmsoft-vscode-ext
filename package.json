@@ -66,6 +66,18 @@
         "category": "BPMSoft"
       },
       {
+        "command": "bpmsoft.editLocalizedStrings",
+        "title": "Редактировать локализуемые строки…",
+        "category": "BPMSoft",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "bpmsoft.editLocalizedImages",
+        "title": "Редактировать локализуемые изображения…",
+        "category": "BPMSoft",
+        "icon": "$(file-media)"
+      },
+      {
         "command": "bpmsoft.schemaHistory.openDiff",
         "title": "Показать изменения коммита",
         "category": "BPMSoft"
@@ -278,6 +290,40 @@
           "command": "bpmsoft.naming.markFalsePositive",
           "when": "view == bpmsoftNamingIssues && viewItem == bpmsoftNamingFinding",
           "group": "inline"
+        },
+        {
+          "command": "bpmsoft.editLocalizedStrings",
+          "when": "view == bpmsoftPackages && viewItem == bpmsoftSchema",
+          "group": "1_localization@1"
+        },
+        {
+          "command": "bpmsoft.editLocalizedImages",
+          "when": "view == bpmsoftPackages && viewItem == bpmsoftSchema",
+          "group": "1_localization@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "bpmsoft.editLocalizedStrings",
+          "when": "bpmsoftActiveSchema",
+          "group": "1_bpmsoft@1"
+        },
+        {
+          "command": "bpmsoft.editLocalizedImages",
+          "when": "bpmsoftActiveSchemaIsJs",
+          "group": "1_bpmsoft@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "bpmsoft.editLocalizedStrings",
+          "when": "bpmsoftActiveSchema",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.editLocalizedImages",
+          "when": "bpmsoftActiveSchemaIsJs",
+          "group": "navigation@2"
         }
       ]
     },
@@ -526,7 +572,8 @@
     "watch": "tsc -watch -p ./",
     "package": "vsce package --allow-missing-repository --skip-license",
     "smoke": "npm run compile && node scripts/run-smoke.js",
-    "test:style": "tsc -p . && node scripts/test-style.js"
+    "test:style": "tsc -p . && node scripts/test-style.js",
+    "test:localization": "tsc -p . && node scripts/test-localization.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
