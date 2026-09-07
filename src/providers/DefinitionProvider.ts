@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember } from "../index/types";
+import { IndexedMember } from "../parse/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
@@ -61,7 +61,7 @@ function skipLocalMethod(
 	);
 }
 
-export class BpmsoftDefinitionProvider implements vscode.DefinitionProvider {
+export class DefinitionProvider implements vscode.DefinitionProvider {
 	constructor(private readonly index: SymbolIndex) {}
 
 	provideDefinition(

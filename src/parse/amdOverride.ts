@@ -40,7 +40,7 @@ export function formatOverrideSnippet(
 	return [
 		"/**",
 		` * @inheritdoc ${owner}#${name}`,
-		" * @overriden",
+		" * @override",
 		" */",
 		`${name}: function (${args}) {`,
 		"\t$0",

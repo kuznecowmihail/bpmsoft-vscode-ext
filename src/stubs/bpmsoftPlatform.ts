@@ -1,4 +1,4 @@
-import { PlatformStubMember } from "../index/types";
+import { PlatformStubMember } from "../parse/types";
 
 /**
  * Hand-written stubs for frequently used BPMSoft.* APIs

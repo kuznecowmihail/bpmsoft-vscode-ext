@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember, isPrivateMemberFromOtherFile, IndexedSchemaMessage, sandboxMessageIssue, schemaMessageDirectionLabel } from "../index/types";
+import { IndexedMember, isPrivateMemberFromOtherFile, IndexedSchemaMessage, sandboxMessageIssue, schemaMessageDirectionLabel } from "../parse/types";
 import { collectThisMemberAccesses, parseAmdAst, ThisMemberAccess } from "../parse/amdParser";
 import { collectEsqColumnAccesses } from "../parse/esqQuery";
 import { clearDebounceTimers, debounceDocument, isJsFile } from "./jsDocuments";

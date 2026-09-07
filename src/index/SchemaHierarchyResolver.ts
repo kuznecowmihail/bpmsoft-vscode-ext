@@ -11,6 +11,8 @@ import {
 	type SchemaStructure,
 } from "./schemaStructureParse";
 import { resolveAppLayouts } from "./workspaceLayout";
+import { parsePkgPath } from "./pkgPath";
+import { localeRank } from "../parse/entityMetadata";
 
 export {
 	packageFromStackEntry,
@@ -72,6 +74,11 @@ export class SchemaHierarchyResolver {
 	private platformExtendCache = new Map<string, string | null>();
 	private descriptorParentCache = new Map<string, string | null>();
 	private entityNames: string[] = [];
+	/** `Pkg/*` package dir listing — static per workspace, but was being
+	 * re-`readdirSync`'d from scratch on every call from several methods
+	 * (readPkgSchemaType, resolveEntityPkgResourceDirs, collectEntityNames),
+	 * which adds up fast across thousands of schemas. */
+	private pkgDirsCache: string[] | undefined;
 
 	setWorkspaceRoots(roots: string[]): void {
 		this.clear();
@@ -112,6 +119,7 @@ export class SchemaHierarchyResolver {
 	clear(): void {
 		this.confContentDirs = [];
 		this.configurationRoots = [];
+		this.pkgDirsCache = undefined;
 		this.structureCache.clear();
 		this.schemaTypeCache.clear();
 		this.platformExtendCache.clear();
@@ -146,6 +154,36 @@ export class SchemaHierarchyResolver {
 		return undefined;
 	}
 
+	/** `conf/content/resources/{culture}/{Entity}Resources.js` — a stock
+	 * entity's own compiled caption bundle (see `stockEntityResources.ts`
+	 * for why this is a different shape than a Pkg entity's XML resources).
+	 * Existing candidates only, best locale first. */
+	resolveEntityConfResourcePaths(entityName: string): string[] {
+		if (!isEntityName(entityName)) {
+			return [];
+		}
+		const ranked: Array<{ rank: number; file: string }> = [];
+		for (const dir of this.confContentDirs) {
+			const resourcesRoot = path.join(dir, "resources");
+			let cultures: string[];
+			try {
+				cultures = fs.readdirSync(resourcesRoot, { withFileTypes: true })
+					.filter((e) => e.isDirectory())
+					.map((e) => e.name);
+			} catch {
+				continue;
+			}
+			for (const culture of cultures) {
+				const file = path.join(resourcesRoot, culture, `${entityName}Resources.js`);
+				if (fs.existsSync(file)) {
+					ranked.push({ rank: localeRank(culture), file });
+				}
+			}
+		}
+		ranked.sort((a, b) => a.rank - b.rank);
+		return ranked.map((item) => item.file);
+	}
+
 	/** Pkg/{Package}/Schemas/{Entity}/metadata.json — custom entity columns. */
 	resolveEntityPkgMetadataPaths(entityName: string): string[] {
 		return this.collectPkgEntityFiles(entityName, (pkg, name) =>
@@ -178,6 +216,9 @@ export class SchemaHierarchyResolver {
 	}
 
 	private pkgPackageDirs(): string[] {
+		if (this.pkgDirsCache) {
+			return this.pkgDirsCache;
+		}
 		const out: string[] = [];
 		for (const root of this.configurationRoots) {
 			const pkgRoot = path.join(root, "Pkg");
@@ -194,6 +235,7 @@ export class SchemaHierarchyResolver {
 				out.push(path.join(pkgRoot, pkg));
 			}
 		}
+		this.pkgDirsCache = out;
 		return out;
 	}
 
@@ -717,9 +759,8 @@ function descriptorPathForSchemaFile(filePath: string): string {
 }
 
 function packageFromPkgPath(filePath: string): string | undefined {
-	const norm = normalizePath(filePath);
-	const m = norm.match(/\/Pkg\/([^/]+)\/Schemas\//);
-	return m?.[1];
+	const info = parsePkgPath(filePath);
+	return info?.category === "Schemas" ? info.packageName : undefined;
 }
 
 function packageFromAutogenPath(

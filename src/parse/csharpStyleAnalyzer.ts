@@ -1,10 +1,17 @@
-import { StyleFix, StyleIssue } from "./styleAnalyzer";
+import { StyleFix, StyleIssue, isSuppressedAbove } from "./styleAnalyzer";
+import { KNOWN_XMLDOC_TAGS, nearestKnownTag } from "./docTagCheck";
 
-interface Token {
+export interface Token {
 	kind: "ident" | "kw" | "punct" | "num" | "str";
 	value: string;
 	start: number;
 	end: number;
+}
+
+interface CommentRange {
+	start: number;
+	end: number;
+	text: string;
 }
 
 type FrameKind =
@@ -77,11 +84,11 @@ const PUNCT_MULTI = [
 ];
 
 export function collectCsharpStyleIssues(source: string): StyleIssue[] {
-	const tokens = tokenize(source);
+	const { tokens, comments } = tokenize(source);
 	if (!tokens.length) {
 		return [];
 	}
-	return new Analyzer(source, tokens).run();
+	return new Analyzer(source, tokens, comments).run();
 }
 
 class Analyzer {
@@ -90,7 +97,8 @@ class Analyzer {
 
 	constructor(
 		private readonly source: string,
-		private readonly tokens: Token[]
+		private readonly tokens: Token[],
+		private readonly comments: CommentRange[]
 	) {
 		this.n = tokens.length;
 	}
@@ -102,7 +110,11 @@ class Analyzer {
 			const tok = this.tokens[i];
 			if (tok.value === "{") {
 				this.checkAllman(i);
-				stack.push(this.inferFrame(i, stack[stack.length - 1]));
+				const frame = this.inferFrame(i, stack[stack.length - 1]);
+				if (frame === "enum") {
+					this.checkFlagsEnum(i);
+				}
+				stack.push(frame);
 				i++;
 				continue;
 			}
@@ -130,6 +142,13 @@ class Analyzer {
 			if (tok.value === "==" || tok.value === "!=") {
 				this.checkNullPattern(i);
 			}
+			if (
+				tok.kind === "ident" &&
+				(tok.value === "AddAllSchemaColumns" || tok.value === "FetchFromDB") &&
+				this.tokens[i + 1]?.value === "("
+			) {
+				this.checkSelectAllColumnsHint(i);
+			}
 			if (frame === "file" || frame === "ns" || frame === "type") {
 				const next = this.tryParseTypeOrMember(i, frame);
 				if (next > i) {
@@ -146,7 +165,174 @@ class Analyzer {
 			}
 			i++;
 		}
+		this.checkComments();
 		return this.issues;
+	}
+
+	private checkSelectAllColumnsHint(nameIdx: number): void {
+		const name = this.tokens[nameIdx];
+		const openIdx = nameIdx + 1;
+		const close = this.matchClose(openIdx);
+		if (close < 0) {
+			return;
+		}
+		if (name.value === "FetchFromDB") {
+			let depth = 0;
+			let hasComma = false;
+			for (let j = openIdx + 1; j < close; j++) {
+				const v = this.tokens[j].value;
+				if (v === "(" || v === "[" || v === "{") {
+					depth++;
+				} else if (v === ")" || v === "]" || v === "}") {
+					depth--;
+				} else if (v === "," && depth === 0) {
+					hasComma = true;
+				}
+			}
+			if (hasComma) {
+				return;
+			}
+		}
+		if (isSuppressedAbove(this.source, name.start, "select-all-columns")) {
+			return;
+		}
+		this.issues.push({
+			kind: "selectAllColumnsHint",
+			start: name.start,
+			end: this.tokens[close].end,
+			message: "Убедитесь, что нужны все колонки — уточните список для эффективности",
+			severity: "info"
+		});
+	}
+
+	private checkComments(): void {
+		for (const comment of this.comments) {
+			this.checkCommentSpacing(comment);
+			this.checkTrailingComment(comment);
+			this.checkXmlDocTagTypo(comment);
+		}
+	}
+
+	/** `<tag>`/`</tag>` in an XML doc comment (`///`) line — checked against
+	 * `KNOWN_XMLDOC_TAGS`, flagged only when unambiguously a typo of a real
+	 * one (see `docTagCheck.ts`). Real generic-type mentions inside prose
+	 * (`List<string>`) aren't at risk of a false match here: the distance
+	 * gate only fires for names *close* to an actual tag, and ordinary type
+	 * names essentially never are. Plain `//`/`/* *​/` comments (not `///`)
+	 * are skipped - they're not doc comments, mentioning `<...>` in one is
+	 * unrelated to this check. */
+	private checkXmlDocTagTypo(comment: CommentRange): void {
+		if (!comment.text.startsWith("///")) {
+			return;
+		}
+		const tagRe = /<\/?([A-Za-z]+)/g;
+		let m: RegExpExecArray | null;
+		while ((m = tagRe.exec(comment.text))) {
+			const tag = m[1];
+			const suggestion = nearestKnownTag(tag, KNOWN_XMLDOC_TAGS);
+			if (!suggestion) {
+				continue;
+			}
+			const tagStart = comment.start + m.index + (m[0].startsWith("</") ? 2 : 1);
+			const tagEnd = tagStart + tag.length;
+			this.issues.push({
+				kind: "xmlDocTagTypo",
+				start: tagStart,
+				end: tagEnd,
+				message: `Неизвестный тег XML-doc «${m[0].startsWith("</") ? "/" : ""}${tag}» — похоже на опечатку, ожидается «${suggestion}»`,
+				severity: "warning",
+				fix: {
+					title: `Заменить на ${suggestion}`,
+					start: tagStart,
+					end: tagEnd,
+					text: suggestion
+				}
+			});
+		}
+	}
+
+	private checkCommentSpacing(comment: CommentRange): void {
+		let slashes = 0;
+		while (comment.text[slashes] === "/") {
+			slashes++;
+		}
+		const rest = comment.text.slice(slashes);
+		if (!rest || rest[0] === " " || rest[0] === "\t") {
+			return;
+		}
+		if (/^(.)\1{2,}$/.test(rest.trimEnd())) {
+			return;
+		}
+		this.issues.push({
+			kind: "commentSpacing",
+			start: comment.start,
+			end: comment.end,
+			message: "Нужен пробел после «//»",
+			severity: "warning",
+			fix: {
+				title: "Добавить пробел",
+				start: comment.start + slashes,
+				end: comment.start + slashes,
+				text: " "
+			}
+		});
+	}
+
+	private checkTrailingComment(comment: CommentRange): void {
+		const lineStart = this.source.lastIndexOf("\n", comment.start - 1) + 1;
+		const before = this.source.slice(lineStart, comment.start);
+		if (!before.trim()) {
+			return;
+		}
+		const indent = lineIndent(this.source, lineStart);
+		const codeOnly = before.replace(/\s+$/, "");
+		const nl = newline(this.source);
+		this.issues.push({
+			kind: "trailingComment",
+			start: comment.start,
+			end: comment.end,
+			message: "Комментарий в конце строки кода: перенесите на отдельную строку",
+			severity: "warning",
+			fix: {
+				title: "Перенести комментарий на отдельную строку выше",
+				start: lineStart,
+				end: comment.end,
+				text: `${indent}${comment.text}${nl}${codeOnly}`
+			}
+		});
+	}
+
+	private checkXmlDoc(name: Token): void {
+		if (this.hasXmlDocBefore(name.start)) {
+			return;
+		}
+		this.issues.push({
+			kind: "xmlDocMissing",
+			start: name.start,
+			end: name.end,
+			message: `«${name.value}»: отсутствует XML-doc комментарий (///) для публичного члена`,
+			severity: "warning"
+		});
+	}
+
+	private hasXmlDocBefore(pos: number): boolean {
+		let lineStart = this.source.lastIndexOf("\n", pos - 1) + 1;
+		while (true) {
+			const prevLineEnd = lineStart - 1;
+			if (prevLineEnd < 0) {
+				return false;
+			}
+			const prevLineStart = this.source.lastIndexOf("\n", prevLineEnd - 1) + 1;
+			const prevLine = this.source.slice(prevLineStart, prevLineEnd).trim();
+			if (prevLine.startsWith("///")) {
+				return true;
+			}
+			if (prevLine.startsWith("[") && prevLine.includes("]")) {
+				lineStart = prevLineStart;
+				continue;
+			}
+			return false;
+		}
 	}
 
 	private inferFrame(braceIdx: number, parent: FrameKind): FrameKind {
@@ -466,7 +652,13 @@ class Analyzer {
 		if (end < 0) {
 			return;
 		}
-		const start = this.tokens[bodyIdx].start;
+		// Starts at the end of the previous token (the condition's closing
+		// `)`, or the bare keyword for else/do/try/finally/catch), not at the
+		// body statement itself — when the body already sits on its own line,
+		// leaving that gap untouched left the original newline+indent behind
+		// as an orphan blank line once the fix's own leading newline was
+		// added on top of it.
+		const start = this.tokens[bodyIdx - 1].end;
 		const stop = this.tokens[end].end;
 		const indent = lineIndent(this.source, tok.start);
 		const nl = newline(this.source);
@@ -1052,6 +1244,9 @@ class Analyzer {
 		if (this.tokens[j].value === "record" && TYPE_DECL.has(this.tokens[j + 1]?.value)) {
 			j++;
 		}
+		if (this.tokens[j].value === "delegate") {
+			return this.parseDelegateDecl(j);
+		}
 		if (TYPE_DECL.has(this.tokens[j].value)) {
 			return this.parseTypeDecl(j);
 		}
@@ -1088,6 +1283,9 @@ class Analyzer {
 		}
 		if (next?.value === "{" || next?.value === "=>") {
 			this.checkName(name, "pascalProperty", "Свойство");
+			if (mods.access === "public") {
+				this.checkXmlDoc(name);
+			}
 			return afterName;
 		}
 		if (next?.value === "=" || next?.value === ";") {
@@ -1134,6 +1332,168 @@ class Analyzer {
 		return this.skipHeaderToBraceOrSemi(j);
 	}
 
+	private parseDelegateDecl(kwIdx: number): number {
+		const afterType = this.skipType(kwIdx + 1);
+		if (afterType > kwIdx + 1) {
+			const name = this.tokens[afterType];
+			if (name?.kind === "ident") {
+				this.checkName(name, "pascalType", "Тип");
+				this.checkDelegateSuffix(name);
+			}
+		}
+		return this.skipHeaderToBraceOrSemi(kwIdx);
+	}
+
+	private checkDelegateSuffix(name: Token): void {
+		const value = stripAt(name.value);
+		if (shouldSkipName(value) || value.endsWith("EventHandler") || value.endsWith("Callback")) {
+			return;
+		}
+		this.issues.push({
+			kind: "delegateSuffix",
+			start: name.start,
+			end: name.end,
+			message: `Делегат «${name.value}»: ожидается суффикс EventHandler или Callback`,
+			severity: "warning"
+		});
+	}
+
+	private checkFlagsEnum(braceIdx: number): void {
+		if (!this.hasFlagsAttribute(braceIdx)) {
+			return;
+		}
+		const close = this.matchClose(braceIdx);
+		if (close < 0) {
+			return;
+		}
+		const members = this.readEnumMembers(braceIdx + 1, close);
+		if (!members.length) {
+			return;
+		}
+		if (!members.some((m) => m.hasValue)) {
+			const first = members[0];
+			this.issues.push({
+				kind: "flagsEnumValue",
+				start: first.nameStart,
+				end: first.nameEnd,
+				message: "[Flags]-enum без явных значений: автонумерация ломает флаги, задайте степени двойки",
+				severity: "warning"
+			});
+			return;
+		}
+		for (const m of members) {
+			if (!m.hasValue || m.numericValue === 0) {
+				continue;
+			}
+			if (m.numericValue === undefined || !isPowerOfTwo(m.numericValue)) {
+				this.issues.push({
+					kind: "flagsEnumValue",
+					start: m.valueStart ?? m.nameStart,
+					end: m.valueEnd ?? m.nameEnd,
+					message: `Значение члена [Flags]-enum «${m.name}» должно быть степенью двойки (или 0)`,
+					severity: "warning"
+				});
+			}
+		}
+	}
+
+	private hasFlagsAttribute(braceIdx: number): boolean {
+		let i = braceIdx - 1;
+		if (this.tokens[i]?.kind === "ident") {
+			i--;
+		}
+		if (this.tokens[i]?.value === "enum") {
+			i--;
+		}
+		while (i >= 0 && MODIFIERS.has(this.tokens[i].value)) {
+			i--;
+		}
+		let found = false;
+		while (i >= 0 && this.tokens[i].value === "]") {
+			const close = i;
+			const open = this.matchOpen(close);
+			if (open < 0) {
+				break;
+			}
+			for (let k = open + 1; k < close; k++) {
+				if (this.tokens[k].value === "Flags" || this.tokens[k].value === "FlagsAttribute") {
+					found = true;
+				}
+			}
+			i = open - 1;
+		}
+		return found;
+	}
+
+	private readEnumMembers(from: number, to: number): EnumMember[] {
+		const members: EnumMember[] = [];
+		let i = from;
+		while (i < to) {
+			while (this.tokens[i]?.value === "[") {
+				const close = this.matchClose(i);
+				i = close < 0 ? i + 1 : close + 1;
+			}
+			if (i >= to) {
+				break;
+			}
+			const nameTok = this.tokens[i];
+			if (nameTok?.kind !== "ident") {
+				i++;
+				continue;
+			}
+			let j = i + 1;
+			let hasValue = false;
+			let numericValue: number | undefined;
+			let valueStart: number | undefined;
+			let valueEnd: number | undefined;
+			if (this.tokens[j]?.value === "=") {
+				hasValue = true;
+				const valStart = j + 1;
+				let k = valStart;
+				let depth = 0;
+				while (k < to) {
+					const v = this.tokens[k].value;
+					if (v === "(") {
+						depth++;
+					} else if (v === ")") {
+						depth--;
+					} else if (v === "," && depth === 0) {
+						break;
+					}
+					k++;
+				}
+				valueStart = this.tokens[valStart]?.start;
+				valueEnd = this.tokens[k - 1]?.end;
+				numericValue = this.evalSimpleIntExpr(valStart, k);
+				j = k;
+			}
+			members.push({
+				name: nameTok.value,
+				nameStart: nameTok.start,
+				nameEnd: nameTok.end,
+				hasValue,
+				numericValue,
+				valueStart,
+				valueEnd
+			});
+			i = this.tokens[j]?.value === "," ? j + 1 : j;
+		}
+		return members;
+	}
+
+	private evalSimpleIntExpr(from: number, to: number): number | undefined {
+		if (to - from !== 1) {
+			return undefined;
+		}
+		const tok = this.tokens[from];
+		if (tok?.kind !== "num") {
+			return undefined;
+		}
+		const raw = tok.value.replace(/_/g, "");
+		const n = raw.toLowerCase().startsWith("0x") ? parseInt(raw, 16) : parseInt(raw, 10);
+		return Number.isFinite(n) ? n : undefined;
+	}
+
 	private parseMethod(
 		nameIdx: number,
 		parenIdx: number,
@@ -1142,6 +1502,9 @@ class Analyzer {
 		const name = this.tokens[nameIdx];
 		if (name.kind === "ident") {
 			this.checkName(name, "pascalMethod", "Метод");
+			if (mods.access === "public") {
+				this.checkXmlDoc(name);
+			}
 			if (mods.async && !name.value.endsWith("Async") && mods.returnLooksLikeTask) {
 				this.issues.push({
 					kind: "asyncSuffix",
@@ -1247,6 +1610,8 @@ class Analyzer {
 							}
 						: undefined
 				});
+			} else {
+				this.checkIdSuffix(name, name.value, "Приватное поле");
 			}
 			return;
 		}
@@ -1343,6 +1708,7 @@ class Analyzer {
 				? isCamelCase(value)
 				: isPascalCase(value);
 		if (ok) {
+			this.checkIdSuffix(name, value, label);
 			return;
 		}
 		const next =
@@ -1365,6 +1731,27 @@ class Analyzer {
 						text: next
 					}
 				: undefined
+		});
+	}
+
+	private checkIdSuffix(name: Token, value: string, label: string): void {
+		const idx = findIdSuffixIndex(value);
+		if (idx < 0) {
+			return;
+		}
+		const next = value.slice(0, idx) + "Id" + value.slice(idx + 2);
+		this.issues.push({
+			kind: "idSuffix",
+			start: name.start,
+			end: name.end,
+			message: `${label} «${name.value}»: используйте суффикс Id, не ID`,
+			severity: "warning",
+			fix: {
+				title: `Переименовать в ${next}`,
+				start: name.start,
+				end: name.end,
+				text: next
+			}
 		});
 	}
 
@@ -1596,6 +1983,20 @@ interface SwitchSection {
 	bodyEnd: number;
 }
 
+interface EnumMember {
+	name: string;
+	nameStart: number;
+	nameEnd: number;
+	hasValue: boolean;
+	numericValue?: number;
+	valueStart?: number;
+	valueEnd?: number;
+}
+
+function isPowerOfTwo(n: number): boolean {
+	return Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0;
+}
+
 interface ModifierSet {
 	next: number;
 	access: "private" | "public" | "none";
@@ -1616,8 +2017,9 @@ function emptyMods(): ModifierSet {
 	};
 }
 
-function tokenize(source: string): Token[] {
+export function tokenize(source: string): { tokens: Token[]; comments: CommentRange[] } {
 	const tokens: Token[] = [];
+	const comments: CommentRange[] = [];
 	const n = source.length;
 	let i = 0;
 	while (i < n) {
@@ -1633,10 +2035,12 @@ function tokenize(source: string): Token[] {
 			continue;
 		}
 		if (ch === "/" && source[i + 1] === "/") {
+			const start = i;
 			i += 2;
 			while (i < n && source[i] !== "\n") {
 				i++;
 			}
+			comments.push({ start, end: i, text: source.slice(start, i) });
 			continue;
 		}
 		if (ch === "/" && source[i + 1] === "*") {
@@ -1720,7 +2124,70 @@ function tokenize(source: string): Token[] {
 		});
 		i += multi.value.length;
 	}
-	return tokens;
+	return { tokens, comments };
+}
+
+export interface CsharpStringLiteralAt {
+	/** Decoded content — quotes/prefix stripped, escapes resolved. */
+	value: string;
+	start: number;
+	end: number;
+}
+
+/** The plain-string-literal content at `offset`, tokenizer-based so verbatim
+ * (`@"..."`) and interpolated (`$"..."`) prefixes and escape sequences are
+ * handled correctly rather than guessed at with a regex. `undefined` for a
+ * char literal (`'x'`), an interpolated string with a real `{expr}` hole (no
+ * static value to report), or when `offset` isn't inside any string literal
+ * at all. Used to resolve a C# localization-key argument like
+ * `GetLocalizableStringValue(userConnection, "SomeKey")` back to its actual
+ * translated text — see `localizationLookup.ts`. */
+export function csharpStringLiteralAt(source: string, offset: number): CsharpStringLiteralAt | undefined {
+	const { tokens } = tokenize(source);
+	for (const tok of tokens) {
+		if (tok.kind !== "str" || offset < tok.start || offset > tok.end) {
+			continue;
+		}
+		if (tok.value.startsWith("'")) {
+			return undefined;
+		}
+		const value = decodeCsharpStringLiteral(tok.value);
+		return value === undefined ? undefined : { value, start: tok.start, end: tok.end };
+	}
+	return undefined;
+}
+
+const ESCAPE_CHARS: Record<string, string> = {
+	n: "\n", r: "\r", t: "\t", "0": "\0", a: "\x07", b: "\b", f: "\f", v: "\v"
+};
+
+export function decodeCsharpStringLiteral(raw: string): string | undefined {
+	let i = 0;
+	let interpolated = false;
+	let verbatim = false;
+	while (raw[i] === "$" || raw[i] === "@") {
+		if (raw[i] === "$") {
+			interpolated = true;
+		} else {
+			verbatim = true;
+		}
+		i++;
+	}
+	if (raw[i] !== '"' || raw.length - i < 2 || !raw.endsWith('"')) {
+		return undefined;
+	}
+	let body = raw.slice(i + 1, -1);
+	if (interpolated) {
+		if (/\{(?!\{)/.test(body) || /(?<!\})\}(?!\})/.test(body)) {
+			// A real interpolation hole - no static value to show.
+			return undefined;
+		}
+		body = body.replace(/\{\{/g, "{").replace(/\}\}/g, "}");
+	}
+	if (verbatim) {
+		return body.replace(/""/g, '"');
+	}
+	return body.replace(/\\([\\"'0abfnrtv])/g, (_, c: string) => ESCAPE_CHARS[c] ?? c);
 }
 
 function matchPunct(source: string, i: number): { value: string } {
@@ -1923,6 +2390,13 @@ function isPascalCase(name: string): boolean {
 
 function isCamelCase(name: string): boolean {
 	return /^[a-z][a-zA-Z0-9]*$/.test(name);
+}
+
+const ID_SUFFIX_RE = /(^|[a-z0-9])ID($|[A-Z])/;
+
+function findIdSuffixIndex(name: string): number {
+	const m = ID_SUFFIX_RE.exec(name);
+	return m ? m.index + m[1].length : -1;
 }
 
 function isPrivateFieldName(name: string): boolean {

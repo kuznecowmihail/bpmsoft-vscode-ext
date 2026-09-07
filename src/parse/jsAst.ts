@@ -1,5 +1,5 @@
 import * as acorn from "acorn";
-import { SourcePosition } from "../index/types";
+import { SourcePosition } from "./types";
 
 export type AnyNode = acorn.Node & Record<string, any>;
 

@@ -1,9 +1,18 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../index/types";
+import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../parse/types";
 import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
-import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, EsqNameSpan } from "../parse/esqQuery";
+import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, getConstructorConfigContext, EsqNameSpan } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
+import {
+	EsqBracketContext,
+	getEsqBracketContext,
+	toEntityNameItems,
+	toEsqBracketItems,
+	toEsqColumnItems,
+	toConstructorConfigItems,
+	TRIGGER_SUGGEST
+} from "./esqCompletion";
 
 const GLOBAL_IDENTIFIERS = [
 	{
@@ -22,11 +31,6 @@ const GLOBAL_IDENTIFIERS = [
 		documentation: "define(\"ModuleName\", deps, factory)"
 	}
 ];
-
-const TRIGGER_SUGGEST: vscode.Command = {
-	title: "Suggest",
-	command: "editor.action.triggerSuggest"
-};
 
 function kindToCompletion(
 	kind: MemberKind
@@ -81,64 +85,6 @@ function toItems(
 		} else if (isAttr) {
 			item.insertText = `$${m.name}`;
 		}
-		return item;
-	});
-}
-
-function toEntityNameItems(
-	names: string[],
-	ctx: EsqNameSpan,
-	document: vscode.TextDocument
-): vscode.CompletionItem[] {
-	const typed = ctx.name.toLowerCase();
-	const range = new vscode.Range(
-		document.positionAt(ctx.nameStart),
-		document.positionAt(ctx.nameEnd)
-	);
-	return names
-		.filter((name) => !typed || name.toLowerCase().startsWith(typed))
-		.map((name, i) => {
-			const item = new vscode.CompletionItem(
-				name,
-				vscode.CompletionItemKind.Class
-			);
-			item.detail = `BPMSoft · entity`;
-			item.sortText = `!${String(i).padStart(5, "0")}_${name}`;
-			item.filterText = name;
-			item.preselect = i === 0;
-			item.insertText = ctx.quote ? name : `"${name}"`;
-			item.range = range;
-			return item;
-		});
-}
-
-function toEsqColumnItems(
-	members: IndexedMember[],
-	ctx: EsqNameSpan,
-	parentPath: string[],
-	document: vscode.TextDocument
-): vscode.CompletionItem[] {
-	const range = new vscode.Range(
-		document.positionAt(ctx.nameStart),
-		document.positionAt(ctx.nameEnd)
-	);
-	return members.map((m, i) => {
-		const completed = parentPath.length
-			? [...parentPath, m.name].join(".")
-			: m.name;
-		const item = new vscode.CompletionItem(
-			m.name,
-			vscode.CompletionItemKind.Field
-		);
-		item.detail = m.detail || `entity column`;
-		item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
-		item.filterText = m.name;
-		item.preselect = i === 0;
-		if (m.documentation) {
-			item.documentation = new vscode.MarkdownString(m.documentation);
-		}
-		item.insertText = ctx.quote ? completed : `"${completed}"`;
-		item.range = range;
 		return item;
 	});
 }
@@ -297,7 +243,7 @@ function globalIdentifierItems(typed: string): vscode.CompletionItem[] {
 	});
 }
 
-export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider {
+export class CompletionProvider implements vscode.CompletionItemProvider {
 	constructor(private readonly index: SymbolIndex) {}
 
 	provideCompletionItems(
@@ -323,6 +269,14 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 		if (colCtx) {
 			const entities = resolveQueryEntities(text, offset, colCtx.queryIdent);
 			if (entities.length) {
+				const bracketCtx = getEsqBracketContext(colCtx.name);
+				if (bracketCtx) {
+					return asList(
+						this.esqBracketItems(bracketCtx, entities, colCtx, document),
+						true
+					);
+				}
+
 				const endsDot = colCtx.name.endsWith(".");
 				const parts = colCtx.name.split(".");
 				const parentPath = endsDot
@@ -339,14 +293,8 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 					}
 					members = [...byName.values()];
 				} else {
-					const parent = this.index.resolveEsqColumn(
-						entities,
-						parentPath.join(".")
-					);
-					const next = parent?.referenceSchemaName || parent?.name;
-					members = next
-						? this.index.resolveEntityColumns(next)
-						: [];
+					const next = this.index.resolveEsqPathSchema(entities, parentPath.join("."));
+					members = next ? this.index.resolveEntityColumns(next) : [];
 				}
 				const filtered = prefix
 					? members.filter((m) =>
@@ -357,6 +305,18 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 					toEsqColumnItems(filtered, colCtx, parentPath, document),
 					true
 				);
+			}
+		}
+
+		const ctorConfigCtx = getConstructorConfigContext(text, offset);
+		if (ctorConfigCtx) {
+			const members = this.index.resolveQueryInstanceMembers([ctorConfigCtx.className]);
+			const list = asList(
+				toConstructorConfigItems(members, ctorConfigCtx, document),
+				true
+			);
+			if (list) {
+				return list;
 			}
 		}
 
@@ -430,6 +390,54 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 		}
 
 		return undefined;
+	}
+
+	/** The schema this bracket hops *from* - `parentSegments` resolved
+	 * (whatever schema an earlier part of the same path already landed on)
+	 * when non-empty, else the root query entity/entities. Needed by every
+	 * stage of `SymbolIndex.resolveEsqBracketCandidates`: it's the "must
+	 * actually link back to here" filter target for `schema`/
+	 * `schemaLinkColumn`, and the candidate source itself for
+	 * `currentLinkColumn`. */
+	private currentSchemaCandidates(bracket: EsqBracketContext, entities: string[]): string[] {
+		if (!bracket.parentSegments.length) {
+			return entities;
+		}
+		const resolved = this.index.resolveEsqPathSchema(entities, bracket.parentSegments.join("."));
+		return resolved ? [resolved] : [];
+	}
+
+	private esqBracketItems(
+		bracket: EsqBracketContext,
+		entities: string[],
+		colCtx: EsqNameSpan,
+		document: vscode.TextDocument
+	): vscode.CompletionItem[] {
+		const result = this.index.resolveEsqBracketCandidates(
+			bracket,
+			this.currentSchemaCandidates(bracket, entities)
+		);
+		if (result.kind === "schema") {
+			const candidates = result.names.map((name) => {
+				const caption = this.index.resolveEntityCaption(name);
+				return {
+					name,
+					kind: vscode.CompletionItemKind.Class,
+					detail: "BPMSoft · entity (reverse join)",
+					documentation: caption ? `*${caption}*` : undefined
+				};
+			});
+			return toEsqBracketItems(bracket, candidates, colCtx, document);
+		}
+		const candidates = result.members.map((m) => ({
+			name: m.name,
+			kind: vscode.CompletionItemKind.Field,
+			detail: m.detail || "entity column",
+			documentation: m.caption
+				? `*${m.caption}*${m.documentation ? `\n\n${m.documentation}` : ""}`
+				: m.documentation
+		}));
+		return toEsqBracketItems(bracket, candidates, colCtx, document);
 	}
 
 	private memberCompletions(
@@ -537,7 +545,7 @@ export class BpmsoftCompletionProvider implements vscode.CompletionItemProvider 
 				item.range = range;
 				const doc = [
 					`@inheritdoc ${m.owner}#${m.name}`,
-					"@overriden",
+					"@override",
 					...(m.documentation ? ["", m.documentation] : [])
 				].join("\n");
 				item.documentation = new vscode.MarkdownString(doc);

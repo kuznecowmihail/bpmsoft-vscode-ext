@@ -40,15 +40,293 @@
         },
         "javascript.suggest.names": false,
         "javascript.suggestionActions.enabled": false
+      },
+      "[csharp]": {
+        "editor.quickSuggestions": {
+          "strings": true
+        }
       }
     },
     "commands": [
       {
         "command": "bpmsoft.rebuildIndex",
         "title": "Rebuild Index",
+        "category": "BPMSoft",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "bpmsoft.naming.markFalsePositive",
+        "title": "Пометить как ложное срабатывание (игнорировать это имя во всех проверках нейминга)",
+        "category": "BPMSoft",
+        "icon": "$(circle-slash)"
+      },
+      {
+        "command": "bpmsoft.setDefaultFormatter",
+        "title": "Set as Default Formatter (JS/C#/SQL)",
         "category": "BPMSoft"
+      },
+      {
+        "command": "bpmsoft.editLocalizedStrings",
+        "title": "Редактировать локализуемые строки…",
+        "category": "BPMSoft",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "bpmsoft.editLocalizedImages",
+        "title": "Редактировать локализуемые изображения…",
+        "category": "BPMSoft",
+        "icon": "$(file-media)"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.openDiff",
+        "title": "Показать изменения коммита",
+        "category": "BPMSoft"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.openCommit",
+        "title": "Открыть коммит целиком",
+        "category": "BPMSoft",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.refresh",
+        "title": "Обновить Timeline",
+        "category": "BPMSoft",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.pin",
+        "title": "Timeline: закрепить текущий файл",
+        "category": "BPMSoft",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.unpin",
+        "title": "Timeline: открепить",
+        "category": "BPMSoft",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.toggleGitHistory",
+        "title": "Git History",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftSchemaHistoryGitEnabled"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.toggleLocalHistory",
+        "title": "Local History",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftSchemaHistoryLocalEnabled"
+      },
+      {
+        "command": "bpmsoft.schemaHistory.findLocalHistory",
+        "title": "Local History: найти запись для восстановления…",
+        "category": "BPMSoft",
+        "icon": "$(history)"
+      },
+      {
+        "command": "bpmsoft.viewModelOutline.toggleFollowCursor",
+        "title": "Следовать за курсором",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftViewModelOutlineFollowCursor"
+      },
+      {
+        "command": "bpmsoft.plainOutline.toggleFollowCursor",
+        "title": "Следовать за курсором",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftPlainOutlineFollowCursor"
+      },
+      {
+        "command": "bpmsoft.plainOutline.toggleFilterOnType",
+        "title": "Фильтрация при вводе",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftPlainOutlineFilterOnType"
+      },
+      {
+        "command": "bpmsoft.plainOutline.sortByPosition",
+        "title": "По позиции",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftPlainOutlineSortPosition"
+      },
+      {
+        "command": "bpmsoft.plainOutline.sortByName",
+        "title": "По имени",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftPlainOutlineSortName"
+      },
+      {
+        "command": "bpmsoft.plainOutline.sortByCategory",
+        "title": "По категории",
+        "category": "BPMSoft",
+        "toggled": "bpmsoftPlainOutlineSortCategory"
       }
     ],
+    "submenus": [
+      {
+        "id": "bpmsoft.schemaHistory.filterMenu",
+        "label": "Источники Timeline",
+        "icon": "$(filter)"
+      },
+      {
+        "id": "bpmsoft.schemaHistory.moreActionsMenu",
+        "label": "Дополнительно",
+        "icon": "$(ellipsis)"
+      },
+      {
+        "id": "bpmsoft.viewModelOutline.actionsMenu",
+        "label": "Дополнительно",
+        "icon": "$(ellipsis)"
+      },
+      {
+        "id": "bpmsoft.plainOutline.actionsMenu",
+        "label": "Дополнительно",
+        "icon": "$(ellipsis)"
+      },
+      {
+        "id": "bpmsoft.plainOutline.sortByMenu",
+        "label": "Сортировка"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "bpmsoft.schemaHistory.pin",
+          "when": "view == bpmsoftSchemaHistory && !bpmsoftSchemaHistoryPinned",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.schemaHistory.unpin",
+          "when": "view == bpmsoftSchemaHistory && bpmsoftSchemaHistoryPinned",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.schemaHistory.refresh",
+          "when": "view == bpmsoftSchemaHistory",
+          "group": "navigation@2"
+        },
+        {
+          "submenu": "bpmsoft.schemaHistory.filterMenu",
+          "when": "view == bpmsoftSchemaHistory",
+          "group": "navigation@3"
+        },
+        {
+          "submenu": "bpmsoft.schemaHistory.moreActionsMenu",
+          "when": "view == bpmsoftSchemaHistory",
+          "group": "navigation@4"
+        },
+        {
+          "submenu": "bpmsoft.viewModelOutline.actionsMenu",
+          "when": "view == bpmsoftViewModelOutline",
+          "group": "navigation@1"
+        },
+        {
+          "submenu": "bpmsoft.plainOutline.actionsMenu",
+          "when": "view == bpmsoftPlainOutline",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.rebuildIndex",
+          "when": "view == bpmsoftPackageSettings",
+          "group": "navigation@1"
+        }
+      ],
+      "bpmsoft.viewModelOutline.actionsMenu": [
+        {
+          "command": "bpmsoft.viewModelOutline.toggleFollowCursor",
+          "group": "1_navigation@1"
+        }
+      ],
+      "bpmsoft.plainOutline.actionsMenu": [
+        {
+          "command": "bpmsoft.plainOutline.toggleFollowCursor",
+          "group": "1_navigation@1"
+        },
+        {
+          "command": "bpmsoft.plainOutline.toggleFilterOnType",
+          "group": "1_navigation@2"
+        },
+        {
+          "submenu": "bpmsoft.plainOutline.sortByMenu",
+          "group": "2_sort@1"
+        }
+      ],
+      "bpmsoft.plainOutline.sortByMenu": [
+        {
+          "command": "bpmsoft.plainOutline.sortByPosition",
+          "group": "1_sortBy@1"
+        },
+        {
+          "command": "bpmsoft.plainOutline.sortByName",
+          "group": "1_sortBy@2"
+        },
+        {
+          "command": "bpmsoft.plainOutline.sortByCategory",
+          "group": "1_sortBy@3"
+        }
+      ],
+      "bpmsoft.schemaHistory.filterMenu": [
+        {
+          "command": "bpmsoft.schemaHistory.toggleGitHistory",
+          "group": "1_sources@1"
+        },
+        {
+          "command": "bpmsoft.schemaHistory.toggleLocalHistory",
+          "group": "1_sources@2"
+        }
+      ],
+      "bpmsoft.schemaHistory.moreActionsMenu": [
+        {
+          "command": "bpmsoft.schemaHistory.findLocalHistory",
+          "group": "1_localHistory@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "bpmsoft.schemaHistory.openCommit",
+          "when": "view == bpmsoftSchemaHistory && viewItem == bpmsoftHistoryCommit",
+          "group": "inline"
+        },
+        {
+          "command": "bpmsoft.naming.markFalsePositive",
+          "when": "view == bpmsoftNamingIssues && viewItem == bpmsoftNamingFinding",
+          "group": "inline"
+        },
+        {
+          "command": "bpmsoft.editLocalizedStrings",
+          "when": "view == bpmsoftPackages && viewItem == bpmsoftSchema",
+          "group": "1_localization@1"
+        },
+        {
+          "command": "bpmsoft.editLocalizedImages",
+          "when": "view == bpmsoftPackages && viewItem == bpmsoftSchema",
+          "group": "1_localization@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "bpmsoft.editLocalizedStrings",
+          "when": "bpmsoftActiveSchema",
+          "group": "1_bpmsoft@1"
+        },
+        {
+          "command": "bpmsoft.editLocalizedImages",
+          "when": "bpmsoftActiveSchemaIsJs",
+          "group": "1_bpmsoft@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "bpmsoft.editLocalizedStrings",
+          "when": "bpmsoftActiveSchema",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.editLocalizedImages",
+          "when": "bpmsoftActiveSchemaIsJs",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "configuration": {
       "title": "BPMSoft IntelliSense",
       "properties": {
@@ -81,8 +359,211 @@
           "type": "boolean",
           "default": true,
           "description": "Check style in editable JS and C# files. JS skips Autogenerated / UI / conf. C# also checks Autogenerated/Src (opened by C# Dev Kit). JS: K&R, var/const, eqeqeq, unused locals and schema members, switch, curly braces, camelCase methods/locals. C#: Allman braces, if/switch, naming conventions."
+        },
+        "bpmsoft.csharpXmlDocDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Warn when a public/protected C# method or property has no /// XML-doc comment above it. Off by default: existing codebases rarely have full XML-doc coverage, so this would be noisy until you opt in."
+        },
+        "bpmsoft.trailingCommentDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when a // comment (JS or C#) sits at the end of a code line instead of on its own line above, per the JS/C# style guides. Disable if this is too noisy on an existing codebase that hasn't followed the convention."
+        },
+        "bpmsoft.selectAllColumnsHint": {
+          "type": "boolean",
+          "default": true,
+          "description": "Info-level hint on AddAllSchemaColumns()/FetchFromDB() without an explicit column list (C#) and esq.allColumns = true (JS): double-check you actually need every column. Silence a specific call site with a // bpmsoft-ignore: select-all-columns comment on the line above, or use the 'Not a problem' quick fix."
+        },
+        "bpmsoft.formatting.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register BPMSoft's Format Document providers for JS/C#/SQL-script files (Prettier + our own style fixes for JS; brace/spacing/blank-line auto-fixes for C#; sql-formatter for Pkg/*/SqlScripts/*.sql). Works with the standard Format Document command / Shift+Alt+F / editor.formatOnSave. Turn off if you'd rather use another formatter for these languages."
+        },
+        "bpmsoft.namingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check client schema / C# schema / SQL script names against naming-guidelines.md §3/§4 (type-appropriate suffix — Section/SectionV2, Page/PageV2/MiniPage/ModalPage, Detail/DetailV2 — only enforced when the schema's own immediate parent is itself part of that family, e.g. BasePageV2/BaseSectionV2/BaseGridDetailV2; a rootless/unrelated-parent view model is exempt; for Module-type schemas, the module's own registered define()/Ext.define() name must match the schema Code, and a structurally-CSS module (empty .js, real .less) must be suffixed exactly Css; a wizard-injected numeric tail and New/Test/Temp/Copy in the business name are flagged too; and — only where the platform gives an unambiguous marker — Service/EventListener for C#). Surfaced both as squiggles on open descriptor.json/.js/.cs files and in the 'BPMSoft: Naming Issues' view."
+        },
+        "bpmsoft.namingPrefixes": {
+          "type": "string",
+          "default": "",
+          "description": "Comma-separated package/schema name prefixes to require (e.g. \"Nau\" or \"Nau,Go\" for multiple streams). Empty (default) disables the prefix check — there's no one universal prefix to assume."
+        },
+        "bpmsoft.gitFlowDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check the current git branch against the team's Git Flow model (main/develop/sprint/x.x.x/release/x.x.x/feature/bugfix) and show violations in the status bar. Covers: branch name pattern, main never carrying commits absent from develop, and (see bpmsoft.gitFlow.checkBranchParent) feature/bugfix branched from the right parent. Can't check step *order* — that's not recoverable from git history alone."
+        },
+        "bpmsoft.gitFlow.mainBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Name of the production branch (main/master/…)."
+        },
+        "bpmsoft.gitFlow.developBranch": {
+          "type": "string",
+          "default": "develop",
+          "description": "Name of the integration branch."
+        },
+        "bpmsoft.gitFlow.checkBranchParent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Heuristically check that feature/* was branched from a sprint/* branch and bugfix/* from a release/* branch, not straight off develop/main — based on merge-base analysis of git history, so it can false-positive on a branch that was created correctly but never rebased/updated from its parent. Turn off if it's too noisy; the other bpmsoft.gitFlowDiagnostics checks are unaffected."
+        },
+        "bpmsoft.packageOwnershipDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check the active file's package against bpmsoft.namingPrefixes and bpmsoft.expectedMaintainers (stand-ins for the SchemaNamePrefix/Maintainer system settings — no DB connection to read those directly), reading each package's own descriptor.json. Violations show in the status bar."
+        },
+        "bpmsoft.currentPackage": {
+          "type": "string",
+          "default": "",
+          "description": "Reference value for the package you're currently working in — stand-in for the CurrentPackageId system setting. Shown in the 'Package Settings' view; not yet enforced as a check (see bpmsoft.packageOwnershipDiagnostics for what actually is)."
+        },
+        "bpmsoft.expectedMaintainers": {
+          "type": "string",
+          "default": "",
+          "description": "Comma-separated Maintainer value(s) your team's packages should have (e.g. \"YandexGo\") — stand-in for the Maintainer system setting. Empty (default) disables the maintainer check."
+        },
+        "bpmsoft.entityNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check EntitySchemaManager objects (naming-guidelines.md §2 'Объекты') against their own descriptor.json/metadata.json/Resources: object Code (PascalCase, prefix, singular, no Tbl/Entity/Field affix), ru-RU/en-US Title coverage, custom column Code (prefix, boolean Is/Has/Can prefix, date suffix, no redundant lookup 'Id' suffix, no redundant repetition of the owning entity's name), and cross-package Code uniqueness (aware of the substitution mechanism — the same Code across packages via ExtendParent is expected, not a collision)."
+        },
+        "bpmsoft.entityNaming.checkSingularName": {
+          "type": "boolean",
+          "default": true,
+          "description": "Part of bpmsoft.entityNamingDiagnostics: flag an object Code that looks plural. Kept as its own toggle — English has no reliable syntactic plural rule without a dictionary, so this heuristic (ends in 's', not 'ss'/'us'/'is') is noisier than the other checks."
+        },
+        "bpmsoft.entityNaming.singularExceptions": {
+          "type": "string",
+          "default": "Settings,Permissions,Statistics",
+          "description": "Comma-separated object Codes that are legitimately plural by meaning, exempt from bpmsoft.entityNaming.checkSingularName."
+        },
+        "bpmsoft.entityNaming.dateSuffixes": {
+          "type": "string",
+          "default": "On,Date",
+          "description": "Comma-separated acceptable suffixes for DATE/DATE_TIME/TIME column names (e.g. CreatedOn/ModifiedOn → \"On\", StartDate → \"Date\")."
+        },
+        "bpmsoft.entityNaming.booleanPrefixes": {
+          "type": "string",
+          "default": "Is,Has,Can",
+          "description": "Comma-separated acceptable verb/assertion prefixes for BOOLEAN column names (e.g. IsActive, HasAttachment, CanEdit)."
+        },
+        "bpmsoft.sqlTempScriptMaxAgeDays": {
+          "type": "number",
+          "default": 30,
+          "description": "naming-guidelines.md §6: a _Temp SQL script should be removed from the package after its one-time run on target environments. This extension can't know what's actually been deployed, so it's a nudge, not a hard check — a _Temp script older than this many days (by its git add date) gets flagged as 'possibly forgotten'. 0 disables it."
+        },
+        "bpmsoft.processNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check ProcessSchemaManager business processes (naming-guidelines.md §7 'Бизнес-процессы') against their own descriptor.json/metadata.json/Resources: process Code (PascalCase, prefix, mandatory 'Process' suffix, no temporary designation like New/Test/Temp/Copy/V2), ru-RU/en-US Title coverage, and per-diagram-element title rules — Actions should start with a verb, Events should describe an already-happened fact (past tense), Exclusive gateways are recommended as closed questions, and a Sequence flow without a transition condition should normally be left unnamed. The Action/Event checks are weak word-ending heuristics (no real Russian morphology available) and can be noisy — same trade-off as the SQL script pattern check."
+        },
+        "bpmsoft.processUserTaskNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check ProcessUserTaskSchemaManager schemas (naming-guidelines.md §8 'Действие процесса (UserTask)') against their own descriptor.json/metadata.json/Resources: UserTask Code (PascalCase, prefix, mandatory 'UserTask' suffix, business name starting with a verb from bpmsoft.processUserTask.actionVerbs), ru-RU/en-US Title coverage, and parameter Code (no Tbl/Entity/Field technical affix). The Input/Output parameter-direction-suffix recommendation is a separate opt-in, see bpmsoft.processUserTask.checkParameterDirectionSuffix."
+        },
+        "bpmsoft.processUserTask.actionVerbs": {
+          "type": "string",
+          "default": "Add,Apply,Assign,Build,Calculate,Call,Cancel,Change,Check,Clear,Clone,Close,Complete,Confirm,Convert,Create,Delete,Disable,Enable,Execute,Export,Find,Generate,Get,Import,Load,Log,Merge,Move,Normalize,Notify,Parse,Process,Publish,Read,Register,Reject,Reload,Remove,Reset,Run,Save,Search,Send,Set,Show,Split,Start,Stop,Sync,Unregister,Update,Validate,Verify,Write",
+          "description": "Comma-separated whitelist of verbs a UserTask's own code (after the team prefix) is expected to start with (e.g. GoChangeDataUserTask → \"Change\"). A curated list rather than a heuristic — English has no reliable ending marker for 'this is a verb' the way Russian infinitives do."
+        },
+        "bpmsoft.processUserTask.checkParameterDirectionSuffix": {
+          "type": "boolean",
+          "default": false,
+          "description": "naming-guidelines.md §8: recommends an Input/Output suffix on parameter names when a UserTask has more than one, to indicate direction. Off by default — confirmed 0% real adoption across two installs (176 real parameters, none suffixed), so enabling this flags nearly every existing multi-parameter UserTask. Turn on if your team wants to start enforcing it going forward."
+        },
+        "bpmsoft.dataNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check Data package items (naming-guidelines.md §5 'Данные') against their own descriptor.json/data.json: Code (PascalCase, must start with its target table's own name — Descriptor.Schema.Name, e.g. Lookup_X/City_Main/SysSettings_X all reduce to the same {TableName}_... template), no raw GUID/hash segment in the code, and — the platform-risk check — every SysSettings data schema must have a matching SysSettingsValue and vice versa, matched by the real seeded row Id/foreign key, not by folder name. A SysSettings without a SysSettingsValue can 400 when read; the reverse can be a legitimate override of a stock setting's value, so is worded as a hint rather than a hard violation."
+        },
+        "bpmsoft.csharpNamingDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check C# schema code (naming-guidelines.md §4 'Исходный код') against every .cs file under Schemas/ — not just SourceCodeSchemaManager schemas, matching the guideline's own 'and similar server-side artifacts' scope: the package prefix, Service/EventListener suffix (only checked when the class actually inherits BaseService/BaseEntityEventListener or carries [ServiceContract]/[EntityEventListener] — no reliable platform marker exists for Helper/Manager/Handler/Repository/Client/Job, so those roles' suffixes aren't verified the same way, see bpmsoft.csharpNaming.checkRoleSuffix for the heuristic opt-in instead), the schema's registered name matching an actual class in the file, no redundant 'SourceCode' suffix, no temporary designation (New/Test/Temp/Copy/V2), and no chained/mixed role suffixes (e.g. ...ServiceHelper). ru-RU/en-US Title coverage is checked separately, only for real SourceCodeSchemaManager schemas (a Process/UserTask/Entity's own .cs file already has its Title checked by that schema type's own check)."
+        },
+        "bpmsoft.csharpNaming.checkRoleSuffix": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag a C# schema Code that doesn't end in any of bpmsoft.csharpNaming.roleSuffixes at all (Helper/Manager/Handler/Repository/Client/Connector/Job/... have no base-class or interface marker to verify the suffix is actually correct, unlike Service/EventListener — this only checks that *some* recognized role suffix is present). Off by default — confirmed ~37-45% of real Source Code schemas across two installs end in none of the defaults, and a good share of those are legitimately something the guideline's table doesn't cover at all (Constants/DTO/Exception/Extensions/Callout classes, ...), not a missed suffix. Tune bpmsoft.csharpNaming.roleSuffixes to your own real patterns before turning this on."
+        },
+        "bpmsoft.csharpNaming.roleSuffixes": {
+          "type": "string",
+          "default": "Service,EventListener,Helper,Utils,Manager,Handler,Repository,Client,Connector,Job,Process",
+          "description": "Comma-separated role suffixes recognized as 'has a role suffix' (bpmsoft.csharpNaming.checkRoleSuffix) and checked for chaining/mixing (e.g. ...ServiceHelper, always on)."
+        },
+        "bpmsoft.csharpNaming.checkSingleClassPerSchema": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag a C# schema file that declares more than one top-level class. Off by default — naming-guidelines.md's own 'один основной класс — одна схема' rule has an explicit exception for a data object model, and ~26-27% of real Source Code schemas across two installs are legitimately multi-class (request/response DTOs alongside the main class) — this can't be told apart from a genuinely crammed-together schema automatically, so it's a team preference to opt into, not a default-on check."
+        },
+        "bpmsoft.clientSchemaNaming.checkModuleSuffix": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flag a Module-type client schema (SchemaType: Module, not already recognized as Mixin/Css) whose Code doesn't end in Module or Mixin. Off by default — confirmed 74-84% of real Module-type schemas across two installs legitimately use neither (Helper/Constants/Container/Override/Design/...), the same open-role-vocabulary situation as bpmsoft.csharpNaming.checkRoleSuffix."
+        },
+        "bpmsoft.naming.ignoredNames": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Schema/process/data/class names excluded from every naming-guidelines.md check (client schema, Process, UserTask, Data, C#, SQL, Entity) — for a confirmed false positive that's structurally correct but doesn't fit this particular real name (e.g. 'Old' used as a legitimate business qualifier, not a stale-code marker). Set via the 'Пометить как ложное срабатывание' action on a naming finding (Naming Issues tree, or the quick fix on the squiggly), or edited directly."
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bpmsoft",
+          "title": "BPMSoft Settings",
+          "icon": "media/bpmsoft-icon.svg"
+        },
+        {
+          "id": "bpmsoftExplorer",
+          "title": "BPMSoft Explorer",
+          "icon": "media/bpmsoft-explorer-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "bpmsoft": [
+        {
+          "id": "bpmsoftFormatting",
+          "name": "Formatting"
+        },
+        {
+          "id": "bpmsoftPackageSettings",
+          "name": "Package Settings"
+        }
+      ],
+      "bpmsoftExplorer": [
+        {
+          "id": "bpmsoftViewModelOutline",
+          "name": "ViewModel Outline"
+        },
+        {
+          "id": "bpmsoftPlainOutline",
+          "name": "Outline"
+        },
+        {
+          "id": "bpmsoftSchemaHistory",
+          "name": "Timeline"
+        },
+        {
+          "id": "bpmsoftOpenSchemas",
+          "name": "Open Schemas"
+        },
+        {
+          "id": "bpmsoftPackages",
+          "name": "Packages"
+        },
+        {
+          "id": "bpmsoftNamingIssues",
+          "name": "Naming Issues"
+        }
+      ]
     }
   },
   "scripts": {
@@ -90,7 +571,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --allow-missing-repository --skip-license",
-		"smoke": "npm run compile && node scripts/run-smoke.js"
+    "smoke": "npm run compile && node scripts/run-smoke.js",
+    "test:style": "tsc -p . && node scripts/test-style.js",
+    "test:localization": "tsc -p . && node scripts/test-localization.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
@@ -100,6 +583,8 @@
   },
   "dependencies": {
     "acorn": "^8.11.3",
-    "acorn-walk": "^8.3.2"
+    "acorn-walk": "^8.3.2",
+    "prettier": "^3.9.6",
+    "sql-formatter": "^15.8.2"
   }
 }

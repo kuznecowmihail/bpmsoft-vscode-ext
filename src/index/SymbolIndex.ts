@@ -1,15 +1,28 @@
 import * as fs from "fs";
-import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember, memberDedupeKey, schemaMessageSupports } from "./types";
+import { IndexedMember, IndexedModule, IndexedSchemaMessage, PlatformStubMember, memberDedupeKey, schemaMessageSupports } from "../parse/types";
+import {
+	EsqBracketCandidates,
+	EsqBracketContext,
+	EsqColumnResolution,
+	EsqPathHoverTarget,
+	resolveEsqBracketCandidates,
+	resolveEsqColumnPath,
+	resolveEsqPathAtOffset,
+	resolveEsqPathSchema
+} from "../parse/esqColumnPath";
 import {
 	NO_ENTITY_COLUMN_SCHEMA_TYPES,
 	SchemaHierarchyResolver
-} from "./schemaHierarchy";
+} from "./SchemaHierarchyResolver";
+import { ViewControlsIndex } from "./ViewControlsIndex";
 import { parseAmdModule, parseEntityColumns } from "../parse/amdParser";
 import {
 	entityColumnDocumentation,
 	loadEntityColumnCaptions,
+	loadEntitySchemaCaption,
 	parsePkgEntityColumns
 } from "../parse/entityMetadata";
+import { loadStockEntityCaptions } from "../parse/stockEntityResources";
 import { buildSandboxStubs } from "../stubs/sandboxGlobals";
 import {
 	inheritdocTarget,
@@ -41,6 +54,19 @@ export class SymbolIndex {
 	private entityCache = new Map<string, IndexedModule | null>();
 	private mixinKeyToHostPaths = new Map<string, Set<string>>();
 	readonly hierarchy = new SchemaHierarchyResolver();
+	readonly viewControls = new ViewControlsIndex();
+
+	/** `resolveThisMembers` walks a schema's full owner chain (parents +
+	 * mixins + entity columns + …) — for a deep hierarchy this is real work
+	 * (tens of ms), and it's called repeatedly for the *same* file on every
+	 * hover/completion/Outline-refresh while the user is just reading code,
+	 * not editing it. Cache per file, invalidated by a generation counter
+	 * bumped on any module change — coarser than per-file invalidation
+	 * (any edit anywhere invalidates the whole cache), but edits are rare
+	 * relative to how often the same open file gets re-queried, and it keeps
+	 * the invalidation trivially correct (no dependency graph to track). */
+	private modulesGeneration = 0;
+	private thisMembersCache = new Map<string, { generation: number; members: IndexedMember[] }>();
 
 	setPlatformStubs(members: PlatformStubMember[]): void {
 		this.platformRoot = members;
@@ -65,6 +91,7 @@ export class SymbolIndex {
 	setWorkspaceRoots(roots: string[]): void {
 		this.workspaceRoots = roots;
 		this.hierarchy.setWorkspaceRoots(roots);
+		this.viewControls.setWorkspaceRoots(roots);
 		this.entityCache.clear();
 	}
 
@@ -74,6 +101,8 @@ export class SymbolIndex {
 		this.alternateToModules.clear();
 		this.entityCache.clear();
 		this.mixinKeyToHostPaths.clear();
+		this.thisMembersCache.clear();
+		this.modulesGeneration++;
 	}
 
 	/** Drop every in-memory index (modules, stubs, hierarchy). */
@@ -109,6 +138,7 @@ export class SymbolIndex {
 
 	upsertModule(mod: IndexedModule): void {
 		this.removeByPath(mod.filePath);
+		this.modulesGeneration++;
 		this.modulesByPath.set(mod.filePath, mod);
 		this.pushNamed(this.modulesByName, mod.name, mod);
 		if (mod.className && mod.className !== mod.name) {
@@ -131,6 +161,7 @@ export class SymbolIndex {
 		if (!prev) {
 			return;
 		}
+		this.modulesGeneration++;
 		this.unindexMixinHost(prev);
 		this.modulesByPath.delete(filePath);
 		this.pullNamed(this.modulesByName, prev.name, filePath);
@@ -376,6 +407,12 @@ export class SymbolIndex {
 	 * Ext modules: own file + override/extend chain.
 	 */
 	resolveThisMembers(filePath: string): IndexedMember[] {
+		const cacheKey = normalizeFilePath(filePath);
+		const cached = this.thisMembersCache.get(cacheKey);
+		if (cached && cached.generation === this.modulesGeneration) {
+			return cached.members;
+		}
+
 		const mod = this.ensureModule(filePath);
 		if (!mod) {
 			return [];
@@ -395,6 +432,7 @@ export class SymbolIndex {
 			this.pushUnseen(result, seen, member);
 		}
 		this.appendRuntimeThisMembers(result, seen);
+		this.thisMembersCache.set(cacheKey, { generation: this.modulesGeneration, members: result });
 		return result;
 	}
 
@@ -1078,6 +1116,24 @@ export class SymbolIndex {
 			.find((name): name is string => Boolean(name));
 	}
 
+	/** Whether there's any actual evidence this chain is entity-bound at
+	 * all — an `entitySchemaName` somewhere in it, or a mixin card host that
+	 * has one — as opposed to `getEntityModuleForChain` simply failing to
+	 * *resolve* a name that is present. Used to tell "entity name present but
+	 * its conf/content module couldn't be found" (still worth a generic
+	 * `BaseEntitySchema`-shaped fallback) apart from "no entity relationship
+	 * whatsoever" (should show nothing). */
+	private chainHasEntityReference(owners: IndexedModule[]): boolean {
+		if (this.entityNameFromChain(owners)) {
+			return true;
+		}
+		const current = owners[0];
+		if (!current) {
+			return false;
+		}
+		return this.collectCardHostEntityNames(current).length > 0;
+	}
+
 	private collectMixinCardHosts(mod: IndexedModule): IndexedModule[] {
 		return this.findMixinHostModules(mod).filter((host) =>
 			this.pageChainBindsEntityColumns(this.collectOwnerChain(host))
@@ -1366,12 +1422,37 @@ export class SymbolIndex {
 		if (!entityMod) {
 			return;
 		}
+		// Keyed once so a schema-level override that already won the name
+		// (e.g. a page's own `attributes.Country` that only tweaks
+		// `lookupListConfig`) can still be backfilled below instead of the
+		// real entity column's own fields being silently discarded.
+		const byKey = new Map<string, IndexedMember>();
+		for (const m of result) {
+			byKey.set(memberDedupeKey(m), m);
+		}
 		for (const member of entityMod.members) {
-			this.pushUnseen(result, seen, {
+			const withMeta: IndexedMember = {
 				...member,
 				detail: member.detail || `entity ${entityMod.name}`,
 				filePath: member.filePath || entityMod.filePath
-			});
+			};
+			const key = memberDedupeKey(withMeta);
+			if (seen.has(key)) {
+				// A schema-level attribute override of this same name
+				// already won — but if it didn't restate `dataValueType`
+				// (the common case: the override only changes display
+				// config, not the underlying column's type), backfill it
+				// from the real entity column rather than losing it
+				// entirely. Nothing else about the winning override is
+				// touched.
+				const existing = byKey.get(key);
+				if (existing && !existing.dataValueType && withMeta.dataValueType) {
+					existing.dataValueType = withMeta.dataValueType;
+				}
+				continue;
+			}
+			this.pushUnseen(result, seen, withMeta);
+			byKey.set(key, withMeta);
 		}
 	}
 
@@ -1385,6 +1466,18 @@ export class SymbolIndex {
 		seen: Set<string>
 	): void {
 		const entityMod = this.getEntityModuleForChain(owners);
+		if (!entityMod && !this.chainHasEntityReference(owners)) {
+			// Neither an entitySchemaName anywhere in the chain nor a
+			// mixin-bound card host — this file has nothing to do with an
+			// entity schema at all (e.g. a plain Ext UI control like
+			// BPMSoft.controls.Grid). Without this check,
+			// `entitySchemaObjectMembers(undefined)` still falls back to
+			// BaseEntitySchema's own generic members (whenever that class
+			// happens to be indexed anywhere in the workspace, which is
+			// almost always), so `this.entitySchema` showed up on literally
+			// every file regardless of any actual entity relationship.
+			return;
+		}
 		const children = this.entitySchemaObjectMembers(entityMod);
 		if (!children.length) {
 			return;
@@ -1520,21 +1613,34 @@ export class SymbolIndex {
 		try {
 			const byName = new Map<string, IndexedMember>();
 			let classMembers: IndexedMember[] = [];
+			// A stock (conf/content) entity has no Pkg/ folder at all, so its
+			// own captions live in the already-compiled
+			// conf/content/resources/{culture}/{Entity}Resources.js bundle
+			// instead of a Pkg entity's XML resources - see
+			// stockEntityResources.ts. Computed regardless of whether this
+			// entity actually has one (a purely custom entity just gets an
+			// empty result back), so both column loops below can fall back to
+			// it uniformly.
+			const stockCaptions = loadStockEntityCaptions(
+				this.hierarchy.resolveEntityConfResourcePaths(entityName),
+				entityName
+			);
 			if (confPath) {
 				const source = fs.readFileSync(confPath, "utf8");
 				for (const member of parseEntityColumns(source, confPath)) {
 					byName.set(member.name, {
 						...member,
 						filePath: member.filePath || confPath,
-						detail: member.detail || `entity ${entityName}`
+						detail: member.detail || `entity ${entityName}`,
+						caption: stockCaptions.columnCaptions.get(member.name)
 					});
 				}
 				const api = parseAmdModule(source, confPath);
 				classMembers = api?.members || [];
 			}
-			const captions = loadEntityColumnCaptions(
-				this.hierarchy.resolveEntityPkgResourceDirs(entityName)
-			);
+			const resourceDirs = this.hierarchy.resolveEntityPkgResourceDirs(entityName);
+			const captions = loadEntityColumnCaptions(resourceDirs);
+			const entityCaption = loadEntitySchemaCaption(resourceDirs) ?? stockCaptions.entityCaption;
 			for (const metaPath of metaPaths) {
 				const source = fs.readFileSync(metaPath, "utf8");
 				for (const column of parsePkgEntityColumns(source, metaPath)) {
@@ -1545,6 +1651,9 @@ export class SymbolIndex {
 					byName.set(column.name, {
 						...column,
 						detail: column.detail || `entity ${entityName}`,
+						caption:
+							captions.get(column.name)?.caption ??
+							stockCaptions.columnCaptions.get(column.name),
 						documentation: entityColumnDocumentation(
 							captions,
 							column.name,
@@ -1557,6 +1666,10 @@ export class SymbolIndex {
 				const basePath = this.hierarchy.resolveEntitySchemaPath("BaseEntity");
 				if (basePath) {
 					const source = fs.readFileSync(basePath, "utf8");
+					const baseCaptions = loadStockEntityCaptions(
+						this.hierarchy.resolveEntityConfResourcePaths("BaseEntity"),
+						"BaseEntity"
+					);
 					for (const member of parseEntityColumns(source, basePath)) {
 						if (byName.has(member.name)) {
 							continue;
@@ -1564,7 +1677,8 @@ export class SymbolIndex {
 						byName.set(member.name, {
 							...member,
 							filePath: basePath,
-							detail: member.detail || `entity ${entityName}`
+							detail: member.detail || `entity ${entityName}`,
+							caption: baseCaptions.columnCaptions.get(member.name)
 						});
 					}
 				}
@@ -1584,7 +1698,8 @@ export class SymbolIndex {
 				entityClassMembers: classMembers,
 				mixins: {},
 				messages: {},
-				entitySchemaName: entityName
+				entitySchemaName: entityName,
+				caption: entityCaption
 			};
 			this.entityCache.set(entityName, mod);
 			return mod;
@@ -1602,6 +1717,14 @@ export class SymbolIndex {
 		return this.getEntityModule(entityName)?.members.slice() || [];
 	}
 
+	/** Human-readable title of the entity itself (not a column) - see
+	 * `IndexedModule.caption`. `undefined` for stock/compiled entities (no
+	 * locally readable resource bundle) or an entity with no `Caption` item
+	 * set. */
+	resolveEntityCaption(entityName: string): string | undefined {
+		return this.getEntityModule(entityName)?.caption;
+	}
+
 	findEntityDefinition(
 		entityName: string
 	): { filePath: string; position: { line: number; character: number } } | undefined {
@@ -1616,34 +1739,92 @@ export class SymbolIndex {
 		return undefined;
 	}
 
+	/** Full resolution (member + which schemas got joined in along the way,
+	 * with what join type) for the first `entityNames` entry the path
+	 * actually resolves against — see `esqColumnPath.ts` for the path
+	 * grammar (join-type prefixes, reverse-link `[Schema:Col:Col]`
+	 * segments). */
+	resolveEsqColumnFull(
+		entityNames: string[],
+		columnPath: string
+	): EsqColumnResolution | undefined {
+		for (const entityName of entityNames) {
+			const resolved = resolveEsqColumnPath(
+				(schemaName) => this.getEntityModule(schemaName)?.members,
+				entityName,
+				columnPath
+			);
+			if (resolved) {
+				return resolved;
+			}
+		}
+		return undefined;
+	}
+
 	resolveEsqColumn(
 		entityNames: string[],
 		columnPath: string
 	): IndexedMember | undefined {
-		const parts = columnPath.split(".").filter(Boolean);
-		if (!parts.length || !entityNames.length) {
-			return undefined;
-		}
+		return this.resolveEsqColumnFull(entityNames, columnPath)?.member;
+	}
+
+	/** Position-aware counterpart to `resolveEsqColumnFull` - what the
+	 * *specific* schema/column name at `offset` (a character offset within
+	 * `columnPath`) actually is, rather than always the path's final column.
+	 * See `esqColumnPath.ts#resolveEsqPathAtOffset`. Tries each of
+	 * `entityNames` in turn, same as the other `resolveEsq*` methods. */
+	resolveEsqTargetAtOffset(
+		entityNames: string[],
+		columnPath: string,
+		offset: number
+	): EsqPathHoverTarget | undefined {
 		for (const entityName of entityNames) {
-			let currentEntity = entityName;
-			let found: IndexedMember | undefined;
-			let ok = true;
-			for (let i = 0; i < parts.length; i++) {
-				const members = this.getEntityModule(currentEntity)?.members || [];
-				found = members.find((m) => m.name === parts[i]);
-				if (!found) {
-					ok = false;
-					break;
-				}
-				if (i < parts.length - 1) {
-					currentEntity = found.referenceSchemaName || found.name;
-				}
-			}
-			if (ok && found) {
-				return found;
+			const resolved = resolveEsqPathAtOffset(
+				(schemaName) => this.getEntityModule(schemaName)?.members,
+				entityName,
+				columnPath,
+				offset
+			);
+			if (resolved) {
+				return resolved;
 			}
 		}
 		return undefined;
+	}
+
+	/** Schema reached after `columnPath` (which may end in an unfinished/reverse
+	 * segment) — completion's "what should I suggest next" question, as
+	 * opposed to `resolveEsqColumnFull`'s "what column does this fully name".
+	 * See `esqColumnPath.ts`. */
+	resolveEsqPathSchema(entityNames: string[], columnPath: string): string | undefined {
+		for (const entityName of entityNames) {
+			const resolved = resolveEsqPathSchema(
+				(schemaName) => this.getEntityModule(schemaName)?.members,
+				entityName,
+				columnPath
+			);
+			if (resolved) {
+				return resolved;
+			}
+		}
+		return undefined;
+	}
+
+	/** Real candidates for an in-progress `[Schema:Col:Col]` bracket segment
+	 * (see `esqColumnPath.ts#resolveEsqBracketCandidates` for the actual
+	 * filtering rules per stage) - the completion-time counterpart to
+	 * `resolveEsqPathSchema`, which only cares about *already-typed*
+	 * segments. */
+	resolveEsqBracketCandidates(
+		bracket: EsqBracketContext,
+		currentSchemaCandidates: string[]
+	): EsqBracketCandidates {
+		return resolveEsqBracketCandidates(
+			bracket,
+			currentSchemaCandidates,
+			(prefix) => this.hierarchy.listEntityNames(prefix),
+			(schemaName) => this.getEntityModule(schemaName)?.members
+		);
 	}
 
 	isKnownEsqColumn(entityNames: string[], columnPath: string): boolean {

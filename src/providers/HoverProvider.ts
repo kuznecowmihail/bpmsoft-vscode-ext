@@ -1,10 +1,20 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
-import { IndexedMember, schemaMessageDirectionLabel } from "../index/types";
+import { IndexedMember, schemaMessageDirectionLabel } from "../parse/types";
 import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
 import { getQueryColumnContext, getRootSchemaNameContext, resolveQueryClassNames, resolveQueryEntities } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
-import { isPlatformPrefix, markdownHover, modulesFromExpr } from "./platformLookup";
+import {
+	columnHover,
+	editLocalizedImageLink,
+	editLocalizedStringLink,
+	entityHover,
+	isPlatformPrefix,
+	markdownHover,
+	modulesFromExpr
+} from "./platformLookup";
+import { findSchemaDir } from "../index/schemaResourceLookup";
+import { resolveLocalizedString, resolveLocalizedImage } from "../index/localizationLookup";
 
 function memberHover(
 	title: string,
@@ -19,7 +29,7 @@ function memberHover(
 	]);
 }
 
-export class BpmsoftHoverProvider implements vscode.HoverProvider {
+export class HoverProvider implements vscode.HoverProvider {
 	constructor(private readonly index: SymbolIndex) {}
 
 	provideHover(
@@ -32,34 +42,41 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 
 		const rootCtx = getRootSchemaNameContext(text, offset);
 		if (rootCtx?.name) {
-			const def = this.index.findEntityDefinition(rootCtx.name);
-			const cols = this.index.resolveEntityColumns(rootCtx.name);
-			if (def || cols.length) {
-				const lines = [`**${rootCtx.name}** *(entity)*`];
-				if (def) {
-					lines.push(`\`${def.filePath}\``);
-				}
-				if (cols.length) {
-					lines.push(`${cols.length} column(s)`);
-				}
-				return markdownHover(lines);
+			const hover = this.entityHoverFor(rootCtx.name);
+			if (hover) {
+				return hover;
 			}
 		}
 
 		const colCtx = getQueryColumnContext(text, offset);
 		if (colCtx?.name) {
 			const entities = resolveQueryEntities(text, offset, colCtx.queryIdent);
-			const m = this.index.resolveEsqColumn(entities, colCtx.name);
-			if (m) {
+			const relOffset = offset - colCtx.nameStart;
+			const target = this.index.resolveEsqTargetAtOffset(entities, colCtx.name, relOffset);
+			if (target?.kind === "schema") {
+				const hover = this.entityHoverFor(target.schemaName);
+				if (hover) {
+					return hover;
+				}
+			} else if (target?.kind === "column") {
+				return columnHover(target.member.name, target.schemaName, target.member);
+			}
+
+			// Fell on path punctuation, or the granular walk couldn't
+			// resolve a hop - fall back to the whole path's own final
+			// column, same as before this method knew about cursor position.
+			const resolved = this.index.resolveEsqColumnFull(entities, colCtx.name);
+			if (resolved) {
 				const extra: string[] = [];
 				if (entities.length) {
 					extra.push(`entities: ${entities.join(", ")}`);
 				}
-				return memberHover(
-					`**${colCtx.name}** *(entity column)*`,
-					m,
-					extra
-				);
+				if (resolved.hops.length) {
+					extra.push(
+						`join: ${resolved.hops.map((h) => `${h.joinType} → ${h.schemaName}`).join(", ")}`
+					);
+				}
+				return columnHover(colCtx.name, entities[0] ?? "", resolved.member, extra);
 			}
 		}
 
@@ -125,6 +142,13 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 		}
 
 		const left = getMemberAccessPrefix(text, ident.start);
+
+		if (left) {
+			const localization = this.resolveLocalizationHover(filePath, left, ident.name);
+			if (localization) {
+				return localization;
+			}
+		}
 
 		if (left?.startsWith("this.")) {
 			const nested = this.index.findThisPathMember(
@@ -214,6 +238,132 @@ export class BpmsoftHoverProvider implements vscode.HoverProvider {
 			return markdownHover(lines);
 		}
 
+		return undefined;
+	}
+
+	/** Entity/schema hover (root ESQ argument, or a schema landed on mid-path
+	 * via a `[Schema:...]` reverse-link segment) - `undefined` when nothing
+	 * is actually known about `schemaName`, so callers can fall through to
+	 * whatever else might explain the hover. */
+	private entityHoverFor(schemaName: string): vscode.Hover | undefined {
+		const def = this.index.findEntityDefinition(schemaName);
+		const cols = this.index.resolveEntityColumns(schemaName);
+		if (!def && !cols.length) {
+			return undefined;
+		}
+		return entityHover(schemaName, {
+			filePath: def?.filePath,
+			caption: this.index.resolveEntityCaption(schemaName),
+			columnCount: cols.length
+		});
+	}
+
+/** `Resources.Strings.<key>` / `Resources.Images.<key>` (bare expression or
+	 * inside a string literal like `bindTo: "Resources.Strings.Key"` —
+	 * `left`/`ident` come from the same plain character-class scan either
+	 * way, quotes just aren't in the identifier charset) resolve against the
+	 * *current* schema's own resources. `<param>.localizableStrings.<key>` /
+	 * `<param>.localizableImages.<key>` — the schema's own injected
+	 * `"{Name}Resources"` AMD dependency, commonly aliased `resources` but
+	 * not always — resolve against whichever schema that dependency actually
+	 * names, which is frequently a *different* schema (a mixin, a base
+	 * page, …) than the one being edited; `paramNames`/`dependencies`
+	 * positional lookup (`resolveLocalAlias`) is what already backs the
+	 * plain "jump to this dependency" hover/definition cases, so it's the
+	 * right lookup here too. See `localizationLookup.ts` for the resolution
+	 * rules (same XML item family, either access path per kind — images
+	 * have real, documented gaps a string lookup doesn't). */
+	private resolveLocalizationHover(
+		filePath: string,
+		left: string,
+		key: string
+	): vscode.Hover | undefined {
+		const kind =
+			left === "Resources.Strings" || /\.localizableStrings$/.test(left)
+				? "strings"
+				: left === "Resources.Images" || /\.localizableImages$/.test(left)
+					? "images"
+					: undefined;
+		if (!kind) {
+			return undefined;
+		}
+		const ownSchema = findSchemaDir(filePath);
+		let schemaName: string | undefined;
+		if (left === "Resources.Strings" || left === "Resources.Images") {
+			schemaName = ownSchema?.schemaName;
+		} else {
+			const paramName = left.slice(0, left.lastIndexOf("."));
+			const dep = this.index.resolveLocalAlias(filePath, paramName);
+			schemaName = dep?.endsWith("Resources") ? dep.slice(0, -"Resources".length) : undefined;
+		}
+		if (!schemaName) {
+			return undefined;
+		}
+		const schemaDir =
+			schemaName === ownSchema?.schemaName
+				? ownSchema.schemaDir
+				: this.findSchemaDirByName(schemaName);
+		if (!schemaDir) {
+			return undefined;
+		}
+		return kind === "strings"
+			? this.stringHover(schemaDir, schemaName, key)
+			: this.imageHover(schemaDir, schemaName, key);
+	}
+
+	private stringHover(schemaDir: string, schemaName: string, key: string): vscode.Hover | undefined {
+		const localized = resolveLocalizedString(schemaDir, schemaName, key);
+		if (!localized) {
+			return undefined;
+		}
+		return markdownHover(
+			[
+				`**${key}** *(Resources.Strings, ${schemaName})*`,
+				...localized.values.map((v) => `**${v.culture}:** ${v.value}`),
+				editLocalizedStringLink(schemaDir, schemaName, key)
+			],
+			false,
+			true
+		);
+	}
+
+	private imageHover(schemaDir: string, schemaName: string, key: string): vscode.Hover | undefined {
+		const images = resolveLocalizedImage(schemaDir, schemaName, key);
+		if (!images) {
+			return undefined;
+		}
+		// Same image reused across every culture is the common case - group
+		// by content so it's shown once, not once per culture.
+		const byContent = new Map<string, { mimeType: string; cultures: string[] }>();
+		for (const img of images) {
+			const entry = byContent.get(img.base64);
+			if (entry) {
+				entry.cultures.push(img.culture);
+			} else {
+				byContent.set(img.base64, { mimeType: img.mimeType, cultures: [img.culture] });
+			}
+		}
+		const lines = [`**${key}** *(Resources.Images, ${schemaName})*`];
+		for (const [base64, { mimeType, cultures }] of byContent) {
+			lines.push(cultures.join(", "));
+			// Plain Markdown image syntax has no size control, and these are
+			// UI icons - rendered at native size (often the SVG's own large
+			// viewBox) they can dwarf the rest of the hover. An HTML <img>
+			// with a fixed width (height follows automatically) needs
+			// supportHtml on the MarkdownString.
+			lines.push(`<img src="data:${mimeType};base64,${base64}" width="32" />`);
+		}
+		lines.push(editLocalizedImageLink(schemaDir, schemaName, key));
+		return markdownHover(lines, true, true);
+	}
+
+	private findSchemaDirByName(schemaName: string): string | undefined {
+		for (const mod of this.index.getAllByName(schemaName)) {
+			const dir = findSchemaDir(mod.filePath)?.schemaDir;
+			if (dir) {
+				return dir;
+			}
+		}
 		return undefined;
 	}
 }

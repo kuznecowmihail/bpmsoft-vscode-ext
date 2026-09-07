@@ -1,5 +1,7 @@
+import * as acorn from "acorn";
 import { collectSchemaUnusedIssues, collectDiffDuplicateIssues, InheritedSchemaNames } from "./schemaUsageAnalyzer";
 import { AnyNode, childNodes, parseJs } from "./jsAst";
+import { KNOWN_JSDOC_TAGS, nearestKnownTag } from "./docTagCheck";
 
 type StyleIssueKind =
 	| "krBrace"
@@ -34,7 +36,16 @@ type StyleIssueKind =
 	| "interfacePrefix"
 	| "emptyCatch"
 	| "nullPattern"
-	| "asyncSuffix";
+	| "asyncSuffix"
+	| "idSuffix"
+	| "flagsEnumValue"
+	| "delegateSuffix"
+	| "commentSpacing"
+	| "xmlDocMissing"
+	| "trailingComment"
+	| "selectAllColumnsHint"
+	| "jsDocTagTypo"
+	| "xmlDocTagTypo";
 
 export interface StyleFix {
 	title: string;
@@ -48,8 +59,72 @@ export interface StyleIssue {
 	start: number;
 	end: number;
 	message: string;
-	severity: "warning" | "error";
+	severity: "warning" | "error" | "info";
 	fix?: StyleFix;
+}
+
+/** Kinds that can be silenced at a specific call site via `// bpmsoft-ignore: <id>`. */
+export const SUPPRESSIBLE_RULE_IDS: Partial<Record<StyleIssueKind, string>> = {
+	selectAllColumnsHint: "select-all-columns"
+};
+
+/**
+ * Issue kinds whose `fix` is safe to batch-apply automatically (the
+ * formatter) rather than one at a time with a human looking at each —
+ * pure brace/spacing/comment repositioning and rewrites that don't change
+ * an identifier's name. Deliberately excluded:
+ * - renames (pascalMethod/pascalProperty/privateField/camelLocal/camelParam/
+ *   camelMethod/pascalType/interfacePrefix/idSuffix/delegateSuffix/
+ *   asyncSuffix) — a StyleFix only rewrites its own declaration span; it
+ *   does not know about (or touch) call sites elsewhere in the file or in
+ *   other files, so batch-renaming every flagged declaration on save would
+ *   silently break every reference to it.
+ * - deletions (unusedMethod/unusedAttribute/unusedMessage/debuggerStmt/
+ *   consoleCall) — "unused" is a heuristic with real false-positive edge
+ *   cases (dynamic dispatch, bindTo strings, mixins); deleting code a
+ *   developer wrote should go through a reviewed quick-fix, not a silent
+ *   save-time formatter.
+ * - structural rewrites (switchFallthrough's inserted `break`, which can
+ *   change behavior if the fallthrough was intentional; ifElseChain's
+ *   switch rewrite, which is a refactor, not a format).
+ */
+export const AUTO_FORMAT_SAFE_KINDS: ReadonlySet<StyleIssueKind> = new Set<StyleIssueKind>([
+	"krBrace",
+	"krCuddle",
+	"varDecl",
+	"constAssign",
+	"eqeqeq",
+	"curly",
+	"nanCompare",
+	"allmanBrace",
+	"allmanCuddle",
+	"nullPattern",
+	"commentSpacing",
+	"trailingComment",
+	"jsDocTagTypo",
+	"xmlDocTagTypo"
+]);
+
+const SUPPRESS_COMMENT_RE = /^\/\/\s*bpmsoft-ignore:\s*([\w-]+)\s*$/;
+
+/**
+ * True when the non-blank source line immediately above `start` is a
+ * `// bpmsoft-ignore: <ruleId>` marker matching `ruleId`.
+ */
+export function isSuppressedAbove(source: string, start: number, ruleId: string): boolean {
+	const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+	let prevLineEnd = lineStart > 0 ? lineStart - 1 : -1;
+	while (prevLineEnd >= 0) {
+		const prevLineStart = source.lastIndexOf("\n", prevLineEnd - 1) + 1;
+		const prevLine = source.slice(prevLineStart, prevLineEnd).trim();
+		if (!prevLine) {
+			prevLineEnd = prevLineStart > 0 ? prevLineStart - 1 : -1;
+			continue;
+		}
+		const m = SUPPRESS_COMMENT_RE.exec(prevLine);
+		return !!m && m[1] === ruleId;
+	}
+	return false;
 }
 
 type BindingKind = "const" | "let" | "var" | "param" | "function";
@@ -99,7 +174,8 @@ export function collectStyleIssues(
 	source: string,
 	inherited?: InheritedSchemaNames
 ): StyleIssue[] {
-	const ast = parseJs(source);
+	const comments: acorn.Comment[] = [];
+	const ast = parseJs(source, comments);
 	if (!ast) {
 		return [];
 	}
@@ -121,6 +197,8 @@ export function collectStyleIssues(
 	pushUnusedBindings(ctx);
 	issues.push(...collectSchemaUnusedIssues(source, inherited, ast));
 	issues.push(...collectDiffDuplicateIssues(ast));
+	issues.push(...collectTrailingCommentIssues(source, comments));
+	issues.push(...collectJsDocTagIssues(comments));
 	return issues;
 }
 
@@ -180,6 +258,7 @@ function visit(
 			return;
 		case "AssignmentExpression":
 			markAssignment(node.left, scope, ctx.issues);
+			checkAllColumnsAssignment(node, ctx);
 			visitLValue(node.left, scope, ctx);
 			visit(node.right, scope, ctx, false);
 			return;
@@ -428,7 +507,7 @@ function visitVariableDeclaration(node: AnyNode, scope: Scope, ctx: AnalyzeCtx):
 			checkCamelName(ctx, decl.id, "camelMethod", "Метод");
 		} else {
 			forEachIdent(decl.id, (ident) =>
-				checkCamelName(ctx, ident, "camelLocal", "Переменная")
+				checkCamelName(ctx, ident, "camelLocal", "Переменная", kind === "const")
 			);
 		}
 	}
@@ -800,6 +879,7 @@ function visitLValue(node: AnyNode | undefined, scope: Scope, ctx: AnalyzeCtx): 
 function visitCall(node: AnyNode, scope: Scope, ctx: AnalyzeCtx): void {
 	const callee = node.callee as AnyNode;
 	const isDefine = callee?.type === "Identifier" && callee.name === "define";
+	checkExtCreateEsqAllColumns(node, ctx);
 	visit(callee, scope, ctx, false);
 	for (const arg of (node.arguments as AnyNode[]) || []) {
 		if (
@@ -809,6 +889,79 @@ function visitCall(node: AnyNode, scope: Scope, ctx: AnalyzeCtx): void {
 			visitFunction(arg, scope, ctx, true);
 		} else {
 			visit(arg, scope, ctx, false);
+		}
+	}
+}
+
+function pushSelectAllColumnsHint(ctx: AnalyzeCtx, start: number, end: number): void {
+	if (isSuppressedAbove(ctx.source, start, "select-all-columns")) {
+		return;
+	}
+	ctx.issues.push({
+		kind: "selectAllColumnsHint",
+		start,
+		end,
+		message: "Убедитесь, что нужны все колонки — уточните список для эффективности",
+		severity: "info"
+	});
+}
+
+function checkAllColumnsAssignment(node: AnyNode, ctx: AnalyzeCtx): void {
+	const left = node.left as AnyNode;
+	if (!left || left.type !== "MemberExpression" || left.computed) {
+		return;
+	}
+	const prop = left.property as AnyNode;
+	if (prop?.type !== "Identifier" || prop.name !== "allColumns") {
+		return;
+	}
+	const right = node.right as AnyNode;
+	if (right?.type === "Literal" && right.value === true) {
+		pushSelectAllColumnsHint(ctx, node.start, node.end);
+	}
+}
+
+function checkExtCreateEsqAllColumns(node: AnyNode, ctx: AnalyzeCtx): void {
+	const callee = node.callee as AnyNode;
+	if (!callee || callee.type !== "MemberExpression" || callee.computed) {
+		return;
+	}
+	const obj = callee.object as AnyNode;
+	const prop = callee.property as AnyNode;
+	if (
+		obj?.type !== "Identifier" ||
+		obj.name !== "Ext" ||
+		prop?.type !== "Identifier" ||
+		prop.name !== "create"
+	) {
+		return;
+	}
+	const args = (node.arguments as AnyNode[]) || [];
+	const classArg = args[0];
+	if (classArg?.type !== "Literal" || classArg.value !== "BPMSoft.EntitySchemaQuery") {
+		return;
+	}
+	const configArg = args[1];
+	if (configArg?.type !== "ObjectExpression") {
+		return;
+	}
+	for (const configProp of (configArg.properties as AnyNode[]) || []) {
+		if (configProp.type !== "Property" || configProp.computed) {
+			continue;
+		}
+		const key = configProp.key as AnyNode;
+		const keyName =
+			key?.type === "Identifier"
+				? key.name
+				: key?.type === "Literal"
+					? String(key.value)
+					: undefined;
+		if (keyName !== "allColumns") {
+			continue;
+		}
+		const value = configProp.value as AnyNode;
+		if (value?.type === "Literal" && value.value === true) {
+			pushSelectAllColumnsHint(ctx, key.start, value.end);
 		}
 	}
 }
@@ -1435,7 +1588,8 @@ function checkCamelName(
 	ctx: AnalyzeCtx,
 	node: AnyNode | undefined,
 	kind: "camelLocal" | "camelParam" | "camelMethod",
-	label: string
+	label: string,
+	allowScreamingSnakeConst = false
 ): void {
 	if (!node) {
 		return;
@@ -1446,7 +1600,14 @@ function checkCamelName(
 			: node.type === "Literal" && typeof node.value === "string"
 				? node.value
 				: "";
-	if (!name || name === "constructor" || name === "_" || isJsCamelCase(name)) {
+	if (!name || name === "constructor" || name === "_") {
+		return;
+	}
+	if (isJsCamelCase(name)) {
+		checkIdSuffix(ctx, node, name, label);
+		return;
+	}
+	if (allowScreamingSnakeConst && isScreamingSnakeCase(name)) {
 		return;
 	}
 	const next = toJsCamel(name);
@@ -1472,6 +1633,43 @@ function isJsCamelCase(name: string): boolean {
 	return /^_?[a-z][a-zA-Z0-9]*$/.test(name);
 }
 
+function isScreamingSnakeCase(name: string): boolean {
+	return /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$/.test(name);
+}
+
+const ID_SUFFIX_RE = /(^|[a-z0-9])ID($|[A-Z])/;
+
+function findIdSuffixIndex(name: string): number {
+	const m = ID_SUFFIX_RE.exec(name);
+	return m ? m.index + m[1].length : -1;
+}
+
+function checkIdSuffix(
+	ctx: AnalyzeCtx,
+	node: AnyNode,
+	name: string,
+	label: string
+): void {
+	const idx = findIdSuffixIndex(name);
+	if (idx < 0) {
+		return;
+	}
+	const next = name.slice(0, idx) + "Id" + name.slice(idx + 2);
+	ctx.issues.push({
+		kind: "idSuffix",
+		start: node.start as number,
+		end: node.end as number,
+		message: `${label} «${name}»: используйте суффикс Id, не ID`,
+		severity: "warning",
+		fix: {
+			title: `Переименовать в ${next}`,
+			start: node.start as number,
+			end: node.end as number,
+			text: node.type === "Literal" ? JSON.stringify(next) : next
+		}
+	});
+}
+
 function toJsCamel(name: string): string {
 	const priv = name.startsWith("_");
 	const stripped = name.replace(/^_+/, "");
@@ -1489,6 +1687,80 @@ function lineIndent(source: string, offset: number): string {
 		i++;
 	}
 	return source.slice(lineStart, i);
+}
+
+function collectTrailingCommentIssues(source: string, comments: acorn.Comment[]): StyleIssue[] {
+	const issues: StyleIssue[] = [];
+	for (const comment of comments) {
+		if (comment.type !== "Line") {
+			continue;
+		}
+		const lineStart = source.lastIndexOf("\n", comment.start - 1) + 1;
+		const before = source.slice(lineStart, comment.start);
+		if (!before.trim()) {
+			continue;
+		}
+		const indent = lineIndent(source, lineStart);
+		const codeOnly = before.replace(/\s+$/, "");
+		const commentText = source.slice(comment.start, comment.end);
+		const nl = source.includes("\r\n") ? "\r\n" : "\n";
+		issues.push({
+			kind: "trailingComment",
+			start: comment.start,
+			end: comment.end,
+			message: "Комментарий в конце строки кода: перенесите на отдельную строку",
+			severity: "warning",
+			fix: {
+				title: "Перенести комментарий на отдельную строку выше",
+				start: lineStart,
+				end: comment.end,
+				text: `${indent}${commentText}${nl}${codeOnly}`
+			}
+		});
+	}
+	return issues;
+}
+
+/** `@tag` lines in a `/** ... *​/` JSDoc comment — checked against
+ * `KNOWN_JSDOC_TAGS`, flagged only when unambiguously a typo of a real one
+ * (see `docTagCheck.ts`). Only matches at the start of a comment line (after
+ * the conventional leading `*`), which also keeps this from misfiring on an
+ * inline `{@link ...}` tag or an `@`-mention mid-sentence (an email address
+ * in a comment, say) - both sit mid-line, never at the line start. */
+function collectJsDocTagIssues(comments: acorn.Comment[]): StyleIssue[] {
+	const issues: StyleIssue[] = [];
+	const tagRe = /(^|\n)([ \t]*\*?[ \t]*)@([A-Za-z]+)\b/g;
+	for (const comment of comments) {
+		if (comment.type !== "Block" || !comment.value.startsWith("*")) {
+			continue;
+		}
+		const valueStart = comment.start + 2;
+		tagRe.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		while ((m = tagRe.exec(comment.value))) {
+			const tag = m[3];
+			const suggestion = nearestKnownTag(tag, KNOWN_JSDOC_TAGS);
+			if (!suggestion) {
+				continue;
+			}
+			const tagStart = valueStart + m.index + m[1].length + m[2].length;
+			const tagEnd = tagStart + 1 + tag.length;
+			issues.push({
+				kind: "jsDocTagTypo",
+				start: tagStart,
+				end: tagEnd,
+				message: `Неизвестный JSDoc-тег «@${tag}» — похоже на опечатку, ожидается «@${suggestion}»`,
+				severity: "warning",
+				fix: {
+					title: `Заменить на @${suggestion}`,
+					start: tagStart,
+					end: tagEnd,
+					text: `@${suggestion}`
+				}
+			});
+		}
+	}
+	return issues;
 }
 
 function guessUnit(source: string, ifNode: AnyNode, outer: string): string {

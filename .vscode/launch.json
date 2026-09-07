@@ -6,8 +6,9 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
-        "${workspaceFolder}/../../docker/crm-infrastructure/crm-volumes/suppliers2_190_test"
+        "--disable-extensions",
+        "--enable-extension=ms-dotnettools.csharp",
+        "--extensionDevelopmentPath=${workspaceFolder}"
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"

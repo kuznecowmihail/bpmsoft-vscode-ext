@@ -28,6 +28,31 @@ export interface IndexedMember {
 	children?: IndexedMember[];
 	/** Lookup/entity path target, e.g. Contact for column Contact */
 	referenceSchemaName?: string;
+	/** Diff-node only: `values.itemType` verbatim (e.g.
+	 * `"BPMSoft.ViewItemType.BUTTON"`) — lets the Outline provider look up
+	 * the real Ext control class via `ViewControlsIndex` and list its
+	 * available-but-unfilled properties, without amdAst.ts needing to know
+	 * about that index. */
+	viewItemType?: string;
+	/** dataModel/detail item only: the local attribute/column name it ties
+	 * back to (`dataModels.<X>.primaryColumnValue.bindTo`,
+	 * `details.<X>.filter.masterColumn`/`detailColumn`) — lets the Outline
+	 * provider cross-link it to the matching entry in "Атрибуты" or
+	 * "Бизнес-правила" (which is itself already grouped by attribute name),
+	 * without re-deriving it from `detail`'s rendered text. */
+	linkedAttributeName?: string;
+	/** Attribute-kind member only: its own `dataValueType` (e.g.
+	 * `"BPMSoft.DataValueType.LOOKUP"`), if declared. Lets a diff node with
+	 * no `itemType` of its own (an ordinary `bindTo`-bound field) resolve
+	 * its real control via `ViewControlsIndex.resolveControlByDataValueType`
+	 * — see CLAUDE.md §4b's `generateEditControl` writeup. */
+	dataValueType?: string;
+	/** Entity column only: the human-readable title from the owning
+	 * package's own `Resources/{Entity}.Entity/resource.{culture}.xml`
+	 * (`Columns.<Name>.Caption`) — the business name, not the code name.
+	 * Only available for custom (Pkg) entities; stock/compiled entities
+	 * have no locally readable resource bundle for this. */
+	caption?: string;
 }
 
 export function memberDedupeKey(member: IndexedMember): string {
@@ -55,6 +80,13 @@ export interface IndexedModule {
 	filePath: string;
 	kind: "amd" | "mixin" | "constants" | "page" | "class" | "unknown";
 	dependencies: string[];
+	/** `css!`/`text!` loader-plugin entries from the same `define([...])`
+	 * list — kept separate from `dependencies` because they don't bind to a
+	 * factory parameter (RequireJS loads them as a side effect), so folding
+	 * them back in would break `dependencies`' 1:1 positional alignment with
+	 * `paramNames` that `SymbolIndex.resolveLocalAlias` relies on. Outline
+	 * display only. */
+	pluginDependencies?: string[];
 	/** Parameter names in the define factory (aligned with deps when possible) */
 	paramNames: string[];
 	members: IndexedMember[];
@@ -70,6 +102,10 @@ export interface IndexedModule {
 	extend?: string;
 	/** Client schema entity, e.g. Account → conf/content/Account.js columns */
 	entitySchemaName?: string;
+	/** Entity's own human-readable title (`Resources/{Entity}.Entity`'s
+	 * top-level `Caption` item) - only available for custom (Pkg) entities,
+	 * same reason as `IndexedMember.caption`. */
+	caption?: string;
 	/**
 	 * Ext.define members of conf/content/{Entity}.js for `this.entitySchema`
 	 * (name, uId, caption, …). Columns stay on `members`.
@@ -82,6 +118,30 @@ export interface IndexedModule {
 	 * `this.foo.bind(this)` (e.g. ModalBoxSchemaModule.createViewModel).
 	 */
 	viewModelBindings?: string[];
+	/** One entry per `diff: [...]` array element (view-model schemas only) —
+	 * outline/browsing aid, not used for completion/hover. */
+	diffMembers?: IndexedMember[];
+	/** `rules` (hand-written) merged with `businessRules` (Designer panel
+	 * output) the same way `BusinessRulesApplierV2.mergeRules` merges them at
+	 * runtime — for the same reason as `diffMembers`. See CLAUDE.md §4b. */
+	businessRuleMembers?: IndexedMember[];
+	/** `businessRulesMultiplyActions` — a separate, tree-based rules engine
+	 * (one shared condition can drive actions across multiple columns), kept
+	 * apart from `businessRuleMembers` since its shape is genuinely
+	 * different. See CLAUDE.md §4b. */
+	multiplyActionMembers?: IndexedMember[];
+	/** `details: { DetailName: {...} }` — a Detail embedded directly in the
+	 * schema's own config (rare — most schemas carry this only as the
+	 * Designer's empty placeholder), for the same reason as `diffMembers`. */
+	detailMembers?: IndexedMember[];
+	/** `modules: { Name: { moduleClassName, config } }` — named, pre-configured
+	 * embedded module instances a `diff` MODULE entry mounts by name. See
+	 * CLAUDE.md §4b. */
+	embeddedModuleMembers?: IndexedMember[];
+	/** `dataModels: { Name: { entitySchemaName, primaryColumnValue } }` —
+	 * named references to a related entity reached via a lookup attribute.
+	 * See CLAUDE.md §4b. */
+	dataModelMembers?: IndexedMember[];
 }
 
 export type SchemaMessageDirection = "publish" | "subscribe" | "bidirectional";

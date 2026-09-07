@@ -1,3 +1,5 @@
+import { parseJsonNoBom, stripBom } from "../textUtils";
+
 export interface SchemaStructure {
 	schemaName: string;
 	innerHierarchyStack: string[];
@@ -30,7 +32,7 @@ export function parseStructuresLine(
 	source: string,
 	expectedSchema?: string
 ): SchemaStructure | null {
-	const text = source.replace(/^\uFEFF/, "");
+	const text = stripBom(source);
 	const match = text.match(STRUCTURES_RE);
 	if (!match) {
 		return null;
@@ -77,24 +79,12 @@ export function pascalSchemaTypeToEnum(value: string): string {
  * Creatio wraps fields in `Properties`; some dumps keep a top-level `SchemaType`.
  */
 export function parsePkgPropertiesSchemaType(jsonText: string): string | undefined {
-	try {
-		const parsed = JSON.parse(jsonText.replace(/^\uFEFF/, "")) as {
-			SchemaType?: unknown;
-			Properties?: { SchemaType?: unknown };
-		};
-		const nested = parsed?.Properties?.SchemaType;
-		const top = parsed?.SchemaType;
-		const raw =
-			(typeof nested === "string" ? nested : undefined) ||
-			(typeof top === "string" ? top : undefined);
-		const trimmed = raw?.trim();
-		if (trimmed) {
-			return pascalSchemaTypeToEnum(trimmed);
-		}
-	} catch {
-		// ignore
-	}
-	return undefined;
+	const parsed = parseJsonNoBom<{ SchemaType?: unknown; Properties?: { SchemaType?: unknown } }>(jsonText);
+	const nested = parsed?.Properties?.SchemaType;
+	const top = parsed?.SchemaType;
+	const raw = (typeof nested === "string" ? nested : undefined) || (typeof top === "string" ? top : undefined);
+	const trimmed = raw?.trim();
+	return trimmed ? pascalSchemaTypeToEnum(trimmed) : undefined;
 }
 
 /**
@@ -102,7 +92,7 @@ export function parsePkgPropertiesSchemaType(jsonText: string): string | undefin
  * Schema-to-schema extend (extend: "BaseDataViewNUI") is ignored.
  */
 export function parseStructurePlatformExtend(source: string): string | undefined {
-	const text = source.replace(/^\uFEFF/, "");
+	const text = stripBom(source);
 	const match = text.match(
 		/\bextend\s*:\s*['"]((?:BPMSoft|Ext)\.[\w.]+)['"]/
 	);
@@ -130,17 +120,60 @@ export function shouldWalkDescriptorParent(
  * Parent.Name from a client schema descriptor.json.
  */
 export function parseDescriptorParent(source: string): string | undefined {
-	try {
-		const json = JSON.parse(source.replace(/^\uFEFF/, ""));
-		const root = json?.Descriptor && typeof json.Descriptor === "object"
-			? json.Descriptor
-			: json;
-		const name = root?.Parent?.Name;
-		if (typeof name === "string" && /^[A-Za-z_][\w]*$/.test(name)) {
-			return name;
-		}
-	} catch {
-		// ignore
+	const json = parseJsonNoBom<any>(source);
+	const root = json?.Descriptor && typeof json.Descriptor === "object" ? json.Descriptor : json;
+	const name = root?.Parent?.Name;
+	return typeof name === "string" && /^[A-Za-z_][\w]*$/.test(name) ? name : undefined;
+}
+
+export interface DescriptorInfo {
+	name?: string;
+	managerName?: string;
+}
+
+/**
+ * Own Name/ManagerName from a client schema descriptor.json (as opposed to
+ * `parseDescriptorParent`, which reads the *parent's* name).
+ */
+export function parseDescriptorInfo(source: string): DescriptorInfo | undefined {
+	const json = parseJsonNoBom<any>(source);
+	if (json === undefined) {
+		return undefined;
 	}
-	return undefined;
+	const root = json?.Descriptor && typeof json.Descriptor === "object" ? json.Descriptor : json;
+	const name = typeof root?.Name === "string" ? root.Name : undefined;
+	const managerName = typeof root?.ManagerName === "string" ? root.ManagerName : undefined;
+	if (!name && !managerName) {
+		return undefined;
+	}
+	return { name, managerName };
+}
+
+/**
+ * `SqlScript.Name` from a `Pkg/{package}/SqlScripts/{name}/descriptor.json`
+ * file \u2014 a different root key (`SqlScript`, not `Descriptor`) from client
+ * schemas.
+ */
+export function parseSqlScriptDescriptorName(source: string): string | undefined {
+	const json = parseJsonNoBom<any>(source);
+	const name = json?.SqlScript?.Name;
+	return typeof name === "string" && name ? name : undefined;
+}
+
+/**
+ * `Descriptor.ModifiedOnUtc` from a schema's own descriptor.json \u2014 the
+ * .NET JSON date wire format (`"\/Date(<ms since epoch>)\/"`), confirmed
+ * real against every schema descriptor checked in two installs. Used as the
+ * cache-invalidation key for an owned schema (see `ownedSchemaCache.ts`):
+ * this extension keeps it current itself (see `touchSchemaModifiedOnUtc` in
+ * `extension.ts`) whenever any file belonging to the schema is saved,
+ * rather than relying on it only being updated by the BPMSoft Designer/
+ * server, which a git-first, edit-the-files-directly workflow never
+ * actually goes through.
+ */
+export function parseDescriptorModifiedOnUtc(source: string): string | undefined {
+	const json = parseJsonNoBom<any>(source);
+	const root = json?.Descriptor && typeof json.Descriptor === "object" ? json.Descriptor : json;
+	const value = root?.ModifiedOnUtc;
+	return typeof value === "string" && value ? value : undefined;
 }

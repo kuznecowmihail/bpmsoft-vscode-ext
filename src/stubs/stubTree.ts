@@ -1,4 +1,4 @@
-import { PlatformStubMember } from "../index/types";
+import { PlatformStubMember } from "../parse/types";
 
 export function cloneStub(s: PlatformStubMember): PlatformStubMember {
 	return {

@@ -1,8 +1,10 @@
 .vscode-test/**
 .vscode/**
+.claude/**
 .gitignore
 tsconfig.json
 **/*.ts
 **/*.map
 scripts/**
 src/**
+BPMSoft-IntelliSense-presentation.pptx

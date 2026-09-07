@@ -4,7 +4,7 @@ import {
 	IndexedMember,
 	IndexedModule,
 	memberDedupeKey
-} from "../index/types";
+} from "./types";
 import { AnyNode, parseJs } from "./jsAst";
 import {
 	isExtDefineCall,
@@ -171,6 +171,7 @@ export {
 	getQueryColumnContext,
 	resolveQueryEntities,
 	resolveQueryClassNames,
-	collectEsqColumnAccesses
+	collectEsqColumnAccesses,
+	getConstructorConfigContext
 } from "./esqQuery";
-export type { EsqNameSpan, EsqColumnContext, EsqColumnAccess } from "./esqQuery";
+export type { EsqNameSpan, EsqColumnContext, EsqColumnAccess, ConstructorConfigContext } from "./esqQuery";

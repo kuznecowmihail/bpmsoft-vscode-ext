@@ -1,10 +1,11 @@
 import { COLUMN_ARG0 } from "./esqBinds";
 
-export type { EsqColumnAccess } from "./esqBinds";
+export type { EsqColumnAccess, ConstructorConfigContext } from "./esqBinds";
 export {
 	resolveQueryEntities,
 	resolveQueryClassNames,
-	collectEsqColumnAccesses
+	collectEsqColumnAccesses,
+	getConstructorConfigContext
 } from "./esqBinds";
 
 const METHOD_ARG0_PATTERN = [...COLUMN_ARG0].join("|");
@@ -33,12 +34,18 @@ function identEndPlain(documentText: string, offset: number): number {
 	return nameEnd;
 }
 
+// Column-path content only (not a plain identifier) - a real path can be
+// `[Schema:Col:Col].Name`, `=Contact.Name`, etc. (see esqColumnPath.ts for
+// the grammar). None of these extra characters can appear inside the plain
+// identifiers this same character class is used for elsewhere (rootSchemaName,
+// method names), and forward-scanning still correctly stops at the string's
+// own closing quote since that's never in this class.
+const PATH_CHARS = "[\\w.$:\\[\\]<>=*]";
+const PATH_CHARS_RE = new RegExp(PATH_CHARS);
+
 function identEndDotted(documentText: string, offset: number): number {
 	let nameEnd = offset;
-	while (
-		nameEnd < documentText.length &&
-		/[\w.$]/.test(documentText[nameEnd])
-	) {
+	while (nameEnd < documentText.length && PATH_CHARS_RE.test(documentText[nameEnd])) {
 		nameEnd++;
 	}
 	return nameEnd;
@@ -124,7 +131,7 @@ export function getQueryColumnContext(
 	const before = text.slice(Math.max(0, offset - 500), offset);
 
 	const arg0Re = new RegExp(
-		`\\b([A-Za-z_$][\\w$]*)\\s*\\.\\s*(${METHOD_ARG0_PATTERN})\\s*\\(\\s*(?:(["'])([\\w.$]*)|([\\w.$]*))$`
+		`\\b([A-Za-z_$][\\w$]*)\\s*\\.\\s*(${METHOD_ARG0_PATTERN})\\s*\\(\\s*(?:(["'])(${PATH_CHARS}*)|(${PATH_CHARS}*))$`
 	);
 	let m = before.match(arg0Re);
 	if (m) {
@@ -134,7 +141,9 @@ export function getQueryColumnContext(
 	}
 
 	m = before.match(
-		/\b([A-Za-z_$][\w$]*)\s*\.\s*(createColumnFilterWithParameter)\s*\(\s*[^,]+,\s*(?:(["'])([\w.$]*)|([\w.$]*))$/
+		new RegExp(
+			`\\b([A-Za-z_$][\\w$]*)\\s*\\.\\s*(createColumnFilterWithParameter)\\s*\\(\\s*[^,]+,\\s*(?:(["'])(${PATH_CHARS}*)|(${PATH_CHARS}*))$`
+		)
 	);
 	if (m) {
 		const quote = (m[3] as '"' | "'" | undefined) || undefined;
@@ -143,7 +152,9 @@ export function getQueryColumnContext(
 	}
 
 	m = before.match(
-		/\bBPMSoft\s*\.\s*createColumnFilterWithParameter\s*\(\s*[^,]+,\s*(?:(["'])([\w.$]*)|([\w.$]*))$/
+		new RegExp(
+			`\\bBPMSoft\\s*\\.\\s*createColumnFilterWithParameter\\s*\\(\\s*[^,]+,\\s*(?:(["'])(${PATH_CHARS}*)|(${PATH_CHARS}*))$`
+		)
 	);
 	if (m) {
 		const quote = (m[1] as '"' | "'" | undefined) || undefined;

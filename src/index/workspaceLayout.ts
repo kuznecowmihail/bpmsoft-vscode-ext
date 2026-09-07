@@ -332,6 +332,20 @@ export function walkJsFiles(
 	predicate: (absPath: string) => boolean,
 	maxFiles = 200000
 ): string[] {
+	return walkFiles(rootDir, (name) => name.endsWith(".js"), predicate, maxFiles);
+}
+
+/**
+ * Same directory walk as `walkJsFiles` (skips `node_modules`/`.git`), but
+ * for an arbitrary file-name test instead of a hardcoded `.js` suffix —
+ * e.g. `descriptor.json`, `.cs`, `.sql`.
+ */
+export function walkFiles(
+	rootDir: string,
+	nameMatches: (fileName: string) => boolean,
+	predicate: (absPath: string) => boolean,
+	maxFiles = 200000
+): string[] {
 	const out: string[] = [];
 	if (!rootDir || !fs.existsSync(rootDir)) {
 		return out;
@@ -355,7 +369,7 @@ export function walkJsFiles(
 				stack.push(full);
 				continue;
 			}
-			if (ent.isFile() && ent.name.endsWith(".js") && predicate(full)) {
+			if (ent.isFile() && nameMatches(ent.name) && predicate(full)) {
 				out.push(full);
 			}
 		}
