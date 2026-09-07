@@ -85,7 +85,7 @@ Hover по тем же конструкциям: вид члена, докуме
 
 ### ESQ-запросы (EntitySchemaQuery / InsertQuery / UpdateQuery / DeleteQuery)
 
-Расширение отслеживает переменные, созданные через `Ext.create("BPMSoft.EntitySchemaQuery", { rootSchemaName: "Contact" })` (а также `BPMSoft.InsertQuery`, `BPMSoft.UpdateQuery`, `BPMSoft.DeleteQuery`), и знает, к какому объекту относится запрос.
+Расширение отслеживает переменные, созданные через `Ext.create("BPMSoft.EntitySchemaQuery", { rootSchemaName: "Contact" })` **или** `new BPMSoft.EntitySchemaQuery({ rootSchemaName: "Contact" })` (а также `BPMSoft.InsertQuery`, `BPMSoft.UpdateQuery`, `BPMSoft.DeleteQuery`), и знает, к какому объекту относится запрос.
 
 | Возможность | Где работает |
 | --- | --- |
@@ -93,8 +93,11 @@ Hover по тем же конструкциям: вид члена, докуме
 | Автодополнение колонок объекта | 1-й аргумент `addColumn`, `addSchemaColumn`, `addAggregationSchemaColumn`, `createColumnIsNullFilter` / `createColumnIsNotNullFilter`, `createColumnBetweenFilterWithParameters`, `setParameterValue`, `setColumnValue`; 2-й аргумент `createColumnFilterWithParameter` |
 | Пути через lookup | `"Account.PrimaryContact.Name"` — каждый сегмент дополняется по метаданным объекта, на который ссылается lookup-колонка |
 | Автодополнение по `esq.` | Методы и свойства классов запросов из платформенного UI |
+| Автодополнение ключей конфига | Внутри `{ }` у `Ext.create("BPMSoft.X", { })` / `new BPMSoft.X({ })` — свойства и методы самого класса (`rootSchemaName`, `filters`, `columns`, …), кроме уже указанных. Не ограничено списком ESQ-классов — работает для любого класса, у которого есть проиндексированные члены |
 | Hover и `F12` | По `rootSchemaName` — к объекту (`conf/content` / `metadata.json`); по имени колонки — к её описанию. В сложном пути (`"[VwSysAdminUnit:Id:SysUser].Id"`) hover учитывает, на какую именно часть пути наведён курсор (схему или конкретную колонку), а не всегда резолвит в последнюю колонку пути |
 | Диагностика | Предупреждение «Колонка … не найдена в объекте … (conf / metadata)», если объект проиндексирован, а колонки в нём нет |
+
+`esq.`-автодополнение устойчиво к «висящей точке» прямо в момент набора (`insertQuery.` без имени свойства после точки — невалидный JS сам по себе): если разбор всего файла из-за этого падает, точка автодополнения точечно патчится перед повторным разбором, а не просто возвращает пустой список.
 
 Колонки берутся из `conf/content/{Entity}.js` и `Pkg/**/Schemas/{Entity}/metadata.json` (как и для `this.$`).
 

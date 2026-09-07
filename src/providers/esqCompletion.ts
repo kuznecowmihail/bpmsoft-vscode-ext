@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { IndexedMember } from "../parse/types";
-import { EsqNameSpan } from "../parse/esqQuery";
+import { EsqNameSpan, ConstructorConfigContext } from "../parse/esqQuery";
 import { EsqBracketContext } from "../parse/esqColumnPath";
 
 export type { EsqBracketContext } from "../parse/esqColumnPath";
@@ -44,6 +44,46 @@ export function toEntityNameItems(
 			item.preselect = i === 0;
 			item.insertText = ctx.quote ? name : `"${name}"`;
 			item.range = range;
+			return item;
+		});
+}
+
+/** Completion for `Ext.create("BPMSoft.X", {…|…})` / `new BPMSoft.X({…|…})` -
+ * the class's own declared members (config keys), minus whatever's already
+ * present in the object literal (see `getConstructorConfigContext`). */
+export function toConstructorConfigItems(
+	members: IndexedMember[],
+	ctx: ConstructorConfigContext,
+	document: vscode.TextDocument
+): vscode.CompletionItem[] {
+	const typed = ctx.typed.toLowerCase();
+	const range = new vscode.Range(
+		document.positionAt(ctx.nameStart),
+		document.positionAt(ctx.nameEnd)
+	);
+	return members
+		.filter(
+			(m) =>
+				(m.kind === "property" || m.kind === "method" || m.kind === "attribute") &&
+				!ctx.existingKeys.has(m.name) &&
+				(!typed || m.name.toLowerCase().startsWith(typed))
+		)
+		.map((m, i) => {
+			const item = new vscode.CompletionItem(
+				m.name,
+				m.kind === "method"
+					? vscode.CompletionItemKind.Method
+					: vscode.CompletionItemKind.Property
+			);
+			item.detail = `BPMSoft · ${m.detail || m.kind}`;
+			item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
+			item.filterText = m.name;
+			item.preselect = i === 0;
+			item.insertText = new vscode.SnippetString(`${m.name}: $0`);
+			item.range = range;
+			if (m.documentation) {
+				item.documentation = new vscode.MarkdownString(m.documentation);
+			}
 			return item;
 		});
 }

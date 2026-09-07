@@ -1,10 +1,11 @@
 import { COLUMN_ARG0 } from "./esqBinds";
 
-export type { EsqColumnAccess } from "./esqBinds";
+export type { EsqColumnAccess, ConstructorConfigContext } from "./esqBinds";
 export {
 	resolveQueryEntities,
 	resolveQueryClassNames,
-	collectEsqColumnAccesses
+	collectEsqColumnAccesses,
+	getConstructorConfigContext
 } from "./esqBinds";
 
 const METHOD_ARG0_PATTERN = [...COLUMN_ARG0].join("|");

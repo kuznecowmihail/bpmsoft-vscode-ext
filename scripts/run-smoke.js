@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert, getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, collectEsqColumnAccesses } = require("../out/parse/amdParser");
+const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert, getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, collectEsqColumnAccesses, getConstructorConfigContext } = require("../out/parse/amdParser");
 const { parsePkgEntityColumns, parseEntityResourceCaptions } = require("../out/parse/entityMetadata");
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
@@ -857,6 +857,77 @@ if (orderLead && eventTracking) {
 				console.log("ESQ class methods hierarchy OK", "addColumn", path.basename(addCol.filePath), "execute", path.basename(execute.filePath), "filters", path.basename(filters.filePath));
 			}
 		}
+	}
+
+	// `new BPMSoft.EntitySchemaQuery({...})` must bind exactly like
+	// `Ext.create("BPMSoft.EntitySchemaQuery", {...})` does - both the
+	// entity (rootSchemaName) and the class name (for `esq.` member
+	// completion).
+	const newExprSrc = [
+		'define("Test", [], function() {',
+		"	return {",
+		"		methods: {",
+		"			run: function() {",
+		'				const esq = new BPMSoft.EntitySchemaQuery({',
+		'					rootSchemaName: "Contact"',
+		"				});",
+		'				esq.addColumn("Name");',
+		"			}",
+		"		}",
+		"	};",
+		"});"
+	].join("\n");
+	const newExprAt = newExprSrc.indexOf('esq.addColumn("') + 'esq.addColumn("'.length;
+	const newExprEnts = resolveQueryEntities(newExprSrc, newExprAt, "esq");
+	const newExprClasses = resolveQueryClassNames(newExprSrc, newExprAt, "esq");
+	if (!newExprEnts.includes("Contact") || !newExprClasses.includes("BPMSoft.EntitySchemaQuery")) {
+		console.error("Expected `new BPMSoft.EntitySchemaQuery(...)` to bind Contact/EntitySchemaQuery", newExprEnts, newExprClasses);
+		failed = true;
+	} else {
+		console.log("new-expression ESQ bind OK");
+	}
+
+	// A `.`-triggered member completion request fires with the buffer mid-edit
+	// - `insertQuery.` with nothing typed after the dot yet is invalid JS on
+	// its own, and used to fail the *whole file's* AST parse silently,
+	// zeroing every ESQ bind in it (not just at the cursor).
+	const danglingDotSrc = [
+		'define("Test", [], function() {',
+		"	return {",
+		"		methods: {",
+		"			run: function() {",
+		'				const insertQuery = Ext.create("BPMSoft.InsertQuery", {',
+		'					rootSchemaName: "Account"',
+		"				});",
+		"				insertQuery.",
+		"			}",
+		"		}",
+		"	};",
+		"});"
+	].join("\n");
+	const danglingDotAt = danglingDotSrc.lastIndexOf("insertQuery.") + "insertQuery.".length;
+	const danglingDotClasses = resolveQueryClassNames(danglingDotSrc, danglingDotAt, "insertQuery");
+	if (!danglingDotClasses.includes("BPMSoft.InsertQuery")) {
+		console.error("Expected a dangling `insertQuery.` to still resolve InsertQuery", danglingDotClasses);
+		failed = true;
+	} else {
+		console.log("dangling-dot completion bind OK");
+	}
+
+	// Config-object key completion for `Ext.create(...)`/`new ...(...)` -
+	// suggest the class's own members as keys, minus whatever's already there.
+	const ctorCfgSrc = 'const q = Ext.create("BPMSoft.EntitySchemaQuery", {rootSchemaName: "Account", });';
+	const ctorCfgAt = ctorCfgSrc.indexOf(", }") + 2;
+	const ctorCfgCtx = getConstructorConfigContext(ctorCfgSrc, ctorCfgAt);
+	if (
+		!ctorCfgCtx ||
+		ctorCfgCtx.className !== "BPMSoft.EntitySchemaQuery" ||
+		!ctorCfgCtx.existingKeys.has("rootSchemaName")
+	) {
+		console.error("Expected constructor config-key context inside Ext.create({...})", ctorCfgCtx);
+		failed = true;
+	} else {
+		console.log("constructor config-key context OK");
 	}
 }
 

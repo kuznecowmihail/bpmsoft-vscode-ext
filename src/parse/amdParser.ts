@@ -171,6 +171,7 @@ export {
 	getQueryColumnContext,
 	resolveQueryEntities,
 	resolveQueryClassNames,
-	collectEsqColumnAccesses
+	collectEsqColumnAccesses,
+	getConstructorConfigContext
 } from "./esqQuery";
-export type { EsqNameSpan, EsqColumnContext, EsqColumnAccess } from "./esqQuery";
+export type { EsqNameSpan, EsqColumnContext, EsqColumnAccess, ConstructorConfigContext } from "./esqQuery";

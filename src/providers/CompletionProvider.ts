@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../parse/types";
 import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
-import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, EsqNameSpan } from "../parse/esqQuery";
+import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, getConstructorConfigContext, EsqNameSpan } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
 import {
 	EsqBracketContext,
@@ -10,6 +10,7 @@ import {
 	toEntityNameItems,
 	toEsqBracketItems,
 	toEsqColumnItems,
+	toConstructorConfigItems,
 	TRIGGER_SUGGEST
 } from "./esqCompletion";
 
@@ -304,6 +305,18 @@ export class CompletionProvider implements vscode.CompletionItemProvider {
 					toEsqColumnItems(filtered, colCtx, parentPath, document),
 					true
 				);
+			}
+		}
+
+		const ctorConfigCtx = getConstructorConfigContext(text, offset);
+		if (ctorConfigCtx) {
+			const members = this.index.resolveQueryInstanceMembers([ctorConfigCtx.className]);
+			const list = asList(
+				toConstructorConfigItems(members, ctorConfigCtx, document),
+				true
+			);
+			if (list) {
+				return list;
 			}
 		}
 
