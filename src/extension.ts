@@ -433,6 +433,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}),
 			vscode.workspace.onDidSaveTextDocument((document) => {
 				const fsPath = document.uri.fsPath;
+				touchSchemaModifiedOnUtcForSavedFile(fsPath);
 				if (isNamingDiagnosticsTarget(fsPath)) {
 					void namingIndex.refreshFile(fsPath);
 					return;
@@ -615,7 +616,6 @@ function onWatchedFile(uri: vscode.Uri, deleted: boolean): void {
 		// too, not just invalidate the SymbolIndex's cached entity/columns.
 		const descriptorPath = path.join(path.dirname(uri.fsPath), "descriptor.json");
 		void namingIndex.refreshFile(descriptorPath);
-		touchSchemaModifiedOnUtc(descriptorPath);
 		index.invalidateEntity(uri.fsPath);
 		return;
 	}
@@ -626,14 +626,14 @@ function onWatchedFile(uri: vscode.Uri, deleted: boolean): void {
 		// its own.
 		const descriptorPath = path.join(path.dirname(uri.fsPath), "descriptor.json");
 		void namingIndex.refreshFile(descriptorPath);
-		touchSchemaModifiedOnUtc(descriptorPath);
 		return;
 	}
 	if (/\/schemas\/[^/]+\/properties\.json$/i.test(normalized)) {
 		// Same folder too — SchemaType lives here. No naming check reads it
-		// directly and it's not real AMD JS, so nothing else to do besides
-		// keeping ModifiedOnUtc current.
-		touchSchemaModifiedOnUtc(path.join(path.dirname(uri.fsPath), "descriptor.json"));
+		// directly, and ModifiedOnUtc-touching now lives solely in the
+		// `onDidSaveTextDocument` handler (see `touchSchemaModifiedOnUtc`'s
+		// own doc) — so a disk-level change to this file has nothing left to
+		// react to here.
 		return;
 	}
 	if (/\/resource\.[^/]+\.xml$/i.test(normalized)) {
@@ -644,29 +644,19 @@ function onWatchedFile(uri: vscode.Uri, deleted: boolean): void {
 		const ownerDescriptor = findOwningSchemaDescriptor(uri.fsPath);
 		if (ownerDescriptor) {
 			void namingIndex.refreshFile(ownerDescriptor);
-			touchSchemaModifiedOnUtc(ownerDescriptor);
 		}
 		index.invalidateEntity(uri.fsPath);
 		return;
 	}
 	if (/\/descriptor\.json$/i.test(normalized)) {
-		// Deliberately never touched here — touching this file's own
-		// ModifiedOnUtc in response to a change *to this same file* would be
-		// an immediate self-triggering loop (the write is itself a change
-		// this same watcher reacts to).
 		return;
 	}
 	if (/\.cs$/i.test(normalized)) {
 		// A schema's own C# source doesn't feed the JS module index
-		// (indexer.indexFile only understands AMD JS), but it's still a real
-		// edit to the schema.
-		if (isPkgSchemaFile(normalized)) {
-			touchSchemaModifiedOnUtc(path.join(path.dirname(uri.fsPath), "descriptor.json"));
-		}
+		// (indexer.indexFile only understands AMD JS) — nothing else to do
+		// here; ModifiedOnUtc is bumped by the `onDidSaveTextDocument`
+		// handler instead.
 		return;
-	}
-	if (isPkgSchemaFile(normalized)) {
-		touchSchemaModifiedOnUtc(path.join(path.dirname(uri.fsPath), "descriptor.json"));
 	}
 	if (deleted) {
 		indexer.removeFile(uri.fsPath);
@@ -720,13 +710,23 @@ function updateActiveSchemaContext(editor: vscode.TextEditor | undefined): void 
 }
 
 /** Rewrites just the `ModifiedOnUtc` value in a schema's own descriptor.json
- * to "now", in the same `.NET` wire format (`"\/Date(<ms>)\/"`) — called
- * whenever any file belonging to the schema changes (see `onWatchedFile`),
- * so the field stays a trustworthy signal of "this schema actually changed"
- * for `ModuleIndexer`'s owned-schema cache (`ownedSchemaCache.ts`) even in
- * a workflow that edits files directly and never goes through the BPMSoft
+ * to "now", in the same `.NET` wire format (`"\/Date(<ms>)\/"`) — called only
+ * from the `onDidSaveTextDocument` handler below (via
+ * `touchSchemaModifiedOnUtcForSavedFile`), never from the disk-level
+ * `FileSystemWatcher`-driven `onWatchedFile`, so the field stays a
+ * trustworthy signal of "the user actually edited this schema" for
+ * `ModuleIndexer`'s owned-schema cache (`ownedSchemaCache.ts`) even in a
+ * workflow that edits files directly and never goes through the BPMSoft
  * Designer/server, which is the only thing that would otherwise keep this
- * field current. A plain text replace, not JSON.parse+stringify — the
+ * field current. Deliberately NOT wired to the raw disk watcher: that fires
+ * for any change to the file regardless of who made it, so a `git checkout`/
+ * `pull`/`stash pop`, or an external tool (e.g. `WorkspaceConsole` pushing a
+ * build down from a container, §1 of the BPMSoft master guide) touching
+ * dozens of schemas at once would each rewrite the schema's descriptor.json
+ * even though the user never edited anything — leaving a routine git
+ * operation looking dirty, and risking those bogus timestamp bumps getting
+ * committed. A real editor save is the one signal that's actually "the user
+ * changed this". A plain text replace, not JSON.parse+stringify — the
  * latter would reformat the whole file (whitespace, key order) on every
  * single save, turning every real edit into a noisy two-file diff instead
  * of the one-line date bump this is meant to be. No-op (doesn't write
@@ -745,6 +745,40 @@ function touchSchemaModifiedOnUtc(descriptorPath: string): void {
 		}
 	} catch {
 		// best-effort — see doc comment
+	}
+}
+
+/** Resolves which schema's descriptor.json (if any) a just-*saved* file
+ * should bump `ModifiedOnUtc` for, and does it — mirrors `onWatchedFile`'s
+ * old dispatch order (metadata.json / .less / properties.json / resource
+ * xml / descriptor.json itself, excluded / any other file directly in a
+ * `Schemas/{Name}/` folder), but is only ever called from
+ * `onDidSaveTextDocument`, see `touchSchemaModifiedOnUtc`'s own doc for why
+ * that distinction matters. */
+function touchSchemaModifiedOnUtcForSavedFile(fsPath: string): void {
+	const normalized = fsPath.replace(/\\/g, "/");
+	if (/\/descriptor\.json$/i.test(normalized)) {
+		// Same self-triggering-loop concern as `onWatchedFile` — saving this
+		// file should never rewrite its own ModifiedOnUtc a second time.
+		return;
+	}
+	if (/\/metadata\.json$/i.test(normalized) || /\/schemas\/[^/]+\/[^/]+\.less$/i.test(normalized)) {
+		touchSchemaModifiedOnUtc(path.join(path.dirname(fsPath), "descriptor.json"));
+		return;
+	}
+	if (/\/schemas\/[^/]+\/properties\.json$/i.test(normalized)) {
+		touchSchemaModifiedOnUtc(path.join(path.dirname(fsPath), "descriptor.json"));
+		return;
+	}
+	if (/\/resource\.[^/]+\.xml$/i.test(normalized)) {
+		const ownerDescriptor = findOwningSchemaDescriptor(fsPath);
+		if (ownerDescriptor) {
+			touchSchemaModifiedOnUtc(ownerDescriptor);
+		}
+		return;
+	}
+	if (isPkgSchemaFile(normalized)) {
+		touchSchemaModifiedOnUtc(path.join(path.dirname(fsPath), "descriptor.json"));
 	}
 }
 
