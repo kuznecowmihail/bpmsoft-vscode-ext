@@ -66,6 +66,18 @@
         "category": "BPMSoft"
       },
       {
+        "command": "bpmsoft.formatting.showHelp",
+        "title": "О разделе Formatting",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
+        "command": "bpmsoft.packageSettings.showHelp",
+        "title": "О разделе Package Settings",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
         "command": "bpmsoft.editLocalizedStrings",
         "title": "Редактировать локализуемые строки…",
         "category": "BPMSoft",
@@ -227,6 +239,16 @@
         {
           "command": "bpmsoft.rebuildIndex",
           "when": "view == bpmsoftPackageSettings",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.packageSettings.showHelp",
+          "when": "view == bpmsoftPackageSettings",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bpmsoft.formatting.showHelp",
+          "when": "view == bpmsoftFormatting",
           "group": "navigation@1"
         }
       ],

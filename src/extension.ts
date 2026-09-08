@@ -316,6 +316,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					);
 				}
 			),
+			vscode.commands.registerCommand("bpmsoft.formatting.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Formatting — форматтер BPMSoft по умолчанию",
+					{
+						modal: true,
+						detail:
+							"Здесь можно сделать расширение BPMSoft форматтером по умолчанию " +
+							"для JavaScript, C# и SQL — оно форматирует по конвенциям " +
+							"команды (Allman/K&R, var/let/const и т.д.), а не по общим " +
+							"настройкам VS Code.\n\n" +
+							"У каждого языка своя строка: зелёная галочка означает, что " +
+							"BPMSoft уже форматтер по умолчанию для него; иначе показано, " +
+							"что задано сейчас. Клик по строке делает BPMSoft форматтером " +
+							"по умолчанию (настройка сохраняется на уровне рабочей области)."
+					}
+				);
+			}),
 			vscode.languages.registerCompletionItemProvider(
 				jsSelector,
 				completionProvider,
@@ -485,6 +502,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					packageSettingsTree.refresh();
 					packageOwnershipStatusBar.refresh();
 				}
+			}),
+			vscode.commands.registerCommand("bpmsoft.packageSettings.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Package Settings — локальные аналоги системных настроек BPMSoft",
+					{
+						modal: true,
+						detail:
+							"Расширение не подключается к БД, поэтому три системные " +
+							"настройки, которые нужны перед началом работы над пакетом, " +
+							"задаются здесь вручную и хранятся в настройках рабочей области:\n\n" +
+							"• Текущий пакет — аналог «CurrentPackageId», используется только " +
+							"как справочная информация.\n" +
+							"• Префикс пакетов/схем — аналог «SchemaNamePrefix» (через " +
+							"запятую, если пакетов несколько).\n" +
+							"• Издатель — аналог «Maintainer».\n\n" +
+							"Префикс и Издатель также используются проверкой владения " +
+							"пакетом (строка состояния и предупреждения о нейминге) — если " +
+							"они не заполнены или заполнены неверно, эти проверки будут " +
+							"молчать или ошибаться. Клик по строке открывает поле ввода."
+					}
+				);
 			}),
 			vscode.commands.registerCommand(
 				"bpmsoft.editLocalizedStrings",
