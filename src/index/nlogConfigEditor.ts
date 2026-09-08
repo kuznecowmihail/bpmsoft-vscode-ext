@@ -14,6 +14,14 @@
  * wizard offers a described type picker (`nlogCatalog.ts`) to get the right
  * `xsi:type` spelling and a starter skeleton, then the user edits the whole
  * element as text with full fidelity.
+ *
+ * One deliberate, narrow exception to "targets are raw XML": File targets'
+ * own archive/retention properties (`getFileTargetRetention`/
+ * `setFileTargetRetention` near the bottom of this file) get a real typed
+ * form — this is specifically the setting BPMSoft's own default config never
+ * turns on anywhere (confirmed: no target sets `maxArchiveFiles`/
+ * `maxArchiveDays` in either real install), so it's worth surfacing by name
+ * rather than leaving it undiscoverable inside raw XML.
  */
 
 import * as fs from "fs";
@@ -24,7 +32,9 @@ import {
 	attrValue,
 	escapeXmlAttr,
 	findContainerSpan,
+	findTagEnd,
 	listTopLevelItems,
+	removeRootAttr,
 	setRootAttr,
 	spliceSpan,
 	tryParseSingleElement
@@ -523,4 +533,137 @@ export function duplicateTarget(filePath: string, index: number, newName: string
 	}
 	const newRaw = setRootAttr(item.raw, "name", newName);
 	return addTarget(filePath, newRaw);
+}
+
+// ---------------------------------------------------------------------------
+// File target retention (archiving/auto-delete of old logs) — a typed form
+// for one specific, high-value slice of one target type, not a general
+// escape from "targets are raw XML" (see file-level doc for why). Grounded
+// in NLog's own File-target property docs/source (FileArchivePeriod,
+// ArchiveNumberingMode): https://github.com/NLog/NLog/wiki/File-target,
+// https://github.com/NLog/NLog/blob/master/src/NLog/Targets/FileArchivePeriod.cs
+// ---------------------------------------------------------------------------
+
+/** `FileArchivePeriod` enum members, in declaration order, straight from
+ * NLog's own source — the real valid values for `archiveEvery`. */
+export const NLOG_ARCHIVE_EVERY_VALUES = [
+	"",
+	"Year",
+	"Month",
+	"Day",
+	"Hour",
+	"Minute",
+	"Sunday",
+	"Monday",
+	"Tuesday",
+	"Wednesday",
+	"Thursday",
+	"Friday",
+	"Saturday"
+];
+
+/** `ArchiveNumberingMode` enum members, straight from NLog's own source —
+ * the real valid values for `archiveNumbering`. Note `maxArchiveDays` has no
+ * effect when this is `"Rolling"` (NLog's own documented limitation). */
+export const NLOG_ARCHIVE_NUMBERING_VALUES = ["", "Sequence", "Rolling", "Date", "DateAndSequence"];
+
+export interface FileTargetRetention {
+	/** FileArchivePeriod — "" means unset (no time-based archiving trigger). */
+	archiveEvery: string;
+	/** Byte threshold — "" means unset (no size-based archiving trigger). */
+	archiveAboveSize: string;
+	/** "" means unset (no count-based cleanup). */
+	maxArchiveFiles: string;
+	/** "" means unset (no age-based cleanup); has no effect if archiveNumbering is Rolling. */
+	maxArchiveDays: string;
+	archiveOldFileOnStartup: boolean;
+	/** ArchiveNumberingMode — "" means NLog's own default (Sequence). */
+	archiveNumbering: string;
+}
+
+/** A File target's own properties can be written either as an attribute on
+ * the `<target>` tag (`archiveEvery="Day"`) or, for the few that support it
+ * in real BPMSoft configs, as a child element (`<archiveEvery>Day</archiveEvery>`
+ * — seen in `sqlLogAppender`/`loggingDataReaderAppender`). Both are
+ * genuine NLog syntax; this reads whichever form is actually present. */
+function readTargetProp(raw: string, key: string): string | undefined {
+	const tagEnd = findTagEnd(raw, 0);
+	const openTag = raw.slice(0, tagEnd < 0 ? raw.length : tagEnd);
+	const attrMatch = new RegExp(`\\s${key}\\s*=\\s*("([^"]*)"|'([^']*)')`).exec(openTag);
+	if (attrMatch) {
+		return attrMatch[2] !== undefined ? attrMatch[2] : attrMatch[3];
+	}
+	const elMatch = new RegExp(`<${key}>([^<]*)</${key}>`).exec(raw);
+	return elMatch ? elMatch[1].trim() : undefined;
+}
+
+/** Sets, updates, or (given `""`) removes a File target property, preserving
+ * whichever representation (attribute vs. child element) it already used;
+ * a brand-new property not present in either form is always added as an
+ * attribute (simplest, and NLog freely mixes both forms on one target). */
+function applyTargetProp(raw: string, key: string, value: string): string {
+	const tagEnd = findTagEnd(raw, 0);
+	const openTag = raw.slice(0, tagEnd < 0 ? raw.length : tagEnd);
+	const hasAttr = new RegExp(`\\s${key}\\s*=\\s*("[^"]*"|'[^']*')`).test(openTag);
+	const elRe = new RegExp(`\\s*<${key}>[^<]*</${key}>`);
+	const hasElement = elRe.test(raw);
+
+	if (!value) {
+		if (hasAttr) {
+			return removeRootAttr(raw, key);
+		}
+		if (hasElement) {
+			return raw.replace(elRe, "");
+		}
+		return raw;
+	}
+	if (hasElement && !hasAttr) {
+		return raw.replace(new RegExp(`(<${key}>)[^<]*(</${key}>)`), `$1${escapeXmlAttr(value)}$2`);
+	}
+	return setRootAttr(raw, key, value);
+}
+
+export function getFileTargetRetention(
+	filePath: string,
+	index: number
+): { ok: true; settings: FileTargetRetention } | { ok: false; error: string } {
+	const targets = listTargets(filePath);
+	const item = targets?.[index];
+	if (!item) {
+		return { ok: false, error: "Таргет не найден" };
+	}
+	if (item.xsiType !== "File") {
+		return { ok: false, error: "Настройки хранения логов доступны только для таргетов типа File" };
+	}
+	return {
+		ok: true,
+		settings: {
+			archiveEvery: readTargetProp(item.raw, "archiveEvery") ?? "",
+			archiveAboveSize: readTargetProp(item.raw, "archiveAboveSize") ?? "",
+			maxArchiveFiles: readTargetProp(item.raw, "maxArchiveFiles") ?? "",
+			maxArchiveDays: readTargetProp(item.raw, "maxArchiveDays") ?? "",
+			archiveOldFileOnStartup: readTargetProp(item.raw, "archiveOldFileOnStartup") === "true",
+			archiveNumbering: readTargetProp(item.raw, "archiveNumbering") ?? ""
+		}
+	};
+}
+
+export function setFileTargetRetention(filePath: string, index: number, settings: FileTargetRetention): EditResult {
+	return withContainer(filePath, "targets", TARGET_TAGS, (text, items) => {
+		const item = items[index];
+		if (!item) {
+			return { error: "Таргет не найден" };
+		}
+		if ((attrValue(item.attrs, "xsi:type") ?? attrValue(item.attrs, "type")) !== "File") {
+			return { error: "Настройки хранения логов доступны только для таргетов типа File" };
+		}
+		let raw = item.raw;
+		raw = applyTargetProp(raw, "archiveEvery", settings.archiveEvery);
+		raw = applyTargetProp(raw, "archiveAboveSize", settings.archiveAboveSize);
+		raw = applyTargetProp(raw, "maxArchiveFiles", settings.maxArchiveFiles);
+		raw = applyTargetProp(raw, "maxArchiveDays", settings.maxArchiveDays);
+		raw = applyTargetProp(raw, "archiveOldFileOnStartup", settings.archiveOldFileOnStartup ? "true" : "");
+		raw = applyTargetProp(raw, "archiveNumbering", settings.archiveNumbering);
+		return { text: spliceSpan(text, item.span, raw) };
+	});
 }

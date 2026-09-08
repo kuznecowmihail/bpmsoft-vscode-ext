@@ -60,7 +60,7 @@ export function unescapeXmlAttr(value: string): string {
  * (technically legal in XML attribute values, so a naive `indexOf(">")`
  * would truncate a tag early on real-world content). Returns the index of
  * that `>`, or -1 if the tag never closes. */
-function findTagEnd(text: string, start: number): number {
+export function findTagEnd(text: string, start: number): number {
 	let quote: string | undefined;
 	for (let i = start; i < text.length; i++) {
 		const ch = text[i];
@@ -328,10 +328,27 @@ export function setRootAttr(fragment: string, attrName: string, newValue: string
 	if (attrRe.test(openTag)) {
 		return openTag.replace(attrRe, `$1"${escapeXmlAttr(newValue)}"`) + rest;
 	}
-	TAG_OPEN_RE.lastIndex = 0;
-	const nameMatch = TAG_OPEN_RE.exec(openTag);
-	const insertPos = nameMatch ? nameMatch[0].length : 0;
-	return openTag.slice(0, insertPos) + ` ${attrName}="${escapeXmlAttr(newValue)}"` + openTag.slice(insertPos) + rest;
+	// Not present yet — append at the end of the opening tag's own attribute
+	// list (right before its closing "/" if self-closing, else right before
+	// ">"), so a freshly-added attribute reads naturally after the ones the
+	// element already had, rather than immediately after the tag name.
+	const selfClosing = openTag.endsWith("/");
+	const insertPos = selfClosing ? openTag.length - 1 : openTag.length;
+	return openTag.slice(0, insertPos) + ` ${attrName}="${escapeXmlAttr(newValue)}"` + (selfClosing ? " " : "") + openTag.slice(insertPos) + rest;
+}
+
+/** Removes an attribute from the OUTER element's own opening tag of
+ * `fragment`, if present — same "outer tag only" scoping as `setRootAttr`.
+ * No-op if the attribute isn't set there. */
+export function removeRootAttr(fragment: string, attrName: string): string {
+	const tagEnd = findTagEnd(fragment, 0);
+	if (tagEnd < 0) {
+		return fragment;
+	}
+	const openTag = fragment.slice(0, tagEnd);
+	const rest = fragment.slice(tagEnd);
+	const attrRe = new RegExp(`\\s${attrName}\\s*=\\s*("[^"]*"|'[^']*')`);
+	return openTag.replace(attrRe, "") + rest;
 }
 
 export function attrValue(attrs: XmlAttr[], name: string): string | undefined {

@@ -1,6 +1,18 @@
 import * as vscode from "vscode";
 import { AppConfigEntry } from "../index/appConfigDiscovery";
-import { addTarget, deleteTarget, duplicateTarget, listTargets, replaceTarget, toggleTargetEnabled } from "../index/nlogConfigEditor";
+import {
+	FileTargetRetention,
+	NLOG_ARCHIVE_EVERY_VALUES,
+	NLOG_ARCHIVE_NUMBERING_VALUES,
+	addTarget,
+	deleteTarget,
+	duplicateTarget,
+	getFileTargetRetention,
+	listTargets,
+	replaceTarget,
+	setFileTargetRetention,
+	toggleTargetEnabled
+} from "../index/nlogConfigEditor";
 import { NLOG_TARGET_TYPES } from "../index/nlogCatalog";
 
 function nonce(): string {
@@ -149,6 +161,21 @@ export class NlogTargetsWizardPanel {
 				case "duplicate":
 					this.reportEdit(duplicateTarget(this.entry.filePath, Number(msg.index), String(msg.newName)));
 					break;
+				case "requestRetention": {
+					const result = getFileTargetRetention(this.entry.filePath, Number(msg.index));
+					if (!result.ok) {
+						void this.panel.webview.postMessage({ type: "error", message: result.error });
+						break;
+					}
+					void this.panel.webview.postMessage({ type: "retention", index: Number(msg.index), settings: result.settings });
+					break;
+				}
+				case "saveRetention":
+					this.reportEdit(
+						setFileTargetRetention(this.entry.filePath, Number(msg.index), msg.settings as FileTargetRetention),
+						true
+					);
+					break;
 			}
 		} catch (e) {
 			void this.panel.webview.postMessage({ type: "error", message: e instanceof Error ? e.message : String(e) });
@@ -193,9 +220,49 @@ ${STYLE}
     <button id="cancelBtn" class="secondary">Отмена</button>
   </div>
 </div>
+<div id="retentionBox" hidden>
+  <div id="retentionHeader"></div>
+  <p class="muted">Автоматическая архивация и удаление старых лог-файлов этого таргета (настройки NLog).</p>
+  <div class="retentionField">
+    <label>Создавать новый архив каждые</label>
+    <select id="r-archiveEvery" class="cell"></select>
+    <div class="hint">Периодичность, с которой текущий файл переименовывается в архив, а запись продолжается в новый файл. «—» — не архивировать по времени.</div>
+  </div>
+  <div class="retentionField">
+    <label>...и/или когда файл превышает размер (байт)</label>
+    <input id="r-archiveAboveSize" class="cell" type="number" min="0" />
+    <div class="hint">Пусто — не архивировать по размеру. Можно использовать вместе с периодом выше — сработает то условие, которое наступит раньше.</div>
+  </div>
+  <hr />
+  <div class="retentionField">
+    <label>Хранить не больше архивов</label>
+    <input id="r-maxArchiveFiles" class="cell" type="number" min="0" />
+    <div class="hint">Более старые архивы будут автоматически удаляться. Пусто — не ограничивать по количеству.</div>
+  </div>
+  <div class="retentionField">
+    <label>Хранить архивы не старше, дней</label>
+    <input id="r-maxArchiveDays" class="cell" type="number" min="0" />
+    <div class="hint">Архивы старше указанного числа дней будут автоматически удаляться. Пусто — не ограничивать по возрасту.</div>
+  </div>
+  <div class="retentionField">
+    <label>Схема именования архивов</label>
+    <select id="r-archiveNumbering" class="cell"></select>
+    <div class="hint" id="r-archiveNumberingHint"></div>
+  </div>
+  <div class="retentionField">
+    <label><input id="r-archiveOldFileOnStartup" type="checkbox" /> Архивировать уже существующий файл при запуске приложения</label>
+  </div>
+  <div id="retentionWarnings"></div>
+  <div id="editorActions">
+    <button id="retentionSaveBtn">Сохранить</button>
+    <button id="retentionCancelBtn" class="secondary">Отмена</button>
+  </div>
+</div>
 <div id="toast"></div>
 <script nonce="${csp}">
 window.__CATALOG = ${JSON.stringify(NLOG_TARGET_TYPES)};
+window.__ARCHIVE_EVERY_VALUES = ${JSON.stringify(NLOG_ARCHIVE_EVERY_VALUES)};
+window.__ARCHIVE_NUMBERING_VALUES = ${JSON.stringify(NLOG_ARCHIVE_NUMBERING_VALUES)};
 ${CLIENT_SCRIPT}
 </script>
 </body>
@@ -228,8 +295,15 @@ const STYLE = `
 	#typeSelect { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border, transparent); }
 	#nameInput { padding: 2px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
 	#xmlBox { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); resize: vertical; }
-	.warning { color: var(--vscode-inputValidation-warningForeground, #b98600); background: var(--vscode-inputValidation-warningBackground); border: 1px solid var(--vscode-inputValidation-warningBorder, orange); padding: 4px 8px; }
+	.warning { color: var(--vscode-inputValidation-warningForeground, #b98600); background: var(--vscode-inputValidation-warningBackground); border: 1px solid var(--vscode-inputValidation-warningBorder, orange); padding: 4px 8px; margin-bottom: 4px; }
 	#editorActions { display: flex; gap: 8px; }
+	#retentionBox { margin-top: 12px; padding: 10px; border: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 6px; max-width: 560px; }
+	#retentionHeader { font-weight: 600; }
+	.retentionField { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+	.retentionField label { font-weight: 500; }
+	.retentionField .cell { width: 100%; box-sizing: border-box; }
+	.retentionField .hint { color: var(--vscode-descriptionForeground); font-size: 12px; }
+	#retentionBox hr { border: none; border-top: 1px solid var(--vscode-panel-border); width: 100%; margin: 4px 0; }
 	#toast { position: fixed; bottom: 10px; right: 10px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-editor-foreground); padding: 6px 10px; display: none; max-width: 50vw; }
 `;
 
@@ -252,6 +326,23 @@ const nameInputEl = document.getElementById('nameInput');
 const insertSkeletonBtn = document.getElementById('insertSkeletonBtn');
 const xmlBox = document.getElementById('xmlBox');
 const secretWarning = document.getElementById('secretWarning');
+const retentionBox = document.getElementById('retentionBox');
+const retentionHeader = document.getElementById('retentionHeader');
+const retentionWarnings = document.getElementById('retentionWarnings');
+let retentionIndex = null;
+
+const RETENTION_LABELS = {
+	'': '— (не архивировать по времени)', Year: 'Год', Month: 'Месяц', Day: 'День', Hour: 'Час', Minute: 'Минуту',
+	Sunday: 'Воскресенье', Monday: 'Понедельник', Tuesday: 'Вторник', Wednesday: 'Среда', Thursday: 'Четверг', Friday: 'Пятница', Saturday: 'Суббота'
+};
+const NUMBERING_LABELS = { '': '— (по умолчанию — Sequence)', Sequence: 'Sequence', Rolling: 'Rolling', Date: 'Date', DateAndSequence: 'DateAndSequence' };
+const NUMBERING_HINTS = {
+	'': 'Самая частая архивная копия получает наибольший номер (поведение по умолчанию — как у Sequence).',
+	Sequence: 'Самая новая архивная копия получает наибольший номер (Log.1, Log.2, ...).',
+	Rolling: 'Самая новая копия всегда #0, остальные сдвигаются (#0, #1, ..., #N). ⚠ При этой схеме ограничение «не старше N дней» не работает — используйте только ограничение по количеству файлов.',
+	Date: 'Архив именуется датой предыдущего периода.',
+	DateAndSequence: 'Архив именуется датой и номером по порядку внутри неё.'
+};
 
 let toastTimer;
 function showToast(message) {
@@ -281,6 +372,7 @@ function renderTable() {
 		html += '<td>' + escapeHtml(t.xsiType || t.tag) + '</td>';
 		html += '<td class="' + (t.enabled ? 'status-enabled' : 'status-disabled') + '">' + (t.enabled ? 'Включен' : 'Закомментирован') + '</td>';
 		html += '<td class="actions">' +
+			(t.xsiType === 'File' && t.enabled ? '<button class="icon" data-act="retention" title="Хранение логов (автоочистка старых файлов)">\u{1F5C4}</button> ' : '') +
 			'<button class="icon" data-act="edit" title="Редактировать XML">✎</button> ' +
 			'<button class="icon" data-act="duplicate" title="Дублировать">⧉</button> ' +
 			'<button class="icon" data-act="toggle" title="' + (t.enabled ? 'Закомментировать' : 'Включить') + '">' + (t.enabled ? '⏸' : '▶') + '</button> ' +
@@ -301,6 +393,8 @@ function renderTable() {
 		tr.querySelector('button[data-act="delete"]').addEventListener('click', () => {
 			if (confirm('Удалить таргет "' + (targets[index].name || '') + '"?')) vscode.postMessage({ type: 'delete', index });
 		});
+		const retentionBtn = tr.querySelector('button[data-act="retention"]');
+		if (retentionBtn) retentionBtn.addEventListener('click', () => vscode.postMessage({ type: 'requestRetention', index }));
 	});
 }
 
@@ -354,6 +448,63 @@ function closeEditor() {
 	editorBox.hidden = true;
 }
 
+function fillSelect(selectEl, values, labels) {
+	selectEl.innerHTML = values.map((v) => '<option value="' + escapeHtml(v) + '">' + escapeHtml(labels[v] || v) + '</option>').join('');
+}
+
+function openRetention(index, settings) {
+	retentionIndex = index;
+	retentionHeader.textContent = 'Хранение логов: ' + (targets[index].name || '');
+	fillSelect(document.getElementById('r-archiveEvery'), window.__ARCHIVE_EVERY_VALUES, RETENTION_LABELS);
+	fillSelect(document.getElementById('r-archiveNumbering'), window.__ARCHIVE_NUMBERING_VALUES, NUMBERING_LABELS);
+	document.getElementById('r-archiveEvery').value = settings.archiveEvery;
+	document.getElementById('r-archiveAboveSize').value = settings.archiveAboveSize;
+	document.getElementById('r-maxArchiveFiles').value = settings.maxArchiveFiles;
+	document.getElementById('r-maxArchiveDays').value = settings.maxArchiveDays;
+	document.getElementById('r-archiveNumbering').value = settings.archiveNumbering;
+	document.getElementById('r-archiveOldFileOnStartup').checked = settings.archiveOldFileOnStartup;
+	renderRetentionWarnings();
+	retentionBox.hidden = false;
+}
+
+function currentRetentionSettings() {
+	return {
+		archiveEvery: document.getElementById('r-archiveEvery').value,
+		archiveAboveSize: document.getElementById('r-archiveAboveSize').value,
+		maxArchiveFiles: document.getElementById('r-maxArchiveFiles').value,
+		maxArchiveDays: document.getElementById('r-maxArchiveDays').value,
+		archiveNumbering: document.getElementById('r-archiveNumbering').value,
+		archiveOldFileOnStartup: document.getElementById('r-archiveOldFileOnStartup').checked
+	};
+}
+
+function renderRetentionWarnings() {
+	const s = currentRetentionSettings();
+	const warnings = [];
+	if ((s.maxArchiveFiles || s.maxArchiveDays) && !s.archiveEvery && !s.archiveAboveSize) {
+		warnings.push('Без периода архивации или размера выше очистка старых файлов работать НЕ будет — NLog удаляет старые архивы только в момент создания нового.');
+	}
+	if (s.maxArchiveDays && s.archiveNumbering === 'Rolling') {
+		warnings.push('При схеме именования «Rolling» ограничение по возрасту (в днях) не поддерживается NLog — используйте ограничение по количеству файлов.');
+	}
+	document.getElementById('r-archiveNumberingHint').textContent = NUMBERING_HINTS[s.archiveNumbering] || '';
+	retentionWarnings.innerHTML = warnings.map((w) => '<div class="warning">⚠ ' + escapeHtml(w) + '</div>').join('');
+}
+
+function closeRetention() {
+	retentionIndex = null;
+	retentionBox.hidden = true;
+}
+
+['r-archiveEvery', 'r-archiveAboveSize', 'r-maxArchiveFiles', 'r-maxArchiveDays', 'r-archiveNumbering', 'r-archiveOldFileOnStartup'].forEach((id) => {
+	document.getElementById(id).addEventListener('input', renderRetentionWarnings);
+	document.getElementById(id).addEventListener('change', renderRetentionWarnings);
+});
+document.getElementById('retentionCancelBtn').addEventListener('click', closeRetention);
+document.getElementById('retentionSaveBtn').addEventListener('click', () => {
+	vscode.postMessage({ type: 'saveRetention', index: retentionIndex, settings: currentRetentionSettings() });
+});
+
 document.getElementById('addBtn').addEventListener('click', openAddEditor);
 document.getElementById('cancelBtn').addEventListener('click', closeEditor);
 typeFilterEl.addEventListener('input', () => renderTypeOptions(typeFilterEl.value));
@@ -386,8 +537,11 @@ window.addEventListener('message', (event) => {
 	} else if (msg.type === 'skeleton') {
 		xmlBox.value = msg.xml;
 		checkSecretWarning();
+	} else if (msg.type === 'retention') {
+		openRetention(msg.index, msg.settings);
 	} else if (msg.type === 'saved') {
 		closeEditor();
+		closeRetention();
 	} else if (msg.type === 'error') {
 		showToast(msg.message);
 	}
