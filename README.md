@@ -391,6 +391,21 @@ Hover по тем же конструкциям: вид члена, докуме
 
 Текущий пакет / префикс / издатель — см. «Проверка пакета» выше. Три строки, клик по любой открывает поле ввода. В заголовке вкладки — кнопка **Rebuild Index** (см. «Команда» выше).
 
+### Config Files
+
+Мастера для конфигурационных файлов деплоя — они лежат в корне приложения (`d:\Git\lavka`, а не в `BPMSoft.Configuration\Pkg`) и обычно правятся вручную в большом XML/JSON вперемешку с десятками несвязанных секций. Дерево показывает, что нашлось у текущего корня приложения:
+
+- **ConnectionStrings.config** — строки подключения (`db`, `redis`, `s3Connection`, …).
+- **appsettings.json** — Kestrel-эндпоинты/сертификат, логирование, `DataProtection` и т.д.
+- **`BPMSoft.WebHost.dll.config` — appSettings** — плоский список `<add key= value=>` (их там сотни, поэтому есть фильтр по подстроке).
+- Любой `*.dll.config` (в корне или в `WorkspaceConsole\`), у которого есть свой **инлайновый** `<connectionStrings>` и/или `<appSettings>` — например `WorkspaceConsole\BPMSoft.Tools.WorkspaceConsole.dll.config` и `WorkspaceConsole\BPMSoft.Tools.Common.dll.config`: Workspace Console не читает корневой `ConnectionStrings.config`, у него свои строки подключения прямо внутри `.dll.config`.
+
+Клик по строке открывает таблицу «имя/путь → значение» с фильтром, добавлением/переименованием/удалением записи (для `appsettings.json` — без переименования, только правка/добавление/удаление листа; массивы редактируются целиком как JSON-текст). Правка точечная — меняется только затронутая строка/значение, остальной файл не переформатируется, что даёт минимальный git-дифф.
+
+Значения `connectionString` и любой ключ вида `*Password*`/`*Secret*`/`*Token*` по умолчанию скрыты (как поле пароля) — показ по иконке-глазку у конкретной строки.
+
+`BPMSoft.WebHost.dll.config`, у которого `<connectionStrings configSource="ConnectionStrings.config" />` (редирект на отдельный файл, не инлайн-блок), в списке не дублируется — редактируется через сам `ConnectionStrings.config`.
+
 ## Откуда берётся `this.`
 
 Используется `conf/content/{Schema}.js`:

@@ -78,6 +78,18 @@
         "icon": "$(info)"
       },
       {
+        "command": "bpmsoft.envConfig.refresh",
+        "title": "Обновить Config Files",
+        "category": "BPMSoft",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "bpmsoft.envConfig.showHelp",
+        "title": "О разделе Config Files",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
         "command": "bpmsoft.editLocalizedStrings",
         "title": "Редактировать локализуемые строки…",
         "category": "BPMSoft",
@@ -250,6 +262,16 @@
           "command": "bpmsoft.formatting.showHelp",
           "when": "view == bpmsoftFormatting",
           "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.envConfig.refresh",
+          "when": "view == bpmsoftEnvConfig",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.envConfig.showHelp",
+          "when": "view == bpmsoftEnvConfig",
+          "group": "navigation@2"
         }
       ],
       "bpmsoft.viewModelOutline.actionsMenu": [
@@ -558,6 +580,10 @@
         {
           "id": "bpmsoftPackageSettings",
           "name": "Package Settings"
+        },
+        {
+          "id": "bpmsoftEnvConfig",
+          "name": "Config Files"
         }
       ],
       "bpmsoftExplorer": [

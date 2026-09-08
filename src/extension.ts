@@ -67,6 +67,9 @@ import {
 	CreateMemberCodeActionProvider,
 	executeCreateMember
 } from "./providers/CreateMemberCodeActionProvider";
+import { AppConfigTreeProvider, EDIT_CONFIG_ENTRY_COMMAND } from "./providers/AppConfigTreeProvider";
+import { ConfigFileWizardPanel } from "./providers/ConfigFileWizardPanel";
+import { AppConfigEntry } from "./index/appConfigDiscovery";
 
 let index: SymbolIndex;
 let indexer: ModuleIndexer;
@@ -189,6 +192,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		const gitFlowStatusBar = new GitFlowStatusBar(gitFlowCandidateRoots);
 		const packageOwnershipStatusBar = new PackageOwnershipStatusBar();
 		const packageSettingsTree = new PackageSettingsTreeProvider();
+		const appRoots = Array.from(
+			new Set(layouts.map((l) => l.appRoot).filter((p): p is string => Boolean(p)))
+		);
+		const envConfigTree = new AppConfigTreeProvider(appRoots);
 
 		context.subscriptions.push(
 			indexingStatusBar,
@@ -524,6 +531,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					}
 				);
 			}),
+			vscode.window.registerTreeDataProvider("bpmsoftEnvConfig", envConfigTree),
+			vscode.commands.registerCommand(EDIT_CONFIG_ENTRY_COMMAND, (entry: AppConfigEntry) => {
+				ConfigFileWizardPanel.show(entry);
+			}),
+			vscode.commands.registerCommand("bpmsoft.envConfig.refresh", () => {
+				envConfigTree.refresh();
+			}),
+			vscode.commands.registerCommand("bpmsoft.envConfig.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Config Files — мастера для ConnectionStrings/appSettings/appsettings.json",
+					{
+						modal: true,
+						detail:
+							"Список найденных в корне приложения (не в Pkg) файлов " +
+							"деплоя — ConnectionStrings.config, appsettings.json и любой " +
+							"*.dll.config (в т.ч. в WorkspaceConsole), где есть свой блок " +
+							"<connectionStrings> или <appSettings>. Клик по строке " +
+							"открывает таблицу «имя/путь → значение» вместо ручного " +
+							"поиска нужной записи в большом XML/JSON.\n\n" +
+							"Значения строк подключения и ключи вида *Password*/*Secret* " +
+							"по умолчанию скрыты — показ по иконке-глазку. Правки " +
+							"пишутся точечно (только изменённая запись), остальной файл " +
+							"не переформатируется."
+					}
+				);
+			}),
+			...appRoots.flatMap((appRoot) =>
+				["ConnectionStrings.config", "appsettings.json", "*.dll.config", "WorkspaceConsole/*.dll.config"].map(
+					(rel) => {
+						const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(appRoot, rel));
+						watcher.onDidChange(() => envConfigTree.refresh());
+						watcher.onDidCreate(() => envConfigTree.refresh());
+						watcher.onDidDelete(() => envConfigTree.refresh());
+						return watcher;
+					}
+				)
+			),
 			vscode.commands.registerCommand(
 				"bpmsoft.editLocalizedStrings",
 				(node?: { name?: string; path?: string; key?: string }) => {
