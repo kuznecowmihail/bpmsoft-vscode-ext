@@ -445,6 +445,7 @@ export class SymbolIndex {
 			this.pushUnseen(result, seen, member);
 		}
 		this.appendRuntimeThisMembers(result, seen);
+		this.enrichLookupListCaptions(result);
 		this.thisMembersCache.set(cacheKey, { generation: this.modulesGeneration, members: result });
 		return result;
 	}
@@ -1435,37 +1436,44 @@ export class SymbolIndex {
 		if (!entityMod) {
 			return;
 		}
-		// Keyed once so a schema-level override that already won the name
-		// (e.g. a page's own `attributes.Country` that only tweaks
-		// `lookupListConfig`) can still be backfilled below instead of the
-		// real entity column's own fields being silently discarded.
-		const byKey = new Map<string, IndexedMember>();
-		for (const m of result) {
-			byKey.set(memberDedupeKey(m), m);
-		}
 		for (const member of entityMod.members) {
 			const withMeta: IndexedMember = {
 				...member,
 				detail: member.detail || `entity ${entityMod.name}`,
 				filePath: member.filePath || entityMod.filePath
 			};
-			const key = memberDedupeKey(withMeta);
-			if (seen.has(key)) {
-				// A schema-level attribute override of this same name
-				// already won — but if it didn't restate `dataValueType`
-				// (the common case: the override only changes display
-				// config, not the underlying column's type), backfill it
-				// from the real entity column rather than losing it
-				// entirely. Nothing else about the winning override is
-				// touched.
-				const existing = byKey.get(key);
-				if (existing && !existing.dataValueType && withMeta.dataValueType) {
-					existing.dataValueType = withMeta.dataValueType;
-				}
+			this.pushUnseen(result, seen, withMeta);
+		}
+	}
+
+	private enrichLookupListCaptions(members: IndexedMember[]): void {
+		const genericDoc = "Доп. колонка lookupListConfig";
+		for (const m of members) {
+			if (m.kind !== "attribute" || !m.referenceSchemaName || !m.children?.length) {
 				continue;
 			}
-			this.pushUnseen(result, seen, withMeta);
-			byKey.set(key, withMeta);
+			const cols = this.getEntityModule(m.referenceSchemaName)?.members;
+			if (!cols) {
+				continue;
+			}
+			for (const child of m.children) {
+				if (child.name === "value" || child.name === "displayValue") {
+					continue;
+				}
+				const column = cols.find((c) => c.name === child.name);
+				if (!column) {
+					continue;
+				}
+				if (!child.caption && column.caption) {
+					child.caption = column.caption;
+				}
+				if (
+					column.documentation &&
+					(!child.documentation || child.documentation === genericDoc)
+				) {
+					child.documentation = column.documentation;
+				}
+			}
 		}
 	}
 
@@ -1948,6 +1956,12 @@ export class SymbolIndex {
 	): void {
 		const key = memberDedupeKey(member);
 		if (seen.has(key)) {
+			if (member.kind === "attribute") {
+				const existing = result.find((m) => memberDedupeKey(m) === key);
+				if (existing?.kind === "attribute") {
+					mergeAttributeLookupMeta(existing, member);
+				}
+			}
 			return;
 		}
 		seen.add(key);
@@ -1992,6 +2006,78 @@ export class SymbolIndex {
  * schema-hierarchy walk `upsertModule` calling this is meant to avoid
  * triggering unnecessarily.
  */
+function mergeLookupChildren(
+	existing?: IndexedMember[],
+	incoming?: IndexedMember[]
+): IndexedMember[] | undefined {
+	const hasExisting = existing && existing.length > 0;
+	const hasIncoming = incoming && incoming.length > 0;
+	if (!hasExisting && !hasIncoming) {
+		return existing || incoming;
+	}
+
+	const byName = new Map<string, IndexedMember>();
+	if (hasExisting) {
+		for (const child of existing!) {
+			if (!byName.has(child.name)) {
+				byName.set(child.name, child);
+			}
+		}
+	}
+	if (hasIncoming) {
+		for (const child of incoming!) {
+			if (!byName.has(child.name)) {
+				byName.set(child.name, child);
+			}
+		}
+	}
+
+	const result: IndexedMember[] = [];
+	const added = new Set<string>();
+	const push = (name: string) => {
+		const child = byName.get(name);
+		if (child && !added.has(name)) {
+			added.add(name);
+			result.push(child);
+		}
+	};
+
+	push("value");
+	push("displayValue");
+
+	if (hasExisting) {
+		for (const child of existing!) {
+			if (child.name !== "value" && child.name !== "displayValue") {
+				push(child.name);
+			}
+		}
+	}
+
+	if (hasIncoming) {
+		for (const child of incoming!) {
+			push(child.name);
+		}
+	}
+
+	return result.length ? result : undefined;
+}
+
+function mergeAttributeLookupMeta(existing: IndexedMember, incoming: IndexedMember): void {
+	if (existing.kind !== "attribute" || incoming.kind !== "attribute") {
+		return;
+	}
+	if (!existing.dataValueType && incoming.dataValueType) {
+		existing.dataValueType = incoming.dataValueType;
+	}
+	if (!existing.referenceSchemaName && incoming.referenceSchemaName) {
+		existing.referenceSchemaName = incoming.referenceSchemaName;
+	}
+	const merged = mergeLookupChildren(existing.children, incoming.children);
+	if (merged) {
+		existing.children = merged;
+	}
+}
+
 function modulesEquivalent(a: IndexedModule, b: IndexedModule): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
 }

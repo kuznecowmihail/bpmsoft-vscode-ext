@@ -175,13 +175,29 @@ export class DefinitionProvider implements vscode.DefinitionProvider {
 			}
 		}
 		const lookupAccess = getThisLookupAccessContext(text, offset);
-		if (
-			lookupAccess &&
-			(ident.name === "value" || ident.name === "displayValue")
-		) {
-			pushThisHits(lookupAccess.attrName, "attribute");
-			if (locations.length) {
-				return locations;
+		if (lookupAccess) {
+			const attr = this.index
+				.resolveThisMembers(document.uri.fsPath)
+				.find((m) => m.name === lookupAccess.attrName && m.kind === "attribute");
+			const field = attr?.children?.find((c) => c.name === ident.name);
+			if (attr && field) {
+				if (field.name !== "value" && field.name !== "displayValue" && attr.referenceSchemaName) {
+					const col = this.index
+						.resolveEntityColumns(attr.referenceSchemaName)
+						.find((c) => c.name === field.name);
+					if (col) {
+						const fallbackFilePath =
+							col.filePath || this.index.findEntityDefinition(attr.referenceSchemaName)?.filePath;
+						const loc = memberLocation({ ...col, filePath: fallbackFilePath });
+						if (loc) {
+							return [loc];
+						}
+					}
+				}
+				pushThisHits(lookupAccess.attrName, "attribute");
+				if (locations.length) {
+					return locations;
+				}
 			}
 		}
 

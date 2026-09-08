@@ -8,7 +8,7 @@ import {
 	SchemaMessageDirection,
 	memberDedupeKey
 } from "./types";
-import { AnyNode, childNodes, posFromNode, leadingComment } from "./jsAst";
+import { AnyNode, childNodes, posFromNode, leadingComment, parseJs } from "./jsAst";
 
 export const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 
@@ -750,6 +750,55 @@ function lookupEnumFieldMembers(): IndexedMember[] {
 	];
 }
 
+function lookupListConfigColumnLiterals(
+	value: AnyNode | undefined
+): { name: string; start: number; end: number; el: AnyNode }[] {
+	const lookupListConfig = propObjectValue(value, "lookupListConfig");
+	if (!lookupListConfig) {
+		return [];
+	}
+	const columnsNode = rawPropValue(lookupListConfig, "columns");
+	if (!columnsNode || columnsNode.type !== "ArrayExpression") {
+		return [];
+	}
+	const result: { name: string; start: number; end: number; el: AnyNode }[] = [];
+	for (const el of columnsNode.elements as AnyNode[]) {
+		if (!el || el.type !== "Literal" || typeof el.value !== "string" || !el.value) {
+			continue;
+		}
+		result.push({
+			name: el.value,
+			start: el.start + 1,
+			end: el.end - 1,
+			el
+		});
+	}
+	return result;
+}
+
+function attributeLookupChildren(value: AnyNode | undefined): IndexedMember[] | undefined {
+	const extra = lookupListConfigColumnLiterals(value);
+	if (!attributeHasLookupFields(value) && extra.length === 0) {
+		return undefined;
+	}
+	const children = lookupEnumFieldMembers();
+	const seen = new Set(children.map((c) => c.name));
+	for (const { name, el } of extra) {
+		if (seen.has(name)) {
+			continue;
+		}
+		seen.add(name);
+		children.push({
+			name,
+			kind: "property",
+			detail: "lookupListConfig",
+			documentation: "Доп. колонка lookupListConfig",
+			position: posFromNode(el)
+		});
+	}
+	return children;
+}
+
 function attributeDocumentation(
 	value: AnyNode | undefined,
 	comments: acorn.Comment[],
@@ -770,7 +819,11 @@ function attributeDocumentation(
 			}
 		}
 	}
-	if (attributeHasLookupFields(value)) {
+	const extra = lookupListConfigColumnLiterals(value);
+	if (extra.length) {
+		bits.push(`lookupListConfig.columns: ${extra.map((e) => e.name).join(", ")}`);
+	}
+	if (attributeHasLookupFields(value) || extra.length > 0) {
 		bits.push("fields: value, displayValue");
 	}
 	const meta = bits.join("\n");
@@ -799,9 +852,7 @@ export function collectSchemaAttributes(
 			kind: "attribute",
 			documentation: attributeDocumentation(value, comments, prop),
 			position: posFromNode(prop.key ?? prop),
-			children: attributeHasLookupFields(value)
-				? lookupEnumFieldMembers()
-				: undefined,
+			children: attributeLookupChildren(value),
 			dataValueType: attributeDataValueType(value)
 		};
 		if (value?.type === "ObjectExpression") {
@@ -813,6 +864,49 @@ export function collectSchemaAttributes(
 		members.push(member);
 	}
 	return members;
+}
+
+export interface LookupListConfigColumn {
+	attrName: string;
+	column: string;
+	start: number;
+	end: number;
+}
+
+export function collectLookupListConfigColumns(source: string): LookupListConfigColumn[] {
+	const comments: acorn.Comment[] = [];
+	const ast = parseJs(source.replace(/^\uFEFF/, ""), comments);
+	if (!ast) {
+		return [];
+	}
+	const result: LookupListConfigColumn[] = [];
+	walk.simple(ast, {
+		CallExpression(node: AnyNode) {
+			const callee = node.callee as AnyNode;
+			if (callee?.type !== "Identifier" || callee.name !== "define") {
+				return;
+			}
+			const factory = defineFactory(node);
+			const exportObj = resolveFactoryExportObject(factory);
+			if (!exportObj || !isSchemaReturn(exportObj)) {
+				return;
+			}
+			const attributes = findSchemaSection(exportObj, "attributes");
+			if (!attributes || attributes.type !== "ObjectExpression") {
+				return;
+			}
+			for (const prop of attributes.properties as AnyNode[]) {
+				const attrName = propName(prop);
+				if (!attrName) {
+					continue;
+				}
+				for (const { name, start, end } of lookupListConfigColumnLiterals(prop.value as AnyNode)) {
+					result.push({ attrName, column: name, start, end });
+				}
+			}
+		}
+	} as any);
+	return result;
 }
 
 function propObjectValue(obj: AnyNode | undefined, key: string): AnyNode | undefined {

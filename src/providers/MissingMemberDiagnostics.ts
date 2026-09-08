@@ -2,7 +2,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, isPrivateMemberFromOtherFile, IndexedSchemaMessage, sandboxMessageIssue, schemaMessageDirectionLabel } from "../parse/types";
-import { collectThisMemberAccesses, parseAmdAst, ThisMemberAccess } from "../parse/amdParser";
+import { collectLookupListConfigColumns, collectThisMemberAccesses, parseAmdAst, ThisMemberAccess } from "../parse/amdParser";
 import { collectEsqColumnAccesses } from "../parse/esqQuery";
 import { clearDebounceTimers, debounceDocument, isJsFile } from "./jsDocuments";
 
@@ -18,6 +18,8 @@ export const DIAG_PRIVATE_MEMBER = "bpmsoft.privateMember";
 export const DIAG_UNKNOWN_SANDBOX_MESSAGE = "bpmsoft.unknownSandboxMessage";
 export const DIAG_SANDBOX_MESSAGE_DIRECTION = "bpmsoft.sandboxMessageDirection";
 export const DIAG_UNKNOWN_ESQ_COLUMN = "bpmsoft.unknownEsqColumn";
+export const DIAG_UNKNOWN_LOOKUP_LIST_COLUMN = "bpmsoft.unknownLookupListColumn";
+export const DIAG_LOOKUP_FIELD_NOT_IN_COLUMNS = "bpmsoft.lookupFieldNotInColumns";
 
 const METHOD_ALLOWLIST = new Set(["callParent"]);
 const BARE_ALLOWLIST = new Set(["callParent", "mixins"]);
@@ -57,11 +59,19 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 		}
 		this.index.upsertModule(parsed.module);
 
-		const known = indexKnownMembers(this.index.resolveThisMembers(filePath));
+		const thisMembers = this.index.resolveThisMembers(filePath);
+		const known = indexKnownMembers(thisMembers);
 		const messages = this.index.resolveSchemaMessages(filePath);
 		const isPage = parsed.module.kind === "page";
 		const diags: vscode.Diagnostic[] = [];
 		for (const access of collectThisMemberAccesses(source, parsed.ast)) {
+			if (access.kind === "lookupField") {
+				const diag = diagnosticForLookupField(document, access, thisMembers);
+				if (diag) {
+					diags.push(diag);
+				}
+				continue;
+			}
 			const diag = diagnosticForAccess(
 				document,
 				access,
@@ -88,6 +98,21 @@ export class MissingMemberDiagnostics implements vscode.Disposable {
 					vscode.DiagnosticSeverity.Warning,
 					DIAG_UNKNOWN_ESQ_COLUMN,
 					`Колонка «${access.column}» не найдена в объекте ${access.entityNames.join(", ")} (conf / metadata)`
+				)
+			);
+		}
+		for (const col of collectLookupListConfigColumns(source)) {
+			const attr = thisMembers.find((m) => m.name === col.attrName && m.kind === "attribute");
+			const ref = attr?.referenceSchemaName;
+			if (!ref) continue;
+			if (this.index.isKnownEsqColumn([ref], col.column)) continue;
+			diags.push(
+				makeDiag(
+					document,
+					col,
+					vscode.DiagnosticSeverity.Warning,
+					DIAG_UNKNOWN_LOOKUP_LIST_COLUMN,
+					`Колонка «${col.column}» не найдена в объекте ${ref} (conf / metadata)`
 				)
 			);
 		}
@@ -292,6 +317,58 @@ function diagnosticForSandboxMessage(
 		vscode.DiagnosticSeverity.Warning,
 		DIAG_SANDBOX_MESSAGE_DIRECTION,
 		`Сообщение «${access.name}» нельзя ${verb}: в messages направление ${schemaMessageDirectionLabel(declared.direction)}, нужно ${needed}`
+	);
+}
+
+function isLookupAttribute(member: IndexedMember): boolean {
+	const children = member.children || [];
+	if (
+		children.some((c) => c.name === "value" || c.name === "displayValue") ||
+		children.some((c) => c.detail === "lookupListConfig")
+	) {
+		return true;
+	}
+	if (member.dataValueType) {
+		const leaf = (member.dataValueType.split(".").pop() || member.dataValueType).replace(
+			/^["']|["']$/g,
+			""
+		);
+		if (leaf === "LOOKUP" || leaf === "ENUM" || leaf === "10" || leaf === "11") {
+			return true;
+		}
+	}
+	return false;
+}
+
+function diagnosticForLookupField(
+	document: vscode.TextDocument,
+	access: ThisMemberAccess,
+	thisMembers: IndexedMember[]
+): vscode.Diagnostic | undefined {
+	if (!access.attrName) {
+		return undefined;
+	}
+	const attr = thisMembers.find(
+		(m) => m.name === access.attrName && m.kind === "attribute"
+	);
+	if (!attr) {
+		return undefined;
+	}
+	if (!isLookupAttribute(attr)) {
+		return undefined;
+	}
+	if (access.name === "value" || access.name === "displayValue") {
+		return undefined;
+	}
+	if (attr.children?.some((c) => c.name === access.name)) {
+		return undefined;
+	}
+	return makeDiag(
+		document,
+		access,
+		vscode.DiagnosticSeverity.Warning,
+		DIAG_LOOKUP_FIELD_NOT_IN_COLUMNS,
+		`Поле «${access.name}» не указано в lookupListConfig.columns атрибута «${access.attrName}»`
 	);
 }
 
