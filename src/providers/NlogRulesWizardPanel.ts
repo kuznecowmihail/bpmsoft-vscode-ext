@@ -112,6 +112,7 @@ ${STYLE}
 </style>
 </head>
 <body>
+<p class="intro">Правила связывают источник логов (по имени логгера, часто с <code>*</code> в конце) с таргетами, в которые он пишется. Проверяются <b>сверху вниз</b>, и <code>final</code> останавливает дальнейшую проверку — поэтому порядок важен (стрелки ▲▼ ниже). <code>minlevel</code>/<code>maxlevel</code> — диапазон уровней (Trace &lt; Debug &lt; Info &lt; Warn &lt; Error &lt; Fatal), <code>level</code> — ровно один уровень, <code>levels</code> — список через запятую. <code>writeTo</code> — имя одного или нескольких (через запятую) таргетов из вкладки Targets. <code>enabled</code> (галочка) — выключить правило, не удаляя его.</p>
 <div id="toolbar">
   <input id="filter" type="text" placeholder="Поиск по имени логгера..." />
   <span id="count"></span>
@@ -119,8 +120,18 @@ ${STYLE}
   <span class="muted">${this.entry.filePath}</span>
 </div>
 <div id="gridWrap"><table id="grid"><thead><tr>
-  <th></th><th>Logger name</th><th>level</th><th>levels</th><th>minlevel</th><th>maxlevel</th>
-  <th>writeTo</th><th>final</th><th>enabled</th><th>ruleName</th><th>finalMinLevel</th><th></th>
+  <th></th>
+  <th title="Имя логгера, к которому применяется правило. Часто с * в конце (напр. BPMSoft.Core.*) — совпадение по префиксу.">Logger name</th>
+  <th title="Применить правило только для этого ОДНОГО уровня (Trace/Debug/Info/Warn/Error/Fatal). Обычно не используется вместе с minlevel/maxlevel.">level</th>
+  <th title="Применить правило для списка уровней через запятую (напр. Warn,Error). Альтернатива minlevel/maxlevel.">levels</th>
+  <th title="Минимальный уровень, начиная с которого правило срабатывает (включительно).">minlevel</th>
+  <th title="Максимальный уровень, до которого правило срабатывает (включительно).">maxlevel</th>
+  <th title="Куда писать — имя таргета с вкладки Targets. Несколько — через запятую.">writeTo</th>
+  <th title="Если включено — после этого правила остальные для того же логгера/уровня уже не проверяются.">final</th>
+  <th title="Выключить правило, не удаляя его (по умолчанию включено).">enabled</th>
+  <th title="Имя правила для программного управления (NLog API) — необязательно, редко используется.">ruleName</th>
+  <th title="NLog 5.0+: последующие правила применяются только начиная с этого уровня — редко используется.">finalMinLevel</th>
+  <th></th>
 </tr></thead><tbody id="rows"></tbody></table></div>
 <div id="toast"></div>
 <script nonce="${csp}">
@@ -148,6 +159,9 @@ const STYLE = `
 	button.icon { background: transparent; color: var(--vscode-icon-foreground, inherit); padding: 2px 4px; }
 	#toast { position: fixed; bottom: 10px; right: 10px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-editor-foreground); padding: 6px 10px; display: none; max-width: 50vw; }
 	.muted { color: var(--vscode-descriptionForeground); font-size: 12px; }
+	.intro { color: var(--vscode-descriptionForeground); font-size: 12px; max-width: 900px; margin: 0 0 10px; }
+	code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15)); padding: 0 3px; }
+	th[title] { cursor: help; border-bottom: 1px dotted var(--vscode-descriptionForeground); }
 `;
 
 const CLIENT_SCRIPT = `

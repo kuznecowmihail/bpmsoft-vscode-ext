@@ -1,19 +1,24 @@
 import * as vscode from "vscode";
 import { AppConfigEntry } from "../index/appConfigDiscovery";
 import {
+	ColoredConsoleHighlighting,
 	FileTargetRetention,
 	NLOG_ARCHIVE_EVERY_VALUES,
 	NLOG_ARCHIVE_NUMBERING_VALUES,
+	NLOG_CONDITION_LEVELS,
+	NLOG_CONSOLE_COLORS,
 	addTarget,
 	deleteTarget,
 	duplicateTarget,
+	getColoredConsoleHighlighting,
 	getFileTargetRetention,
 	listTargets,
 	replaceTarget,
+	setColoredConsoleHighlighting,
 	setFileTargetRetention,
 	toggleTargetEnabled
 } from "../index/nlogConfigEditor";
-import { NLOG_TARGET_TYPES } from "../index/nlogCatalog";
+import { NLOG_LAYOUT_RENDERERS, NLOG_TARGET_TYPES } from "../index/nlogCatalog";
 
 function nonce(): string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -176,6 +181,21 @@ export class NlogTargetsWizardPanel {
 						true
 					);
 					break;
+				case "requestHighlighting": {
+					const result = getColoredConsoleHighlighting(this.entry.filePath, Number(msg.index));
+					if (!result.ok) {
+						void this.panel.webview.postMessage({ type: "error", message: result.error });
+						break;
+					}
+					void this.panel.webview.postMessage({ type: "highlighting", index: Number(msg.index), settings: result.settings });
+					break;
+				}
+				case "saveHighlighting":
+					this.reportEdit(
+						setColoredConsoleHighlighting(this.entry.filePath, Number(msg.index), msg.settings as ColoredConsoleHighlighting),
+						true
+					);
+					break;
 			}
 		} catch (e) {
 			void this.panel.webview.postMessage({ type: "error", message: e instanceof Error ? e.message : String(e) });
@@ -195,17 +215,26 @@ ${STYLE}
 </style>
 </head>
 <body>
+<p class="intro">Все таргеты NLog — куда пишутся логи (файл, консоль, база, почта, ...). Каждый таргет редактируется как XML целиком (у NLog 115+ типов, у каждого свой набор атрибутов) — при добавлении помогает справочник типов ниже. Закомментированные строки — примеры от вендора, выключенные по умолчанию (⏸/▶ включает/выключает). Для File и ColoredConsole есть отдельные понятные формы настроек (🗄/🎨) вместо ручного редактирования XML.</p>
 <div id="toolbar">
   <input id="filter" type="text" placeholder="Поиск по имени/типу..." />
   <span id="count"></span>
   <button id="addBtn">+ Добавить таргет</button>
+  <button id="referenceBtn" class="secondary">ℹ Справочник \${...}</button>
   <span class="muted">${this.entry.filePath}</span>
 </div>
 <div id="gridWrap"><table id="grid"><thead><tr>
   <th>Имя</th><th>Тип</th><th>Статус</th><th></th>
 </tr></thead><tbody id="rows"></tbody></table></div>
+<div id="referenceBox" hidden>
+  <div class="boxHeader">Справочник функций layout (<code>\${...}</code>)</div>
+  <p class="muted">NLog "layout renderer" — функции вида <code>\${shortdate}</code>, <code>\${whenEmpty:...}</code>, которые подставляются в атрибут <code>layout</code> любого таргета (дата, уровень, сообщение, исключение и т.д.). Список ниже — просто справка для копирования, не привязан к конкретному таргету.</p>
+  <input id="referenceFilter" type="text" placeholder="Поиск функции (напр. shortdate, whenEmpty, exception...)" />
+  <div id="referenceList"></div>
+  <div class="actionsRow"><button id="referenceCloseBtn" class="secondary">Закрыть</button></div>
+</div>
 <div id="editorBox" hidden>
-  <div id="editorHeader"></div>
+  <div id="editorHeader" class="boxHeader"></div>
   <div id="typePickerWrap">
     <input id="typeFilter" type="text" placeholder="Фильтр по типу (напр. File, Database, Wrapper...)" />
     <select id="typeSelect" size="8"></select>
@@ -215,13 +244,13 @@ ${STYLE}
   <button id="insertSkeletonBtn">Вставить шаблон</button>
   <textarea id="xmlBox" rows="14" spellcheck="false"></textarea>
   <div id="secretWarning" class="warning" hidden>⚠ Похоже, здесь есть пароль/секрет открытым текстом — расширение его не маскирует, поле редактируется как есть.</div>
-  <div id="editorActions">
+  <div class="actionsRow">
     <button id="saveBtn">Сохранить</button>
     <button id="cancelBtn" class="secondary">Отмена</button>
   </div>
 </div>
 <div id="retentionBox" hidden>
-  <div id="retentionHeader"></div>
+  <div id="retentionHeader" class="boxHeader"></div>
   <p class="muted">Автоматическая архивация и удаление старых лог-файлов этого таргета (настройки NLog).</p>
   <div class="retentionField">
     <label>Создавать новый архив каждые</label>
@@ -253,16 +282,30 @@ ${STYLE}
     <label><input id="r-archiveOldFileOnStartup" type="checkbox" /> Архивировать уже существующий файл при запуске приложения</label>
   </div>
   <div id="retentionWarnings"></div>
-  <div id="editorActions">
+  <div class="actionsRow">
     <button id="retentionSaveBtn">Сохранить</button>
     <button id="retentionCancelBtn" class="secondary">Отмена</button>
+  </div>
+</div>
+<div id="highlightBox" hidden>
+  <div id="highlightHeader" class="boxHeader"></div>
+  <p class="muted">Подсветка строк в консоли по уровню лога (настройки NLog для ColoredConsole).</p>
+  <label class="muted"><input type="checkbox" id="h-useDefault" /> Использовать встроенные правила по умолчанию (Fatal/Error — красный, Warn — жёлтый, Info — белый, Debug/Trace — серый)</label>
+  <div id="highlightRowsWrap"></div>
+  <button id="addHighlightRowBtn" class="secondary">+ Добавить правило</button>
+  <div class="actionsRow">
+    <button id="highlightSaveBtn">Сохранить</button>
+    <button id="highlightCancelBtn" class="secondary">Отмена</button>
   </div>
 </div>
 <div id="toast"></div>
 <script nonce="${csp}">
 window.__CATALOG = ${JSON.stringify(NLOG_TARGET_TYPES)};
+window.__LAYOUT_RENDERERS = ${JSON.stringify(NLOG_LAYOUT_RENDERERS)};
 window.__ARCHIVE_EVERY_VALUES = ${JSON.stringify(NLOG_ARCHIVE_EVERY_VALUES)};
 window.__ARCHIVE_NUMBERING_VALUES = ${JSON.stringify(NLOG_ARCHIVE_NUMBERING_VALUES)};
+window.__CONSOLE_COLORS = ${JSON.stringify(NLOG_CONSOLE_COLORS)};
+window.__CONDITION_LEVELS = ${JSON.stringify(NLOG_CONDITION_LEVELS)};
 ${CLIENT_SCRIPT}
 </script>
 </body>
@@ -296,14 +339,26 @@ const STYLE = `
 	#nameInput { padding: 2px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
 	#xmlBox { width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); resize: vertical; }
 	.warning { color: var(--vscode-inputValidation-warningForeground, #b98600); background: var(--vscode-inputValidation-warningBackground); border: 1px solid var(--vscode-inputValidation-warningBorder, orange); padding: 4px 8px; margin-bottom: 4px; }
-	#editorActions { display: flex; gap: 8px; }
+	.actionsRow { display: flex; gap: 8px; }
+	.intro { color: var(--vscode-descriptionForeground); font-size: 12px; max-width: 900px; margin: 0 0 10px; }
+	.boxHeader { font-weight: 600; }
 	#retentionBox { margin-top: 12px; padding: 10px; border: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 6px; max-width: 560px; }
-	#retentionHeader { font-weight: 600; }
 	.retentionField { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
 	.retentionField label { font-weight: 500; }
 	.retentionField .cell { width: 100%; box-sizing: border-box; }
 	.retentionField .hint { color: var(--vscode-descriptionForeground); font-size: 12px; }
 	#retentionBox hr { border: none; border-top: 1px solid var(--vscode-panel-border); width: 100%; margin: 4px 0; }
+	#highlightBox { margin-top: 12px; padding: 10px; border: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 8px; max-width: 720px; }
+	.highlightRow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 4px 0; border-bottom: 1px solid var(--vscode-panel-border); }
+	.highlightRow select, .highlightRow input { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border, transparent); padding: 2px 4px; }
+	.highlightRow input[type=text] { flex: 1; min-width: 160px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); }
+	#referenceBox { margin-top: 12px; padding: 10px; border: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 8px; }
+	#referenceFilter { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
+	#referenceList { max-height: 40vh; overflow: auto; border: 1px solid var(--vscode-panel-border); }
+	.refItem { padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
+	.refItem code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15)); padding: 0 3px; }
+	.refItem .refDesc { color: var(--vscode-descriptionForeground); font-size: 12px; }
+	code { font-family: var(--vscode-editor-font-family); }
 	#toast { position: fixed; bottom: 10px; right: 10px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-editor-foreground); padding: 6px 10px; display: none; max-width: 50vw; }
 `;
 
@@ -344,6 +399,17 @@ const NUMBERING_HINTS = {
 	DateAndSequence: 'Архив именуется датой и номером по порядку внутри неё.'
 };
 
+const highlightBox = document.getElementById('highlightBox');
+const highlightHeader = document.getElementById('highlightHeader');
+const highlightRowsWrap = document.getElementById('highlightRowsWrap');
+const hUseDefaultEl = document.getElementById('h-useDefault');
+let highlightIndex = null;
+let highlightRows = [];
+
+const referenceBox = document.getElementById('referenceBox');
+const referenceFilterEl = document.getElementById('referenceFilter');
+const referenceListEl = document.getElementById('referenceList');
+
 let toastTimer;
 function showToast(message) {
 	toastEl.textContent = message;
@@ -373,6 +439,7 @@ function renderTable() {
 		html += '<td class="' + (t.enabled ? 'status-enabled' : 'status-disabled') + '">' + (t.enabled ? 'Включен' : 'Закомментирован') + '</td>';
 		html += '<td class="actions">' +
 			(t.xsiType === 'File' && t.enabled ? '<button class="icon" data-act="retention" title="Хранение логов (автоочистка старых файлов)">\u{1F5C4}</button> ' : '') +
+			(/xsi:type\s*=\s*"ColoredConsole"/.test(t.raw) && t.enabled ? '<button class="icon" data-act="highlighting" title="Подсветка строк по уровню">\u{1F3A8}</button> ' : '') +
 			'<button class="icon" data-act="edit" title="Редактировать XML">✎</button> ' +
 			'<button class="icon" data-act="duplicate" title="Дублировать">⧉</button> ' +
 			'<button class="icon" data-act="toggle" title="' + (t.enabled ? 'Закомментировать' : 'Включить') + '">' + (t.enabled ? '⏸' : '▶') + '</button> ' +
@@ -395,6 +462,8 @@ function renderTable() {
 		});
 		const retentionBtn = tr.querySelector('button[data-act="retention"]');
 		if (retentionBtn) retentionBtn.addEventListener('click', () => vscode.postMessage({ type: 'requestRetention', index }));
+		const highlightingBtn = tr.querySelector('button[data-act="highlighting"]');
+		if (highlightingBtn) highlightingBtn.addEventListener('click', () => vscode.postMessage({ type: 'requestHighlighting', index }));
 	});
 }
 
@@ -422,7 +491,18 @@ function checkSecretWarning() {
 	secretWarning.hidden = !/password|pwd|secret/i.test(xmlBox.value);
 }
 
+// Only one of editorBox/retentionBox/highlightBox/referenceBox is ever shown
+// at a time — opening any one closes the others first, and "Отмена"/close
+// on each just hides its own box (no shared state left dangling).
+function closeAllBoxes() {
+	closeEditor();
+	closeRetention();
+	closeHighlighting();
+	referenceBox.hidden = true;
+}
+
 function openAddEditor() {
+	closeAllBoxes();
 	editorState = { mode: 'add' };
 	editorHeader.textContent = 'Новый таргет';
 	typePickerWrap.hidden = false;
@@ -434,6 +514,7 @@ function openAddEditor() {
 }
 
 function openEditEditor(index) {
+	closeAllBoxes();
 	editorState = { mode: 'edit', index };
 	const t = targets[index];
 	editorHeader.textContent = 'Редактирование: ' + (t.name || t.tag);
@@ -453,6 +534,7 @@ function fillSelect(selectEl, values, labels) {
 }
 
 function openRetention(index, settings) {
+	closeAllBoxes();
 	retentionIndex = index;
 	retentionHeader.textContent = 'Хранение логов: ' + (targets[index].name || '');
 	fillSelect(document.getElementById('r-archiveEvery'), window.__ARCHIVE_EVERY_VALUES, RETENTION_LABELS);
@@ -505,6 +587,112 @@ document.getElementById('retentionSaveBtn').addEventListener('click', () => {
 	vscode.postMessage({ type: 'saveRetention', index: retentionIndex, settings: currentRetentionSettings() });
 });
 
+// --- ColoredConsole row highlighting -----------------------------------
+
+function parseCondition(cond) {
+	const m = /^level\\s*(==|!=|>=|<=|>|<)\\s*LogLevel\\.(\\w+)$/.exec((cond || '').trim());
+	return m ? { op: m[1], level: m[2] } : null;
+}
+function buildCondition(op, level) { return 'level ' + op + ' LogLevel.' + level; }
+
+const CONDITION_OPS = ['==', '!=', '>=', '<=', '>', '<'];
+
+function renderHighlightRows() {
+	highlightRowsWrap.innerHTML = highlightRows.map((row, i) => {
+		const parsed = parseCondition(row.condition);
+		let conditionHtml;
+		if (parsed) {
+			conditionHtml = 'level ' +
+				'<select class="hr-op" data-i="' + i + '">' + CONDITION_OPS.map((op) => '<option' + (op === parsed.op ? ' selected' : '') + '>' + op + '</option>').join('') + '</select>' +
+				' LogLevel.' +
+				'<select class="hr-level" data-i="' + i + '">' + window.__CONDITION_LEVELS.map((l) => '<option' + (l === parsed.level ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>';
+		} else {
+			conditionHtml = '<input type="text" class="hr-condition-raw" data-i="' + i + '" value="' + escapeHtml(row.condition) + '" title="Нестандартное условие — редактируется как текст" />';
+		}
+		const colorOptions = (selected) => window.__CONSOLE_COLORS.map((c) => '<option value="' + c + '"' + (c === selected ? ' selected' : '') + '>' + (c || '—') + '</option>').join('');
+		return '<div class="highlightRow" data-i="' + i + '">' +
+			'<span>Если</span>' + conditionHtml +
+			'<span>текст:</span><select class="hr-fg" data-i="' + i + '">' + colorOptions(row.foregroundColor) + '</select>' +
+			'<span>фон:</span><select class="hr-bg" data-i="' + i + '">' + colorOptions(row.backgroundColor) + '</select>' +
+			'<button class="icon" data-act="remove-row" data-i="' + i + '" title="Удалить правило">\u{1F5D1}</button>' +
+			'</div>';
+	}).join('');
+
+	highlightRowsWrap.querySelectorAll('.hr-op, .hr-level').forEach((el) => el.addEventListener('change', (e) => {
+		const i = Number(e.target.dataset.i);
+		const op = highlightRowsWrap.querySelector('.hr-op[data-i="' + i + '"]').value;
+		const level = highlightRowsWrap.querySelector('.hr-level[data-i="' + i + '"]').value;
+		highlightRows[i].condition = buildCondition(op, level);
+	}));
+	highlightRowsWrap.querySelectorAll('.hr-condition-raw').forEach((el) => el.addEventListener('input', (e) => {
+		highlightRows[Number(e.target.dataset.i)].condition = e.target.value;
+	}));
+	highlightRowsWrap.querySelectorAll('.hr-fg').forEach((el) => el.addEventListener('change', (e) => {
+		highlightRows[Number(e.target.dataset.i)].foregroundColor = e.target.value;
+	}));
+	highlightRowsWrap.querySelectorAll('.hr-bg').forEach((el) => el.addEventListener('change', (e) => {
+		highlightRows[Number(e.target.dataset.i)].backgroundColor = e.target.value;
+	}));
+	highlightRowsWrap.querySelectorAll('button[data-act="remove-row"]').forEach((el) => el.addEventListener('click', (e) => {
+		highlightRows.splice(Number(e.target.dataset.i), 1);
+		renderHighlightRows();
+	}));
+}
+
+function openHighlighting(index, settings) {
+	closeAllBoxes();
+	highlightIndex = index;
+	highlightHeader.textContent = 'Подсветка строк: ' + (targets[index].name || '');
+	hUseDefaultEl.checked = settings.useDefaultRowHighlightingRules;
+	highlightRows = settings.rows.map((r) => ({ ...r }));
+	renderHighlightRows();
+	highlightBox.hidden = false;
+}
+
+function closeHighlighting() {
+	highlightIndex = null;
+	highlightBox.hidden = true;
+}
+
+document.getElementById('addHighlightRowBtn').addEventListener('click', () => {
+	highlightRows.push({ condition: 'level == LogLevel.Info', foregroundColor: 'White', backgroundColor: '' });
+	renderHighlightRows();
+});
+document.getElementById('highlightCancelBtn').addEventListener('click', closeHighlighting);
+document.getElementById('highlightSaveBtn').addEventListener('click', () => {
+	vscode.postMessage({
+		type: 'saveHighlighting',
+		index: highlightIndex,
+		settings: { useDefaultRowHighlightingRules: hUseDefaultEl.checked, rows: highlightRows }
+	});
+});
+
+// --- Layout renderer (\${...}) reference --------------------------------
+
+function renderReferenceList() {
+	const q = referenceFilterEl.value.trim().toLowerCase();
+	const list = window.__LAYOUT_RENDERERS.filter((r) =>
+		!q || r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q) || r.category.toLowerCase().includes(q)
+	);
+	referenceListEl.innerHTML = list.slice(0, 300).map((r) => {
+		let extra = '';
+		if (r.category) extra += ' [' + escapeHtml(r.category) + ']';
+		if (r.package) extra += ' (пакет: ' + escapeHtml(r.package) + ')';
+		return '<div class="refItem"><code>\${' + escapeHtml(r.name) + '}</code>' + extra +
+			'<div class="refDesc">' + escapeHtml(r.description) + '</div></div>';
+	}).join('') || '<div class="refItem muted">Ничего не найдено</div>';
+}
+
+document.getElementById('referenceBtn').addEventListener('click', () => {
+	if (!referenceBox.hidden) { referenceBox.hidden = true; return; }
+	closeAllBoxes();
+	referenceFilterEl.value = '';
+	renderReferenceList();
+	referenceBox.hidden = false;
+});
+document.getElementById('referenceCloseBtn').addEventListener('click', () => { referenceBox.hidden = true; });
+referenceFilterEl.addEventListener('input', renderReferenceList);
+
 document.getElementById('addBtn').addEventListener('click', openAddEditor);
 document.getElementById('cancelBtn').addEventListener('click', closeEditor);
 typeFilterEl.addEventListener('input', () => renderTypeOptions(typeFilterEl.value));
@@ -539,9 +727,10 @@ window.addEventListener('message', (event) => {
 		checkSecretWarning();
 	} else if (msg.type === 'retention') {
 		openRetention(msg.index, msg.settings);
+	} else if (msg.type === 'highlighting') {
+		openHighlighting(msg.index, msg.settings);
 	} else if (msg.type === 'saved') {
-		closeEditor();
-		closeRetention();
+		closeAllBoxes();
 	} else if (msg.type === 'error') {
 		showToast(msg.message);
 	}

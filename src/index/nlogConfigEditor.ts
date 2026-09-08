@@ -667,3 +667,206 @@ export function setFileTargetRetention(filePath: string, index: number, settings
 		return { text: spliceSpan(text, item.span, raw) };
 	});
 }
+
+// ---------------------------------------------------------------------------
+// ColoredConsole row highlighting — the second narrow typed exception (see
+// file-level doc). Real, concrete usage exists in BPMSoft's own
+// WorkspaceConsole\BPMSoft.Tools.WorkspaceConsole.nlog.config (a
+// FilteringWrapper wrapping a ColoredConsole with three <highlight-row>
+// children) — bounded and well-documented enough (NLog's own
+// ConsoleOutputColor enum + ColoredConsole-target wiki page) to be worth a
+// form instead of raw XML.
+// ---------------------------------------------------------------------------
+
+/** `ConsoleOutputColor` enum members, straight from NLog's own source. */
+export const NLOG_CONSOLE_COLORS = [
+	"",
+	"Black",
+	"DarkBlue",
+	"DarkGreen",
+	"DarkCyan",
+	"DarkRed",
+	"DarkMagenta",
+	"DarkYellow",
+	"Gray",
+	"DarkGray",
+	"Blue",
+	"Green",
+	"Cyan",
+	"Red",
+	"Magenta",
+	"Yellow",
+	"White",
+	"NoChange"
+];
+
+/** The 6 real NLog log levels a highlight condition compares against
+ * (`LogLevel.Off` isn't a level an event can actually have, so it's not a
+ * meaningful comparison target here). */
+export const NLOG_CONDITION_LEVELS = ["Trace", "Debug", "Info", "Warn", "Error", "Fatal"];
+
+export interface HighlightRow {
+	/** Free-text NLog condition — almost always `level <op> LogLevel.<X>` in
+	 * practice (100% of real samples found), but the grammar allows more; an
+	 * unrecognized shape is preserved and shown as-is rather than corrupted. */
+	condition: string;
+	foregroundColor: string;
+	backgroundColor: string;
+}
+
+export interface ColoredConsoleHighlighting {
+	/** NLog's own default: true. The built-in rules (Fatal/Error=Red,
+	 * Warn=Yellow, Info=White, Debug/Trace=Gray) apply on top of — before —
+	 * any custom rows below when this is on. */
+	useDefaultRowHighlightingRules: boolean;
+	rows: HighlightRow[];
+}
+
+/** Uses the same quote-aware tokenizer as everything else in this file —
+ * NOT a hand-rolled `[^>]*`-style regex, which silently mis-parses a real
+ * row like `condition="level >= LogLevel.Error"`: the literal `>` inside
+ * the (perfectly legal) quoted attribute value ends the "tag" early for a
+ * naive character-class scan, dropping that row outright. Confirmed against
+ * WorkspaceConsole's own real `consoleAll` target, which has exactly this. */
+function parseHighlightRows(raw: string): HighlightRow[] {
+	const parsed = tryParseSingleElement(raw);
+	if (!parsed) {
+		return [];
+	}
+	const innerSpan = findContainerSpan(raw, parsed.tag);
+	if (!innerSpan) {
+		return [];
+	}
+	return listTopLevelItems(raw, innerSpan, ["highlight-row"]).map((item) => ({
+		condition: attrValue(item.attrs, "condition") ?? "",
+		foregroundColor: attrValue(item.attrs, "foregroundColor") ?? "",
+		backgroundColor: attrValue(item.attrs, "backgroundColor") ?? ""
+	}));
+}
+
+/** Removes every existing `<highlight-row/>` child (located the same
+ * quote-aware way as `parseHighlightRows` — see its own doc for why a plain
+ * regex isn't safe here) and inserts `rows` fresh; simpler and safer than
+ * diffing/patching the old set in place, since rows carry no identity of
+ * their own beyond position. Converts a self-closing target to an
+ * open/close pair if `rows` is non-empty (a self-closing `<target .../>`
+ * can't have children). */
+function replaceHighlightRows(raw: string, rows: HighlightRow[]): string {
+	const parsed = tryParseSingleElement(raw);
+	if (!parsed) {
+		return raw;
+	}
+	let withoutRows = raw;
+	const innerSpan = findContainerSpan(raw, parsed.tag);
+	if (innerSpan) {
+		const existingRows = listTopLevelItems(raw, innerSpan, ["highlight-row"]);
+		for (let i = existingRows.length - 1; i >= 0; i--) {
+			withoutRows = deleteItem(withoutRows, existingRows[i]);
+		}
+	}
+	if (!rows.length) {
+		return withoutRows;
+	}
+	const rowsXml = rows
+		.map((r) => {
+			const attrs = [`condition="${escapeXmlAttr(r.condition)}"`];
+			if (r.foregroundColor) {
+				attrs.push(`foregroundColor="${escapeXmlAttr(r.foregroundColor)}"`);
+			}
+			if (r.backgroundColor) {
+				attrs.push(`backgroundColor="${escapeXmlAttr(r.backgroundColor)}"`);
+			}
+			return `\n\t\t\t\t<highlight-row ${attrs.join(" ")} />`;
+		})
+		.join("");
+	const tagEnd = findTagEnd(withoutRows, 0);
+	const openTag = withoutRows.slice(0, tagEnd < 0 ? withoutRows.length : tagEnd);
+	if (openTag.endsWith("/")) {
+		return `${openTag.slice(0, -1).trimEnd()}>${rowsXml}\n\t\t\t</target>`;
+	}
+	const closeIdx = withoutRows.lastIndexOf("</target>");
+	if (closeIdx < 0) {
+		return withoutRows;
+	}
+	// Strip the whitespace-only indentation that was sitting right before
+	// `</target>` (now that every row before it is gone) — otherwise it
+	// survives as a blank line between the opening tag and the first
+	// freshly-inserted row, since `rowsXml` supplies its own leading newline.
+	const before = withoutRows.slice(0, closeIdx).replace(/[ \t]*$/, "").replace(/\n$/, "");
+	return `${before}${rowsXml}\n\t\t\t${withoutRows.slice(closeIdx)}`;
+}
+
+/**
+ * Finds the first `xsi:type="ColoredConsole"` element within `raw` — either
+ * `raw` itself, or nested one or more levels deep inside a wrapper (BPMSoft's
+ * own real example: `FilteringWrapper` → `ColoredConsole`). Returns the
+ * element's own `[start, end)` span *relative to `raw`*, or `undefined` if
+ * none exists anywhere in the fragment. Recursion terminates naturally —
+ * each step descends into a strictly smaller substring found within the
+ * current one, bottoming out when `tryParseSingleElement`/`findContainerSpan`
+ * find nothing further to descend into. */
+function findColoredConsoleSpan(raw: string, offset = 0): [number, number] | undefined {
+	const parsed = tryParseSingleElement(raw);
+	if (!parsed) {
+		return undefined;
+	}
+	if ((attrValue(parsed.attrs, "xsi:type") ?? attrValue(parsed.attrs, "type")) === "ColoredConsole") {
+		return [offset, offset + raw.length];
+	}
+	const innerSpan = findContainerSpan(raw, parsed.tag);
+	if (!innerSpan) {
+		return undefined;
+	}
+	for (const child of listTopLevelItems(raw, innerSpan, TARGET_TAGS)) {
+		const found = findColoredConsoleSpan(child.raw, offset + child.span[0]);
+		if (found) {
+			return found;
+		}
+	}
+	return undefined;
+}
+
+export function getColoredConsoleHighlighting(
+	filePath: string,
+	index: number
+): { ok: true; settings: ColoredConsoleHighlighting } | { ok: false; error: string } {
+	const targets = listTargets(filePath);
+	const item = targets?.[index];
+	if (!item) {
+		return { ok: false, error: "Таргет не найден" };
+	}
+	const span = findColoredConsoleSpan(item.raw);
+	if (!span) {
+		return { ok: false, error: "В этом таргете не найден элемент ColoredConsole" };
+	}
+	const coloredConsoleRaw = item.raw.slice(span[0], span[1]);
+	const useDefault = readTargetProp(coloredConsoleRaw, "useDefaultRowHighlightingRules");
+	return {
+		ok: true,
+		settings: {
+			useDefaultRowHighlightingRules: useDefault === undefined ? true : useDefault === "true",
+			rows: parseHighlightRows(coloredConsoleRaw)
+		}
+	};
+}
+
+export function setColoredConsoleHighlighting(filePath: string, index: number, settings: ColoredConsoleHighlighting): EditResult {
+	return withContainer(filePath, "targets", TARGET_TAGS, (text, items) => {
+		const item = items[index];
+		if (!item) {
+			return { error: "Таргет не найден" };
+		}
+		const span = findColoredConsoleSpan(item.raw);
+		if (!span) {
+			return { error: "В этом таргете не найден элемент ColoredConsole" };
+		}
+		let coloredConsoleRaw = item.raw.slice(span[0], span[1]);
+		// true is NLog's own default, so only write the attribute when
+		// explicitly turning it off — matches how every real sample leaves it
+		// unset rather than spelling out "true".
+		coloredConsoleRaw = applyTargetProp(coloredConsoleRaw, "useDefaultRowHighlightingRules", settings.useDefaultRowHighlightingRules ? "" : "false");
+		coloredConsoleRaw = replaceHighlightRows(coloredConsoleRaw, settings.rows);
+		const newItemRaw = spliceSpan(item.raw, span, coloredConsoleRaw);
+		return { text: spliceSpan(text, item.span, newItemRaw) };
+	});
+}

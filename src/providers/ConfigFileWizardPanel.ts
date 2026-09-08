@@ -28,6 +28,7 @@ import {
 	setExtensionType,
 	setVariable
 } from "../index/nlogConfigEditor";
+import { NLOG_LAYOUT_RENDERERS } from "../index/nlogCatalog";
 
 type WizardMode = "connectionStrings" | "appSettings" | "json" | "nlogVariables" | "nlogExtensions";
 
@@ -135,6 +136,21 @@ export class ConfigFileWizardPanel {
 				return "Assembly";
 			default:
 				return "Имя";
+		}
+	}
+
+	private introText(): string {
+		switch (this.mode) {
+			case "connectionStrings":
+				return "Строки подключения (БД, Redis, S3 и т.п.) — «Имя» это то, на что ссылаются из остального конфига (например <code>connectionStringName=\"db\"</code>), «Значение» — сама строка подключения целиком. Показывается скрытым (как пароль), т.к. почти всегда содержит Password= внутри — глазок показывает/скрывает конкретную строку.";
+			case "appSettings":
+				return "Плоский список настроек приложения «ключ → значение» (флаги, тайм-ауты, лимиты) — то же самое, что вручную искать нужный &lt;add key=... value=.../&gt; внутри большого &lt;appSettings&gt; в .dll.config, только с фильтром.";
+			case "json":
+				return "Настройки appsettings.json (Kestrel, логирование, DataProtection и т.д.) — «Путь» показан через точку (например <code>Kestrel.Endpoints.Https.Certificate.Password</code>). Массивы редактируются целиком как JSON-текст в поле значения.";
+			case "nlogVariables":
+				return "Именованные переменные NLog — заданное здесь значение можно переиспользовать где угодно в конфиге как <code>${ИмяПеременной}</code> (в т.ч. внутри значения другой переменной). Часто здесь собирают общий формат строки лога (layout) из более простых функций — см. справочник функций ниже.";
+			case "nlogExtensions":
+				return "Сборки (.dll), из которых NLog подгружает типы таргетов/layout, которых нет в его ядре (например поддержка Kafka, ElasticSearch, Syslog, Loki) — без нужной записи здесь таргет с таким xsi:type просто не заработает. Добавляется вместе с таргетом, который его требует — отдельно трогать нужно редко.";
 		}
 	}
 
@@ -289,16 +305,30 @@ ${STYLE}
 </style>
 </head>
 <body>
+<p class="intro">${this.introText()}</p>
 <div id="toolbar">
   <input id="filter" type="text" placeholder="Поиск..." />
   <span id="count"></span>
+  ${this.mode === "nlogVariables" ? '<button id="referenceBtn" class="secondary">ℹ Справочник функций \${...}</button>' : ""}
   <span class="muted">${this.entry.filePath}</span>
 </div>
+${
+	this.mode === "nlogVariables"
+		? `<div id="referenceBox" hidden>
+  <div class="boxHeader">Справочник функций layout (<code>\${...}</code>)</div>
+  <p class="muted">Функции вида <code>\${shortdate}</code>, <code>\${whenEmpty:...}</code>, которые можно подставлять в значение переменной. Список — просто справка для копирования.</p>
+  <input id="referenceFilter" type="text" placeholder="Поиск функции (напр. shortdate, whenEmpty, exception...)" />
+  <div id="referenceList"></div>
+  <div class="actionsRow"><button id="referenceCloseBtn" class="secondary">Закрыть</button></div>
+</div>`
+		: ""
+}
 <div id="gridWrap"><table id="grid"><thead><tr id="headRow"></tr></thead><tbody id="rows"></tbody></table></div>
 <div id="addBox"></div>
 <div id="toast"></div>
 <script nonce="${csp}">
 window.__isJson = ${JSON.stringify(this.mode === "json")};
+window.__LAYOUT_RENDERERS = ${this.mode === "nlogVariables" ? JSON.stringify(NLOG_LAYOUT_RENDERERS) : "[]"};
 ${CLIENT_SCRIPT}
 </script>
 </body>
@@ -328,6 +358,15 @@ const STYLE = `
 	#addBox select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border, transparent); }
 	#toast { position: fixed; bottom: 10px; right: 10px; background: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); color: var(--vscode-editor-foreground); padding: 6px 10px; display: none; max-width: 50vw; }
 	.muted { color: var(--vscode-descriptionForeground); font-size: 12px; }
+	.intro { color: var(--vscode-descriptionForeground); font-size: 12px; max-width: 900px; margin: 0 0 10px; }
+	.boxHeader { font-weight: 600; }
+	code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15)); padding: 0 3px; }
+	.actionsRow { display: flex; gap: 8px; }
+	#referenceBox { margin-bottom: 10px; padding: 10px; border: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 8px; }
+	#referenceFilter { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
+	#referenceList { max-height: 40vh; overflow: auto; border: 1px solid var(--vscode-panel-border); }
+	.refItem { padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
+	.refItem .refDesc { color: var(--vscode-descriptionForeground); font-size: 12px; }
 `;
 
 /** Plain browser JS, no build step — same CSP-friendly convention as
@@ -441,6 +480,32 @@ function render() {
 }
 
 filterEl.addEventListener('input', renderRows);
+
+const referenceBtn = document.getElementById('referenceBtn');
+if (referenceBtn) {
+	const referenceBox = document.getElementById('referenceBox');
+	const referenceFilterEl = document.getElementById('referenceFilter');
+	const referenceListEl = document.getElementById('referenceList');
+	function renderReferenceList() {
+		const q = referenceFilterEl.value.trim().toLowerCase();
+		const list = window.__LAYOUT_RENDERERS.filter((r) =>
+			!q || r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q) || r.category.toLowerCase().includes(q)
+		);
+		referenceListEl.innerHTML = list.slice(0, 300).map((r) => {
+			let extra = '';
+			if (r.category) extra += ' [' + escapeHtml(r.category) + ']';
+			if (r.package) extra += ' (пакет: ' + escapeHtml(r.package) + ')';
+			return '<div class="refItem"><code>\${' + escapeHtml(r.name) + '}</code>' + extra +
+				'<div class="refDesc">' + escapeHtml(r.description) + '</div></div>';
+		}).join('') || '<div class="refItem muted">Ничего не найдено</div>';
+	}
+	referenceBtn.addEventListener('click', () => {
+		referenceBox.hidden = !referenceBox.hidden;
+		if (!referenceBox.hidden) { referenceFilterEl.value = ''; renderReferenceList(); }
+	});
+	document.getElementById('referenceCloseBtn').addEventListener('click', () => { referenceBox.hidden = true; });
+	referenceFilterEl.addEventListener('input', renderReferenceList);
+}
 
 window.addEventListener('message', (event) => {
 	const msg = event.data;
