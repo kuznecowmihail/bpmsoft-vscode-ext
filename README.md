@@ -1,4 +1,4 @@
-# BPMSoft IntelliSense
+# BPMSoft Toolkit
 
 Расширение для VS Code / Cursor: автодополнение, навигация, подсказки и диагностика AMD-схем BPMSoft / Creatio.
 
@@ -420,7 +420,7 @@ BPMSoft.configuration.Structures["LeadPageV2"] = {
 
 ## Настройки (фичефлаги)
 
-Открыть: **Settings** → «BPMSoft IntelliSense», либо `settings.json` (User / Workspace).
+Открыть: **Settings** → «BPMSoft Toolkit», либо `settings.json` (User / Workspace).
 
 | Ключ | Тип | По умолчанию | Как пользоваться |
 | --- | --- | --- | --- |
@@ -494,5 +494,5 @@ npm run test:localization  # мастера локализации (upsert/inser
 
 ```bash
 npm run package
-# Установить VSIX: bpmsoft-intellisense-<version>.vsix (версия — из package.json)
+# Установить VSIX: bpmsoft-toolkit-<version>.vsix (версия — из package.json)
 ```
