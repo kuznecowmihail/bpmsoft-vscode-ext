@@ -137,6 +137,19 @@ export class SymbolIndex {
 	}
 
 	upsertModule(mod: IndexedModule): void {
+		const existing = this.modulesByPath.get(mod.filePath);
+		if (existing && modulesEquivalent(existing, mod)) {
+			// Re-parsed to the same effective shape as what's already indexed
+			// (e.g. MissingMemberDiagnostics re-running on every debounced
+			// keystroke while the buffer's net content hasn't actually
+			// changed — cutting a comment and pasting it right back is the
+			// common case). Bumping `modulesGeneration` here would blow away
+			// `thisMembersCache` for every open file for no reason, forcing
+			// a full schema-hierarchy re-walk (tens of ms on a deep chain)
+			// on the very next hover/completion/Outline refresh anywhere in
+			// the workspace, not just this file.
+			return;
+		}
 		this.removeByPath(mod.filePath);
 		this.modulesGeneration++;
 		this.modulesByPath.set(mod.filePath, mod);
@@ -1970,4 +1983,15 @@ export class SymbolIndex {
 			map.delete(key);
 		}
 	}
+}
+
+/**
+ * `IndexedModule` is plain, JSON-safe data (strings/arrays/records built the
+ * same way on every parse of the same source) — a structural comparison via
+ * `JSON.stringify` is cheap and exact, and far cheaper than the
+ * schema-hierarchy walk `upsertModule` calling this is meant to avoid
+ * triggering unnecessarily.
+ */
+function modulesEquivalent(a: IndexedModule, b: IndexedModule): boolean {
+	return JSON.stringify(a) === JSON.stringify(b);
 }

@@ -587,7 +587,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		void vscode.window.showErrorMessage(
-			`BPMSoft IntelliSense не запустилось: ${message}`
+			`BPMSoft Toolkit не запустилось: ${message}`
 		);
 		throw err;
 	}
