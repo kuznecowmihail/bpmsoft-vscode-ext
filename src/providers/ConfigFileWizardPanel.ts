@@ -3,7 +3,7 @@ import { AppConfigEntry } from "../index/appConfigDiscovery";
 import {
 	APP_SETTINGS_SPEC,
 	CONNECTION_STRINGS_SPEC,
-	XmlAddBlockSpec,
+	EditResult,
 	addXmlAddEntry,
 	deleteXmlAddEntry,
 	listXmlAddEntries,
@@ -17,6 +17,34 @@ import {
 	listJsonLeaves,
 	setJsonLeafValue
 } from "../index/jsonSettingsEditor";
+import {
+	addExtension,
+	addVariable,
+	deleteExtension,
+	deleteVariable,
+	listExtensions,
+	listVariables,
+	renameVariable,
+	setExtensionType,
+	setVariable
+} from "../index/nlogConfigEditor";
+
+type WizardMode = "connectionStrings" | "appSettings" | "json" | "nlogVariables" | "nlogExtensions";
+
+function modeForKind(kind: AppConfigEntry["kind"]): WizardMode {
+	switch (kind) {
+		case "appSettingsJson":
+			return "json";
+		case "xmlAppSettings":
+			return "appSettings";
+		case "nlogVariables":
+			return "nlogVariables";
+		case "nlogExtensions":
+			return "nlogExtensions";
+		default:
+			return "connectionStrings";
+	}
+}
 
 /** Key/path names whose value is masked (password toggle) by default — a
  * best-effort net for `appSettings`/`appsettings.json` leaves (e.g.
@@ -55,8 +83,7 @@ export class ConfigFileWizardPanel {
 
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
-	private readonly isJson: boolean;
-	private readonly xmlSpec?: XmlAddBlockSpec;
+	private readonly mode: WizardMode;
 
 	static show(entry: AppConfigEntry): void {
 		const panelKey = `${entry.kind}:${entry.filePath}`;
@@ -70,8 +97,7 @@ export class ConfigFileWizardPanel {
 	}
 
 	private constructor(private readonly entry: AppConfigEntry, private readonly panelKey: string) {
-		this.isJson = entry.kind === "appSettingsJson";
-		this.xmlSpec = entry.kind === "xmlAppSettings" ? APP_SETTINGS_SPEC : this.isJson ? undefined : CONNECTION_STRINGS_SPEC;
+		this.mode = modeForKind(entry.kind);
 
 		this.panel = vscode.window.createWebviewPanel(
 			"bpmsoftConfigFileWizard",
@@ -93,36 +119,67 @@ export class ConfigFileWizardPanel {
 		this.refresh();
 	}
 
+	/** XML add-block spec for the two `dotnetConfigEditor.ts`-backed modes —
+	 * meaningless (never called) for json/nlogVariables/nlogExtensions. */
+	private xmlSpec() {
+		return this.mode === "appSettings" ? APP_SETTINGS_SPEC : CONNECTION_STRINGS_SPEC;
+	}
+
 	private idLabel(): string {
-		if (this.isJson) {
-			return "Путь";
+		switch (this.mode) {
+			case "json":
+				return "Путь";
+			case "appSettings":
+				return "Ключ";
+			case "nlogExtensions":
+				return "Assembly";
+			default:
+				return "Имя";
 		}
-		return this.xmlSpec === APP_SETTINGS_SPEC ? "Ключ" : "Имя";
 	}
 
 	private loadRows(): WireRow[] | undefined {
-		if (this.isJson) {
-			const leaves = listJsonLeaves(this.entry.filePath);
-			if (!leaves) {
-				return undefined;
+		switch (this.mode) {
+			case "json": {
+				const leaves = listJsonLeaves(this.entry.filePath);
+				if (!leaves) {
+					return undefined;
+				}
+				return leaves.map((l) => ({
+					id: l.path,
+					value: l.display,
+					sensitive: SENSITIVE_KEY_RE.test(l.path.split(".").pop() ?? ""),
+					kind: l.kind
+				}));
 			}
-			return leaves.map((l) => ({
-				id: l.path,
-				value: l.display,
-				sensitive: SENSITIVE_KEY_RE.test(l.path.split(".").pop() ?? ""),
-				kind: l.kind
-			}));
+			case "nlogVariables": {
+				const vars = listVariables(this.entry.filePath);
+				if (!vars) {
+					return undefined;
+				}
+				return vars.map((v) => ({ id: v.name, value: v.value, sensitive: SENSITIVE_KEY_RE.test(v.name) }));
+			}
+			case "nlogExtensions": {
+				const exts = listExtensions(this.entry.filePath);
+				if (!exts) {
+					return undefined;
+				}
+				return exts.map((e) => ({ id: e.assembly, value: e.type ?? "", sensitive: false }));
+			}
+			default: {
+				const spec = this.xmlSpec();
+				const entries = listXmlAddEntries(this.entry.filePath, spec);
+				if (!entries) {
+					return undefined;
+				}
+				const alwaysMask = spec === CONNECTION_STRINGS_SPEC;
+				return entries.map((e) => ({
+					id: e.name,
+					value: e.value,
+					sensitive: alwaysMask || SENSITIVE_KEY_RE.test(e.name)
+				}));
+			}
 		}
-		const entries = listXmlAddEntries(this.entry.filePath, this.xmlSpec!);
-		if (!entries) {
-			return undefined;
-		}
-		const alwaysMask = this.xmlSpec === CONNECTION_STRINGS_SPEC;
-		return entries.map((e) => ({
-			id: e.name,
-			value: e.value,
-			sensitive: alwaysMask || SENSITIVE_KEY_RE.test(e.name)
-		}));
 	}
 
 	private refresh(): void {
@@ -133,7 +190,7 @@ export class ConfigFileWizardPanel {
 		}
 		void this.panel.webview.postMessage({
 			type: "init",
-			canRename: !this.isJson,
+			canRename: this.mode !== "json" && this.mode !== "nlogExtensions",
 			idLabel: this.idLabel(),
 			rows
 		});
@@ -149,20 +206,43 @@ export class ConfigFileWizardPanel {
 		}
 	}
 
-	private setValue(id: string, value: string, kind?: JsonLeafKind) {
-		return this.isJson
-			? setJsonLeafValue(this.entry.filePath, id, value, kind ?? "string")
-			: setXmlAddEntryValue(this.entry.filePath, this.xmlSpec!, id, value);
+	private setValue(id: string, value: string, kind?: JsonLeafKind): EditResult {
+		switch (this.mode) {
+			case "json":
+				return setJsonLeafValue(this.entry.filePath, id, value, kind ?? "string");
+			case "nlogVariables":
+				return setVariable(this.entry.filePath, id, value);
+			case "nlogExtensions":
+				return setExtensionType(this.entry.filePath, id, value);
+			default:
+				return setXmlAddEntryValue(this.entry.filePath, this.xmlSpec(), id, value);
+		}
 	}
 
-	private addEntry(id: string, value: string, kind?: JsonLeafKind) {
-		return this.isJson
-			? addJsonLeaf(this.entry.filePath, id, value, kind ?? "string")
-			: addXmlAddEntry(this.entry.filePath, this.xmlSpec!, id, value);
+	private addEntry(id: string, value: string, kind?: JsonLeafKind): EditResult {
+		switch (this.mode) {
+			case "json":
+				return addJsonLeaf(this.entry.filePath, id, value, kind ?? "string");
+			case "nlogVariables":
+				return addVariable(this.entry.filePath, id, value);
+			case "nlogExtensions":
+				return addExtension(this.entry.filePath, id, value || undefined);
+			default:
+				return addXmlAddEntry(this.entry.filePath, this.xmlSpec(), id, value);
+		}
 	}
 
-	private deleteEntry(id: string) {
-		return this.isJson ? deleteJsonLeaf(this.entry.filePath, id) : deleteXmlAddEntry(this.entry.filePath, this.xmlSpec!, id);
+	private deleteEntry(id: string): EditResult {
+		switch (this.mode) {
+			case "json":
+				return deleteJsonLeaf(this.entry.filePath, id);
+			case "nlogVariables":
+				return deleteVariable(this.entry.filePath, id);
+			case "nlogExtensions":
+				return deleteExtension(this.entry.filePath, id);
+			default:
+				return deleteXmlAddEntry(this.entry.filePath, this.xmlSpec(), id);
+		}
 	}
 
 	private async handleMessage(msg: Record<string, unknown>): Promise<void> {
@@ -178,10 +258,14 @@ export class ConfigFileWizardPanel {
 					);
 					break;
 				case "renameEntry":
-					if (this.isJson) {
+					if (this.mode === "json" || this.mode === "nlogExtensions") {
 						return;
 					}
-					this.reportEdit(renameXmlAddEntry(this.entry.filePath, this.xmlSpec!, String(msg.oldId), String(msg.newId)), true);
+					if (this.mode === "nlogVariables") {
+						this.reportEdit(renameVariable(this.entry.filePath, String(msg.oldId), String(msg.newId)), true);
+						return;
+					}
+					this.reportEdit(renameXmlAddEntry(this.entry.filePath, this.xmlSpec(), String(msg.oldId), String(msg.newId)), true);
 					break;
 				case "deleteEntry":
 					this.reportEdit(this.deleteEntry(String(msg.id)), true);
@@ -214,7 +298,7 @@ ${STYLE}
 <div id="addBox"></div>
 <div id="toast"></div>
 <script nonce="${csp}">
-window.__isJson = ${JSON.stringify(this.isJson)};
+window.__isJson = ${JSON.stringify(this.mode === "json")};
 ${CLIENT_SCRIPT}
 </script>
 </body>

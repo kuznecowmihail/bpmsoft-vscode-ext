@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { AppConfigEntry, AppConfigEntryKind, discoverAppConfigEntries } from "../index/appConfigDiscovery";
+import { discoverNlogConfigEntries } from "../index/nlogConfigDiscovery";
 
 export const EDIT_CONFIG_ENTRY_COMMAND = "bpmsoft.envConfig.edit";
 
@@ -17,7 +18,19 @@ function iconForKind(kind: AppConfigEntryKind): string {
 			return "json";
 		case "xmlAppSettings":
 			return "settings-gear";
+		case "nlogVariables":
+			return "symbol-variable";
+		case "nlogExtensions":
+			return "extensions";
+		case "nlogTargets":
+			return "output";
+		case "nlogRules":
+			return "list-ordered";
 	}
+}
+
+function discoverAll(appRoot: string): AppConfigEntry[] {
+	return [...discoverAppConfigEntries(appRoot), ...discoverNlogConfigEntries(appRoot)];
 }
 
 /**
@@ -46,12 +59,12 @@ export class AppConfigTreeProvider implements vscode.TreeDataProvider<ConfigTree
 		if (!element) {
 			if (this.appRoots.length <= 1) {
 				const appRoot = this.appRoots[0];
-				return appRoot ? discoverAppConfigEntries(appRoot).map((entry) => ({ type: "entry", entry })) : [];
+				return appRoot ? discoverAll(appRoot).map((entry) => ({ type: "entry", entry })) : [];
 			}
 			return this.appRoots.map((appRoot) => ({ type: "root", appRoot, label: path.basename(appRoot) }));
 		}
 		if (element.type === "root") {
-			return discoverAppConfigEntries(element.appRoot).map((entry) => ({ type: "entry", entry }));
+			return discoverAll(element.appRoot).map((entry) => ({ type: "entry", entry }));
 		}
 		return [];
 	}

@@ -22,7 +22,11 @@ export type AppConfigEntryKind =
 	| "connectionStringsFile"
 	| "appSettingsJson"
 	| "xmlConnectionStrings"
-	| "xmlAppSettings";
+	| "xmlAppSettings"
+	| "nlogVariables"
+	| "nlogExtensions"
+	| "nlogTargets"
+	| "nlogRules";
 
 export interface AppConfigEntry {
 	kind: AppConfigEntryKind;
