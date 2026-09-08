@@ -18,11 +18,12 @@ import { resolveLocalizedString, resolveLocalizedImage } from "../index/localiza
 
 function memberHover(
 	title: string,
-	m: Pick<IndexedMember, "detail" | "documentation">,
+	m: Pick<IndexedMember, "detail" | "documentation" | "caption">,
 	extra: string[] = []
 ): vscode.Hover {
 	return markdownHover([
 		title,
+		...(m.caption ? [`*${m.caption}*`] : []),
 		...(m.detail ? [m.detail] : []),
 		...(m.documentation ? ["", m.documentation] : []),
 		...extra
@@ -135,6 +136,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			if (attr && field) {
 				return markdownHover([
 					`**${field.name}** *(${attr.name} lookup/enum)*`,
+					...(attr.caption ? [`*${attr.caption}*`] : []),
 					...(field.documentation ? ["", field.documentation] : []),
 					...(attr.documentation ? ["", attr.documentation] : [])
 				]);

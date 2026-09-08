@@ -967,10 +967,10 @@ if (!pkgWeighted) {
 		"Expected Lead Pkg column this.$GoWeightedPenetration from Schemas/Lead/metadata.json"
 	);
 	failed = true;
-} else if (!/Взвешенное проникновение/.test(pkgWeighted.documentation || "")) {
+} else if (!/Взвешенное проникновение/.test(pkgWeighted.caption || "")) {
 	console.error(
 		"Expected GoWeightedPenetration caption from Lead.Entity resource.ru-RU.xml",
-		pkgWeighted.documentation
+		pkgWeighted.caption
 	);
 	failed = true;
 }
