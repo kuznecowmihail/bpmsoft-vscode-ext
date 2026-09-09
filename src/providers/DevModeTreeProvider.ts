@@ -1,11 +1,12 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { getDebuggingEnabled, getFileDesignModeEnabled, resolveWebHostConfigPath } from "../index/devModeSettings";
-import { getWorkspaceConsoleStatus } from "../index/workspaceConsoleSetup";
+import { findWorkspaceConsoleDll, getWorkspaceConsoleStatus } from "../index/workspaceConsoleSetup";
 
 export const TOGGLE_FILE_DESIGN_MODE_COMMAND = "bpmsoft.devMode.toggleFileDesignMode";
 export const TOGGLE_DEBUGGING_COMMAND = "bpmsoft.devMode.toggleDebugging";
 export const CONFIGURE_WORKSPACE_CONSOLE_COMMAND = "bpmsoft.devMode.configureWorkspaceConsole";
+export const RUN_WORKSPACE_CONSOLE_OPERATION_COMMAND = "bpmsoft.devMode.runWorkspaceConsoleOperation";
 
 const CONFIGURED_COLOR = new vscode.ThemeColor("charts.green");
 const WARNING_COLOR = new vscode.ThemeColor("charts.yellow");
@@ -14,7 +15,8 @@ export type DevModeTreeNode =
 	| { type: "root"; appRoot: string; label: string }
 	| { type: "fileDesignMode"; appRoot: string }
 	| { type: "debugging"; appRoot: string }
-	| { type: "workspaceConsole"; appRoot: string };
+	| { type: "workspaceConsole"; appRoot: string }
+	| { type: "workspaceConsoleRun"; appRoot: string; dllPath: string };
 
 /** Status/action rows for one app root — hidden entirely (not shown
  * "unavailable") when they don't apply: no web-host config found, no
@@ -31,6 +33,10 @@ function nodesFor(appRoot: string): DevModeTreeNode[] {
 	}
 	if (getWorkspaceConsoleStatus(appRoot).applicable) {
 		nodes.push({ type: "workspaceConsole", appRoot });
+	}
+	const dllPath = findWorkspaceConsoleDll(appRoot);
+	if (dllPath) {
+		nodes.push({ type: "workspaceConsoleRun", appRoot, dllPath });
 	}
 	return nodes;
 }
@@ -85,6 +91,9 @@ export class DevModeTreeProvider implements vscode.TreeDataProvider<DevModeTreeN
 		if (node.type === "debugging") {
 			return this.debuggingItem(node.appRoot);
 		}
+		if (node.type === "workspaceConsoleRun") {
+			return this.workspaceConsoleRunItem(node.appRoot, node.dllPath);
+		}
 		return this.workspaceConsoleItem(node.appRoot);
 	}
 
@@ -138,6 +147,20 @@ export class DevModeTreeProvider implements vscode.TreeDataProvider<DevModeTreeN
 				"\n\nКлик — настроить автоматически (скопировать значения из ConnectionStrings.config)."
 		);
 		item.command = { command: CONFIGURE_WORKSPACE_CONSOLE_COMMAND, title: "Настроить автоматически", arguments: [appRoot] };
+		return item;
+	}
+
+	private workspaceConsoleRunItem(appRoot: string, dllPath: string): vscode.TreeItem {
+		const item = new vscode.TreeItem("Операции Workspace Console…", vscode.TreeItemCollapsibleState.None);
+		item.iconPath = new vscode.ThemeIcon("terminal");
+		item.tooltip = new vscode.MarkdownString(
+			"Собрать команду `dotnet BPMSoft.Tools.WorkspaceConsole.dll -operation=...` для любой из " +
+				"поддерживаемых операций (сборка, установка пакетов, работа с рабочими пространствами, " +
+				"лицензии, шифрование и т.д.) и открыть её в терминале — команда только подставляется, " +
+				"выполняется вручную по Enter.\n\n" +
+				`\`${dllPath}\``
+		);
+		item.command = { command: RUN_WORKSPACE_CONSOLE_OPERATION_COMMAND, title: "Открыть", arguments: [appRoot, dllPath] };
 		return item;
 	}
 }

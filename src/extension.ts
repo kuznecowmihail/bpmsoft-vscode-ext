@@ -71,12 +71,14 @@ import { AppConfigTreeProvider, EDIT_CONFIG_ENTRY_COMMAND } from "./providers/Ap
 import {
 	CONFIGURE_WORKSPACE_CONSOLE_COMMAND,
 	DevModeTreeProvider,
+	RUN_WORKSPACE_CONSOLE_OPERATION_COMMAND,
 	TOGGLE_DEBUGGING_COMMAND,
 	TOGGLE_FILE_DESIGN_MODE_COMMAND
 } from "./providers/DevModeTreeProvider";
 import { ConfigFileWizardPanel } from "./providers/ConfigFileWizardPanel";
 import { NlogTargetsWizardPanel } from "./providers/NlogTargetsWizardPanel";
 import { NlogRulesWizardPanel } from "./providers/NlogRulesWizardPanel";
+import { WorkspaceConsoleOperationsPanel } from "./providers/WorkspaceConsoleOperationsPanel";
 import { getDebuggingEnabled, getFileDesignModeEnabled, resolveWebHostConfigPath, setDebugging, setFileDesignMode } from "./index/devModeSettings";
 import { autoConfigureWorkspaceConsole, getWorkspaceConsoleStatus } from "./index/workspaceConsoleSetup";
 import { AppConfigEntry } from "./index/appConfigDiscovery";
@@ -676,6 +678,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				devModeTree.refresh();
 				void vscode.window.showInformationMessage("Workspace Console настроена");
 			}),
+			vscode.commands.registerCommand(RUN_WORKSPACE_CONSOLE_OPERATION_COMMAND, (appRoot: string, dllPath: string) => {
+				WorkspaceConsoleOperationsPanel.show(appRoot, dllPath);
+			}),
 			vscode.commands.registerCommand("bpmsoft.devMode.refresh", () => {
 				devModeTree.refresh();
 			}),
@@ -699,6 +704,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 							"никогда не читает ConnectionStrings.config напрямую, поэтому они " +
 							"легко расходятся). «Настроить автоматически» копирует значения " +
 							"из главного файла.\n\n" +
+							"«Операции Workspace Console…» — конструктор команды `dotnet " +
+							"BPMSoft.Tools.WorkspaceConsole.dll -operation=...` для любой из " +
+							"поддерживаемых операций (полный список — в самом мастере), с " +
+							"открытием готовой команды в терминале для проверки перед запуском.\n\n" +
 							"Каждая строка кликабельна и переключает/чинит своё состояние " +
 							"(со спросом подтверждения)."
 					}

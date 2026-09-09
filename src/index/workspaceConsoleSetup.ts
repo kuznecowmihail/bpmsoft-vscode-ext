@@ -82,6 +82,26 @@ export function getWorkspaceConsoleStatus(appRoot: string): WorkspaceConsoleStat
 	return { applicable: true, configured: mismatches.length === 0, mismatches };
 }
 
+/** The actual runnable DLL (`dotnet <this> -operation=...`) — distinct from
+ * `BPMSoft.Tools.Common.dll`, which sits in the same folder and also ends in
+ * `.dll` but has no `Main`. `undefined` when the folder doesn't exist/doesn't
+ * apply (mirrors `getWorkspaceConsoleStatus`'s own "not applicable" check). */
+export function findWorkspaceConsoleDll(appRoot: string): string | undefined {
+	const dir = path.join(appRoot, "WorkspaceConsole");
+	const preferred = path.join(dir, "BPMSoft.Tools.WorkspaceConsole.dll");
+	if (fs.existsSync(preferred)) {
+		return preferred;
+	}
+	let names: string[];
+	try {
+		names = fs.readdirSync(dir);
+	} catch {
+		return undefined;
+	}
+	const fallback = names.find((n) => /WorkspaceConsole\.dll$/i.test(n) && !/\.Common\.dll$/i.test(n));
+	return fallback ? path.join(dir, fallback) : undefined;
+}
+
 export function autoConfigureWorkspaceConsole(appRoot: string): EditResult {
 	const status = getWorkspaceConsoleStatus(appRoot);
 	for (const m of status.mismatches) {
