@@ -90,6 +90,18 @@
         "icon": "$(info)"
       },
       {
+        "command": "bpmsoft.devMode.refresh",
+        "title": "Обновить Dev Mode",
+        "category": "BPMSoft",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "bpmsoft.devMode.showHelp",
+        "title": "О разделе Dev Mode",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
         "command": "bpmsoft.editLocalizedStrings",
         "title": "Редактировать локализуемые строки…",
         "category": "BPMSoft",
@@ -271,6 +283,16 @@
         {
           "command": "bpmsoft.envConfig.showHelp",
           "when": "view == bpmsoftEnvConfig",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bpmsoft.devMode.refresh",
+          "when": "view == bpmsoftDevMode",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.devMode.showHelp",
+          "when": "view == bpmsoftDevMode",
           "group": "navigation@2"
         }
       ],
@@ -580,6 +602,10 @@
         {
           "id": "bpmsoftPackageSettings",
           "name": "Package Settings"
+        },
+        {
+          "id": "bpmsoftDevMode",
+          "name": "Dev Mode"
         },
         {
           "id": "bpmsoftEnvConfig",

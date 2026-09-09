@@ -67,13 +67,13 @@ import {
 	CreateMemberCodeActionProvider,
 	executeCreateMember
 } from "./providers/CreateMemberCodeActionProvider";
+import { AppConfigTreeProvider, EDIT_CONFIG_ENTRY_COMMAND } from "./providers/AppConfigTreeProvider";
 import {
-	AppConfigTreeProvider,
 	CONFIGURE_WORKSPACE_CONSOLE_COMMAND,
-	EDIT_CONFIG_ENTRY_COMMAND,
+	DevModeTreeProvider,
 	TOGGLE_DEBUGGING_COMMAND,
 	TOGGLE_FILE_DESIGN_MODE_COMMAND
-} from "./providers/AppConfigTreeProvider";
+} from "./providers/DevModeTreeProvider";
 import { ConfigFileWizardPanel } from "./providers/ConfigFileWizardPanel";
 import { NlogTargetsWizardPanel } from "./providers/NlogTargetsWizardPanel";
 import { NlogRulesWizardPanel } from "./providers/NlogRulesWizardPanel";
@@ -206,11 +206,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			new Set(layouts.map((l) => l.appRoot).filter((p): p is string => Boolean(p)))
 		);
 		const envConfigTree = new AppConfigTreeProvider(appRoots);
+		const devModeTree = new DevModeTreeProvider(appRoots);
 
 		// One-shot-per-session heads-up (not persisted across restarts) — the
-		// same status/action also lives permanently in the Config Files tree
-		// (AppConfigTreeProvider's "workspaceConsole" node), this just makes it
-		// unlikely to go unnoticed since it's easy to never scroll to that tree.
+		// same status/action also lives permanently in the Dev Mode tree
+		// (DevModeTreeProvider's "workspaceConsole" node), this just makes it
+		// unlikely to go unnoticed since it's easy to never scroll to that view.
 		void (async () => {
 			for (const appRoot of appRoots) {
 				const status = getWorkspaceConsoleStatus(appRoot);
@@ -575,6 +576,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand("bpmsoft.envConfig.refresh", () => {
 				envConfigTree.refresh();
 			}),
+			vscode.commands.registerCommand("bpmsoft.envConfig.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Config Files — мастера для ConnectionStrings/appSettings/appsettings.json/nlog.config",
+					{
+						modal: true,
+						detail:
+							"Список найденных в корне приложения (не в Pkg) файлов " +
+							"деплоя — ConnectionStrings.config, appsettings.json, любой " +
+							"*.dll.config (в т.ч. в WorkspaceConsole) со своим блоком " +
+							"<connectionStrings>/<appSettings>, и nlog.config (+ " +
+							"включаемый nlog.targets.config, + отдельный " +
+							"WorkspaceConsole\\*.nlog.config) — отдельно Variables, " +
+							"Extensions, Targets, Rules. Клик по строке открывает " +
+							"таблицу вместо ручного поиска нужной записи в большом " +
+							"XML/JSON.\n\n" +
+							"Значения строк подключения и ключи вида *Password*/*Secret* " +
+							"по умолчанию скрыты — показ по иконке-глазку. Таргеты NLog " +
+							"редактируются как XML целиком (у NLog 115+ типов таргетов " +
+							"с разными наборами атрибутов) — тип подставляется из " +
+							"справочника NLog с описанием, а не угадыванием. Правки " +
+							"пишутся точечно (только изменённая запись), остальной файл " +
+							"не переформатируется."
+					}
+				);
+			}),
+			vscode.window.registerTreeDataProvider("bpmsoftDevMode", devModeTree),
 			vscode.commands.registerCommand(TOGGLE_FILE_DESIGN_MODE_COMMAND, async (appRoot: string) => {
 				const filePath = resolveWebHostConfigPath(appRoot);
 				if (!filePath) {
@@ -596,7 +623,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					void vscode.window.showErrorMessage(result.error ?? "Не удалось изменить настройку");
 					return;
 				}
-				envConfigTree.refresh();
+				devModeTree.refresh();
 				void vscode.window.showInformationMessage(
 					currentlyEnabled ? "Режим разработки в файловой системе выключен" : "Режим разработки в файловой системе включён"
 				);
@@ -620,7 +647,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					void vscode.window.showErrorMessage(result.error ?? "Не удалось изменить настройку");
 					return;
 				}
-				envConfigTree.refresh();
+				devModeTree.refresh();
 				void vscode.window.showInformationMessage(currentlyEnabled ? "Отладка в VS Code выключена" : "Отладка в VS Code включена");
 			}),
 			vscode.commands.registerCommand(CONFIGURE_WORKSPACE_CONSOLE_COMMAND, async (appRoot: string) => {
@@ -646,36 +673,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					void vscode.window.showErrorMessage(result.error ?? "Не удалось настроить Workspace Console");
 					return;
 				}
-				envConfigTree.refresh();
+				devModeTree.refresh();
 				void vscode.window.showInformationMessage("Workspace Console настроена");
 			}),
-			vscode.commands.registerCommand("bpmsoft.envConfig.showHelp", () => {
+			vscode.commands.registerCommand("bpmsoft.devMode.refresh", () => {
+				devModeTree.refresh();
+			}),
+			vscode.commands.registerCommand("bpmsoft.devMode.showHelp", () => {
 				void vscode.window.showInformationMessage(
-					"Config Files — мастера для ConnectionStrings/appSettings/appsettings.json/nlog.config",
+					"Dev Mode — переключатели режима разработки и статус Workspace Console",
 					{
 						modal: true,
 						detail:
-							"Список найденных в корне приложения (не в Pkg) файлов " +
-							"деплоя — ConnectionStrings.config, appsettings.json, любой " +
-							"*.dll.config (в т.ч. в WorkspaceConsole) со своим блоком " +
-							"<connectionStrings>/<appSettings>, и nlog.config (+ " +
-							"включаемый nlog.targets.config, + отдельный " +
-							"WorkspaceConsole\\*.nlog.config) — отдельно Variables, " +
-							"Extensions, Targets, Rules. Клик по строке открывает " +
-							"таблицу вместо ручного поиска нужной записи в большом " +
-							"XML/JSON.\n\n" +
-							"Значения строк подключения и ключи вида *Password*/*Secret* " +
-							"по умолчанию скрыты — показ по иконке-глазку. Таргеты NLog " +
-							"редактируются как XML целиком (у NLog 115+ типов таргетов " +
-							"с разными наборами атрибутов) — тип подставляется из " +
-							"справочника NLog с описанием, а не угадыванием. Правки " +
-							"пишутся точечно (только изменённая запись), остальной файл " +
-							"не переформатируется.\n\n" +
-							"Сверху списка — статусные строки-переключатели (если " +
-							"применимо к этому корню): режим разработки в файловой " +
-							"системе, отладка в VS Code, и статус Workspace Console с " +
-							"кнопкой «Настроить автоматически», если её строки " +
-							"подключения разошлись с главным ConnectionStrings.config."
+							"Режим разработки в файловой системе — <fileDesignMode enabled=.../> " +
+							"в BPMSoft.WebHost.dll.config/Web.config; включение одновременно " +
+							"выключает UseStaticFileContent (несовместим с этим режимом), " +
+							"выключение включает обратно.\n\n" +
+							"Отладка в VS Code — appSetting LoadAssemblyFromByteArray (по " +
+							"мотивам _enableDebugging.bat/_disableDebugging.bat): false — " +
+							"отладка работает, true — сборки грузятся из памяти и отладчик " +
+							"не может сопоставить их с исходниками.\n\n" +
+							"Workspace Console — сверяет <connectionStrings> каждого " +
+							"WorkspaceConsole\\*.dll.config с главным ConnectionStrings.config " +
+							"по именам записей, которые есть в обоих файлах (WorkspaceConsole " +
+							"никогда не читает ConnectionStrings.config напрямую, поэтому они " +
+							"легко расходятся). «Настроить автоматически» копирует значения " +
+							"из главного файла.\n\n" +
+							"Каждая строка кликабельна и переключает/чинит своё состояние " +
+							"(со спросом подтверждения)."
 					}
 				);
 			}),
@@ -692,9 +717,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				].map(
 					(rel) => {
 						const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(appRoot, rel));
-						watcher.onDidChange(() => envConfigTree.refresh());
-						watcher.onDidCreate(() => envConfigTree.refresh());
-						watcher.onDidDelete(() => envConfigTree.refresh());
+						const refreshBoth = () => {
+							envConfigTree.refresh();
+							devModeTree.refresh();
+						};
+						watcher.onDidChange(refreshBoth);
+						watcher.onDidCreate(refreshBoth);
+						watcher.onDidDelete(refreshBoth);
 						return watcher;
 					}
 				)
