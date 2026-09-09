@@ -575,6 +575,11 @@
           "default": true,
           "description": "Info-level hint on AddAllSchemaColumns()/FetchFromDB() without an explicit column list (C#) and esq.allColumns = true (JS): double-check you actually need every column. Silence a specific call site with a // bpmsoft-ignore: select-all-columns comment on the line above, or use the 'Not a problem' quick fix."
         },
+        "bpmsoft.style.businessRuleGuidName": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when a rules/businessRules rule key is an auto-generated GUID instead of a meaningful name. Silence a specific rule with a // bpmsoft-ignore: business-rule-guid-name comment on the line above, or disable this setting to turn the check off entirely."
+        },
         "bpmsoft.formatting.enabled": {
           "type": "boolean",
           "default": true,

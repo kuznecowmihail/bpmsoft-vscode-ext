@@ -160,6 +160,9 @@ function isIssueEnabled(kind: StyleIssue["kind"]): boolean {
 	if (kind === "selectAllColumnsHint") {
 		return config.get<boolean>("selectAllColumnsHint", true);
 	}
+	if (kind === "businessRuleGuidName") {
+		return config.get<boolean>("style.businessRuleGuidName", true);
+	}
 	return true;
 }
 
