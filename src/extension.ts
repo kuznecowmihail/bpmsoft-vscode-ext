@@ -679,7 +679,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				void vscode.window.showInformationMessage("Workspace Console настроена");
 			}),
 			vscode.commands.registerCommand(RUN_WORKSPACE_CONSOLE_OPERATION_COMMAND, (appRoot: string, dllPath: string) => {
-				WorkspaceConsoleOperationsPanel.show(appRoot, dllPath);
+				WorkspaceConsoleOperationsPanel.show(appRoot, dllPath, context.globalState);
 			}),
 			vscode.commands.registerCommand("bpmsoft.devMode.refresh", () => {
 				devModeTree.refresh();

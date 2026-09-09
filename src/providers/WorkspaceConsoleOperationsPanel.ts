@@ -19,6 +19,10 @@ function nonce(): string {
 
 let sharedTerminal: vscode.Terminal | undefined;
 
+/** Persisted across sessions (not per-workspace — favorites are a personal
+ * shortlist of operations, not something tied to a specific app root). */
+const FAVORITES_KEY = "bpmsoft.workspaceConsole.favoriteOperations";
+
 /**
  * Webview for building and launching a `WorkspaceConsole` command line —
  * picks one operation from `workspaceConsoleOperations.ts`'s catalog, fills
@@ -34,16 +38,16 @@ export class WorkspaceConsoleOperationsPanel {
 	private readonly webviewPanel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
 
-	static show(appRoot: string, dllPath: string): void {
+	static show(appRoot: string, dllPath: string, globalState: vscode.Memento): void {
 		if (WorkspaceConsoleOperationsPanel.panel) {
 			WorkspaceConsoleOperationsPanel.panel.webviewPanel.reveal(vscode.ViewColumn.Active);
 			WorkspaceConsoleOperationsPanel.panel.init(appRoot, dllPath);
 			return;
 		}
-		WorkspaceConsoleOperationsPanel.panel = new WorkspaceConsoleOperationsPanel(appRoot, dllPath);
+		WorkspaceConsoleOperationsPanel.panel = new WorkspaceConsoleOperationsPanel(appRoot, dllPath, globalState);
 	}
 
-	private constructor(private appRoot: string, private dllPath: string) {
+	private constructor(private appRoot: string, private dllPath: string, private readonly globalState: vscode.Memento) {
 		this.webviewPanel = vscode.window.createWebviewPanel(
 			"bpmsoftWorkspaceConsoleOperations",
 			"Workspace Console: операции",
@@ -72,12 +76,21 @@ export class WorkspaceConsoleOperationsPanel {
 			dllPath,
 			baseParams: WORKSPACE_CONSOLE_BASE_PARAMS,
 			operations: WORKSPACE_CONSOLE_OPERATIONS,
-			confRuntimeRequiredOps: Array.from(CONF_RUNTIME_PARENT_DIRECTORY_REQUIRED)
+			confRuntimeRequiredOps: Array.from(CONF_RUNTIME_PARENT_DIRECTORY_REQUIRED),
+			favorites: this.globalState.get<string[]>(FAVORITES_KEY, [])
 		});
 	}
 
 	private handleMessage(msg: Record<string, unknown>): void {
 		switch (msg.type) {
+			case "toggleFavorite": {
+				const opName = String(msg.opName);
+				const favorites = this.globalState.get<string[]>(FAVORITES_KEY, []);
+				const next = favorites.includes(opName) ? favorites.filter((f) => f !== opName) : [...favorites, opName];
+				void this.globalState.update(FAVORITES_KEY, next);
+				void this.webviewPanel.webview.postMessage({ type: "favorites", favorites: next });
+				break;
+			}
 			case "updateValues": {
 				const op = WORKSPACE_CONSOLE_OPERATIONS.find((o) => o.op === msg.opName);
 				if (!op) {
@@ -176,10 +189,14 @@ const STYLE = `
 	#opFilter { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
 	#opTree { max-height: 78vh; overflow: auto; border: 1px solid var(--vscode-panel-border); }
 	.catHeader { padding: 4px 8px; font-weight: 600; font-size: 12px; background: var(--vscode-sideBar-background); position: sticky; top: 0; }
-	.opRow { padding: 4px 8px 4px 16px; cursor: pointer; border-bottom: 1px solid var(--vscode-panel-border); font-size: 13px; }
+	.catHeader.favHeader { color: var(--vscode-charts-yellow, #cca700); }
+	.opRow { padding: 4px 8px 4px 4px; cursor: pointer; border-bottom: 1px solid var(--vscode-panel-border); font-size: 13px; display: flex; align-items: center; gap: 2px; }
 	.opRow:hover { background: var(--vscode-list-hoverBackground); }
 	.opRow.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 	.opRow .destructiveMark { color: var(--vscode-errorForeground, #f14c4c); margin-right: 3px; }
+	.starBtn { background: transparent; border: none; padding: 0 2px; cursor: pointer; color: var(--vscode-descriptionForeground); font-size: 13px; line-height: 1; flex: 0 0 auto; }
+	.starBtn:hover { background: transparent; color: var(--vscode-charts-yellow, #cca700); }
+	.starBtn.active { color: var(--vscode-charts-yellow, #cca700); }
 	#formArea { flex: 1; min-width: 0; }
 	.muted { color: var(--vscode-descriptionForeground); font-size: 12px; }
 	.boxHeader { font-weight: 600; margin: 12px 0 6px; }
@@ -205,16 +222,24 @@ const vscode = acquireVsCodeApi();
 let operations = [];
 let baseParams = [];
 let confRuntimeRequiredOps = [];
+let favorites = [];
 let selectedOp = null;
 const baseValues = {};
 let opValues = {};
 
 /** Same as baseParams, except confRuntimeParentDirectory's "required" is
  * true only for the operations where WorkspaceConsole itself enforces it
- * (see CONF_RUNTIME_PARENT_DIRECTORY_REQUIRED) — it's optional for the rest. */
+ * (see CONF_RUNTIME_PARENT_DIRECTORY_REQUIRED) — it's optional for the rest —
+ * and any flag the selected operation lists in optionalBaseParams (e.g.
+ * LoadLicResponse doesn't need -workspaceName) is never required. */
 function effectiveBaseParams() {
 	const needsConfRuntime = selectedOp && confRuntimeRequiredOps.includes(selectedOp.op);
-	return baseParams.map((p) => p.flag === 'confRuntimeParentDirectory' ? { ...p, required: needsConfRuntime } : p);
+	const optedOut = (selectedOp && selectedOp.optionalBaseParams) || [];
+	return baseParams.map((p) => {
+		if (optedOut.includes(p.flag)) return { ...p, required: false };
+		if (p.flag === 'confRuntimeParentDirectory') return { ...p, required: needsConfRuntime };
+		return p;
+	});
 }
 
 const opTreeEl = document.getElementById('opTree');
@@ -234,26 +259,53 @@ function escapeHtml(s) {
 	return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+function opRowHtml(op) {
+	const mark = op.destructive ? '<span class="destructiveMark" title="Меняет/удаляет данные">⚠</span>' : '';
+	const isFav = favorites.includes(op.op);
+	const star = '<button class="starBtn' + (isFav ? ' active' : '') + '" type="button" data-op="' + escapeHtml(op.op) + '" title="' +
+		(isFav ? 'Убрать из избранного' : 'Добавить в избранное') + '">' + (isFav ? '★' : '☆') + '</button>';
+	return '<div class="opRow' + (selectedOp && selectedOp.op === op.op ? ' selected' : '') + '" data-op="' + escapeHtml(op.op) + '">' +
+		star + mark + escapeHtml(op.caption) + '</div>';
+}
+
+function wireOpRows(container) {
+	container.querySelectorAll('.opRow').forEach((el) => {
+		el.addEventListener('click', (e) => {
+			if (e.target.closest('.starBtn')) return;
+			selectOp(el.dataset.op);
+		});
+	});
+	container.querySelectorAll('.starBtn').forEach((el) => {
+		el.addEventListener('click', (e) => {
+			e.stopPropagation();
+			vscode.postMessage({ type: 'toggleFavorite', opName: el.dataset.op });
+		});
+	});
+}
+
 function renderOpTree() {
 	const q = opFilterEl.value.trim().toLowerCase();
+	const matches = (op) => !q || op.caption.toLowerCase().includes(q) || op.op.toLowerCase().includes(q) || op.category.toLowerCase().includes(q);
+	let html = '';
+	if (favorites.length) {
+		const favOps = favorites.map((name) => operations.find((o) => o.op === name)).filter((o) => o && matches(o));
+		if (favOps.length) {
+			html += '<div class="catHeader favHeader">★ Избранное</div>';
+			for (const op of favOps) html += opRowHtml(op);
+		}
+	}
 	const byCategory = new Map();
 	for (const op of operations) {
-		if (q && !op.caption.toLowerCase().includes(q) && !op.op.toLowerCase().includes(q) && !op.category.toLowerCase().includes(q)) continue;
+		if (!matches(op)) continue;
 		if (!byCategory.has(op.category)) byCategory.set(op.category, []);
 		byCategory.get(op.category).push(op);
 	}
-	let html = '';
 	for (const [category, ops] of byCategory) {
 		html += '<div class="catHeader">' + escapeHtml(category) + '</div>';
-		for (const op of ops) {
-			const mark = op.destructive ? '<span class="destructiveMark" title="Меняет/удаляет данные">⚠</span>' : '';
-			html += '<div class="opRow' + (selectedOp && selectedOp.op === op.op ? ' selected' : '') + '" data-op="' + escapeHtml(op.op) + '">' + mark + escapeHtml(op.caption) + '</div>';
-		}
+		for (const op of ops) html += opRowHtml(op);
 	}
 	opTreeEl.innerHTML = html || '<div class="muted" style="padding:8px;">Ничего не найдено</div>';
-	opTreeEl.querySelectorAll('.opRow').forEach((el) => {
-		el.addEventListener('click', () => selectOp(el.dataset.op));
-	});
+	wireOpRows(opTreeEl);
 }
 
 function fieldHtml(param, value, store) {
@@ -351,11 +403,15 @@ window.addEventListener('message', (event) => {
 		operations = msg.operations;
 		baseParams = msg.baseParams;
 		confRuntimeRequiredOps = msg.confRuntimeRequiredOps || [];
+		favorites = msg.favorites || [];
 		for (const p of baseParams) {
 			if (p.defaultFromAppRoot && !baseValues[p.flag]) baseValues[p.flag] = msg.appRoot;
 		}
 		renderOpTree();
 		if (selectedOp) selectOp(selectedOp.op);
+	} else if (msg.type === 'favorites') {
+		favorites = msg.favorites || [];
+		renderOpTree();
 	} else if (msg.type === 'commandPreview') {
 		commandPreviewEl.value = msg.command;
 	}

@@ -63,6 +63,11 @@ export interface WCOperation {
 	params: WCParam[];
 	/** Mutates/deletes existing data (DB rows, files, packages) — shown with an extra confirmation. */
 	destructive?: boolean;
+	/** Base-param flags (see `WORKSPACE_CONSOLE_BASE_PARAMS`) that are normally
+	 * required but aren't for this specific operation — e.g. `LoadLicResponse`
+	 * is documented as "the only operation that doesn't need -workspaceName"
+	 * (official BPMSoft docs, confirmed not contradicted by the decompile). */
+	optionalBaseParams?: string[];
 }
 
 /** Always shown, on every operation — required by `BaseApplicationCommandLine<T>`/`Validate()` regardless of operation. */
@@ -84,6 +89,12 @@ const destinationPath = () => P("destinationPath", "Назначение (destin
 const packageName = (hint?: string) => P("packageName", "Пакет(ы) (packageName)", "text", { hint: hint ?? "Одно имя или несколько через запятую." });
 const continueIfError = () => P("continueIfError", "Продолжать при ошибках (continueIfError)", "bool");
 
+/** Standard list of content-type flags accepted by `-contentTypes` (the real
+ * `[Flags] WorkspaceConsoleContentType` enum, confirmed both by decompile and
+ * by the official docs' own Table 5) — comma-separated, empty = All. */
+const CONTENT_TYPES_HINT =
+	"Через запятую: All, SystemData, ConfigurationData, Resources, LocalizableData, Repository, SqlScripts, Data, LocalizableSchemaData. Пусто = All.";
+
 /** Shared "install options" group — read by `GetInstallOptions()`, applied to every install-style operation. */
 const installOptionParams = (): WCParam[] => [
 	packageName(),
@@ -94,9 +105,11 @@ const installOptionParams = (): WCParam[] => [
 	P("regenerateSchemaSources", "Перегенерировать исходники схем (regenerateSchemaSources)", "bool"),
 	P("updateDBStructure", "Обновлять структуру БД (updateDBStructure)", "bool"),
 	P("updateSystemDBStructure", "Обновлять структуру системных таблиц (updateSystemDBStructure)", "bool"),
+	P("skipValidateActions", "Пропустить проверку возможности создания индексов (skipValidateActions)", "bool"),
 	continueIfError(),
 	P("skipConstraints", "Пропустить ограничения БД (skipConstraints)", "bool"),
-	P("skipCompile", "Не компилировать (skipCompile)", "bool")
+	P("skipCompile", "Не компилировать (skipCompile)", "bool"),
+	P("backupConfiguration", "Резервная копия конфигурации перед установкой (backupConfiguration)", "bool", { hint: "По умолчанию true у самого WorkspaceConsole." })
 ];
 
 export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
@@ -159,6 +172,13 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		category: "Сборка и компиляция",
 		caption: "Догенерировать устаревший исходный код схем",
 		description: "Устанавливает связанные данные схем с устаревшими исходниками и пересобирает рабочее пространство.",
+		params: []
+	},
+	{
+		op: "RegenerateAdditionalSchemaSources",
+		category: "Сборка и компиляция",
+		caption: "Перегенерировать дополнительные исходники схем",
+		description: "Пересобирает схемы с обратными ссылками (back-reference) и рабочее пространство. ⚠ Реально ничего не делает, если в приложении выключена системная фича FeatureUseODataV4BackRefProperties.",
 		params: []
 	},
 	{
@@ -480,7 +500,7 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		description: "Сохраняет содержимое БД (системные/конфигурационные данные, локализуемые данные, ресурсы, сам репозиторий) в файлы — набор типов задаётся contentTypes.",
 		params: [
 			destinationPath(),
-			P("contentTypes", "Типы контента (contentTypes)", "text", { hint: "SystemData, ConfigurationData, LocalizableData, LocalizableSchemaData, Resources, Repository — через запятую; пусто = All." })
+			P("contentTypes", "Типы контента (contentTypes)", "text", { hint: CONTENT_TYPES_HINT })
 		]
 	},
 	{
@@ -491,7 +511,7 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		params: [
 			sourcePath(),
 			destinationPath(),
-			P("contentTypes", "Типы контента (contentTypes)", "text", { required: true, hint: "Должно включать SqlScripts, иначе операция ничего не сделает." })
+			P("contentTypes", "Типы контента (contentTypes)", "text", { required: true, hint: "Должно включать SqlScripts, иначе операция ничего не сделает. " + CONTENT_TYPES_HINT })
 		]
 	},
 	{
@@ -502,7 +522,7 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		params: [
 			sourcePath(),
 			destinationPath(),
-			P("contentTypes", "Типы контента (contentTypes)", "text", { hint: "SystemData, ConfigurationData, LocalizableData, LocalizableSchemaData, Resources, Repository — через запятую." })
+			P("contentTypes", "Типы контента (contentTypes)", "text", { hint: CONTENT_TYPES_HINT })
 		],
 		destructive: true
 	},
@@ -557,9 +577,10 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		op: "LoadLicResponse",
 		category: "Системные настройки и лицензии",
 		caption: "Загрузить лицензионный ответ",
-		description: "Загружает файл лицензионного ответа (sourcePath + fileName) в приложение.",
+		description: "Загружает файл лицензионного ответа (sourcePath + fileName) в приложение. Единственная операция, для которой -workspaceName не обязателен (по официальной документации BPMSoft). Для лицензии нового формата .bls нужно предварительно включить EnableUsingLicV2 в самом конфигурационном файле WorkspaceConsole (не через аргументы командной строки).",
 		params: [sourcePath(), P("fileName", "Имя файла (fileName)", "text", { required: true })],
-		destructive: true
+		destructive: true,
+		optionalBaseParams: ["workspaceName"]
 	},
 	{
 		op: "ActualizeSysAdminUnitInRole",
