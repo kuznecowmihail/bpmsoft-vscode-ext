@@ -6,6 +6,14 @@ export function enablePlatformStubs(): boolean {
 		.get<boolean>("enablePlatformStubs", true);
 }
 
+/** Always-on inline enum/business-rule hints (`EnumInlayHintsProvider.ts`) —
+ * a separate toggle from `enablePlatformStubs` since it also covers the
+ * hardcoded `dataValueType`/`itemType`/rule fields, which work regardless of
+ * that setting. */
+export function enumInlayHintsEnabled(): boolean {
+	return vscode.workspace.getConfiguration("bpmsoft").get<boolean>("enumInlayHints", true);
+}
+
 export function namingDiagnosticsEnabled(): boolean {
 	return vscode.workspace
 		.getConfiguration("bpmsoft")

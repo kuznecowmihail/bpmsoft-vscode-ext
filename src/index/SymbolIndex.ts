@@ -350,6 +350,37 @@ export class SymbolIndex {
 		return node;
 	}
 
+	/**
+	 * Reverse-lookup for `enumHints.ts`: given a `BPMSoft.*` enum's simple
+	 * name (e.g. `"ContentType"`, from a real `BPMSoft.ContentType = {LONG_
+	 * TEXT: 0, ...}` object-literal enum parsed by `buildPlatformStubs`) and
+	 * a raw literal value found in source (e.g. `"5"`), returns the matching
+	 * member's name (`"LOOKUP"`). `enumName` is matched as a direct
+	 * top-level platform stub first, then as a nested member anywhere in the
+	 * tree (some enums live under a namespace, e.g.
+	 * `BPMSoft.configuration.X`) — first match wins. Returns `undefined` when
+	 * platform stubs are empty (disabled, or not yet built) or nothing
+	 * matches, so callers fail closed rather than guess.
+	 */
+	resolvePlatformEnumMemberName(enumName: string, rawValue: string): string | undefined {
+		const direct = this.walkStubPath(this.platformRoot, [enumName]);
+		const node = direct?.children?.length ? direct : this.findStubNodeByName(this.platformRoot, enumName);
+		return node?.children?.find((c) => c.value === rawValue)?.name;
+	}
+
+	private findStubNodeByName(nodes: PlatformStubMember[], name: string): PlatformStubMember | undefined {
+		for (const node of nodes) {
+			if (node.name === name && node.children?.length) {
+				return node;
+			}
+			const found = node.children?.length ? this.findStubNodeByName(node.children, name) : undefined;
+			if (found) {
+				return found;
+			}
+		}
+		return undefined;
+	}
+
 	private modulesNamed(...names: string[]): IndexedModule[] {
 		const seen = new Map<string, IndexedModule>();
 		for (const name of names) {

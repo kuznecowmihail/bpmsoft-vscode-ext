@@ -1,7 +1,15 @@
 import * as acorn from "acorn";
-import { collectSchemaUnusedIssues, collectDiffDuplicateIssues, InheritedSchemaNames } from "./schemaUsageAnalyzer";
+import {
+	collectSchemaUnusedIssues,
+	collectDiffDuplicateIssues,
+	collectDiffGuidNameIssues,
+	collectBusinessRuleGuidNameIssues,
+	InheritedSchemaNames
+} from "./schemaUsageAnalyzer";
 import { AnyNode, childNodes, parseJs } from "./jsAst";
 import { KNOWN_JSDOC_TAGS, nearestKnownTag } from "./docTagCheck";
+import { isSuppressedAbove } from "./suppressComments";
+export { isSuppressedAbove } from "./suppressComments";
 
 type StyleIssueKind =
 	| "krBrace"
@@ -21,6 +29,8 @@ type StyleIssueKind =
 	| "nanCompare"
 	| "duplicateKey"
 	| "duplicateDiff"
+	| "diffGuidName"
+	| "businessRuleGuidName"
 	| "unusedMethod"
 	| "unusedAttribute"
 	| "unusedMessage"
@@ -65,7 +75,9 @@ export interface StyleIssue {
 
 /** Kinds that can be silenced at a specific call site via `// bpmsoft-ignore: <id>`. */
 export const SUPPRESSIBLE_RULE_IDS: Partial<Record<StyleIssueKind, string>> = {
-	selectAllColumnsHint: "select-all-columns"
+	selectAllColumnsHint: "select-all-columns",
+	diffGuidName: "diff-guid-name",
+	businessRuleGuidName: "business-rule-guid-name"
 };
 
 /**
@@ -104,28 +116,6 @@ export const AUTO_FORMAT_SAFE_KINDS: ReadonlySet<StyleIssueKind> = new Set<Style
 	"jsDocTagTypo",
 	"xmlDocTagTypo"
 ]);
-
-const SUPPRESS_COMMENT_RE = /^\/\/\s*bpmsoft-ignore:\s*([\w-]+)\s*$/;
-
-/**
- * True when the non-blank source line immediately above `start` is a
- * `// bpmsoft-ignore: <ruleId>` marker matching `ruleId`.
- */
-export function isSuppressedAbove(source: string, start: number, ruleId: string): boolean {
-	const lineStart = source.lastIndexOf("\n", start - 1) + 1;
-	let prevLineEnd = lineStart > 0 ? lineStart - 1 : -1;
-	while (prevLineEnd >= 0) {
-		const prevLineStart = source.lastIndexOf("\n", prevLineEnd - 1) + 1;
-		const prevLine = source.slice(prevLineStart, prevLineEnd).trim();
-		if (!prevLine) {
-			prevLineEnd = prevLineStart > 0 ? prevLineStart - 1 : -1;
-			continue;
-		}
-		const m = SUPPRESS_COMMENT_RE.exec(prevLine);
-		return !!m && m[1] === ruleId;
-	}
-	return false;
-}
 
 type BindingKind = "const" | "let" | "var" | "param" | "function";
 
@@ -197,6 +187,8 @@ export function collectStyleIssues(
 	pushUnusedBindings(ctx);
 	issues.push(...collectSchemaUnusedIssues(source, inherited, ast));
 	issues.push(...collectDiffDuplicateIssues(ast));
+	issues.push(...collectDiffGuidNameIssues(ast, source));
+	issues.push(...collectBusinessRuleGuidNameIssues(ast, source));
 	issues.push(...collectTrailingCommentIssues(source, comments));
 	issues.push(...collectJsDocTagIssues(comments));
 	return issues;

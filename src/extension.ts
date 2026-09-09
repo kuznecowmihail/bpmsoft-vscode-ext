@@ -17,6 +17,8 @@ import { resetLocalizationCaches } from "./index/localizationLookup";
 import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
 import { StyleDiagnostics } from "./providers/StyleDiagnostics";
 import { StyleCodeActionProvider } from "./providers/StyleCodeActionProvider";
+import { EnumInlayHintsProvider } from "./providers/EnumInlayHintsProvider";
+import { EnumLiteralCodeActionProvider } from "./providers/EnumLiteralCodeActionProvider";
 import { JsFormattingProvider } from "./providers/JsFormattingProvider";
 import { CsharpFormattingProvider } from "./providers/CsharpFormattingProvider";
 import { SqlFormattingProvider } from "./providers/SqlFormattingProvider";
@@ -87,6 +89,7 @@ let index: SymbolIndex;
 let indexer: ModuleIndexer;
 let diagnostics: MissingMemberDiagnostics;
 let styleDiagnostics: StyleDiagnostics;
+let enumInlayHintsProvider: EnumInlayHintsProvider;
 let namingDiagnostics: NamingDiagnostics;
 let namingIndex: NamingIssuesIndex;
 let outlineTree: ViewModelOutlineProvider;
@@ -197,6 +200,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 		const completionProvider = new CompletionProvider(index);
 		const csharpCompletionProvider = new CsharpCompletionProvider(index);
+		enumInlayHintsProvider = new EnumInlayHintsProvider(index);
 
 		const gitFlowCandidateRoots = layouts
 			.map((l) => l.pkgRoot || l.configurationRoot || l.appRoot || l.workspaceRoot)
@@ -417,6 +421,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				new StyleCodeActionProvider(),
 				{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 			),
+			vscode.languages.registerCodeActionsProvider(
+				jsSelector,
+				new EnumLiteralCodeActionProvider(index),
+				{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+			),
+			vscode.languages.registerInlayHintsProvider(jsSelector, enumInlayHintsProvider),
 			vscode.languages.registerCodeActionsProvider(
 				csharpSelector,
 				new StyleCodeActionProvider(),
@@ -794,6 +804,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.workspace.onDidChangeConfiguration((e) => {
 				if (e.affectsConfiguration("bpmsoft.styleDiagnostics")) {
 					styleDiagnostics.refreshOpenDocuments();
+				}
+				if (
+					e.affectsConfiguration("bpmsoft.enumInlayHints") ||
+					e.affectsConfiguration("bpmsoft.enablePlatformStubs")
+				) {
+					enumInlayHintsProvider.refresh();
 				}
 				if (
 					e.affectsConfiguration("bpmsoft.namingDiagnostics") ||
@@ -1240,6 +1256,7 @@ async function rebuildWithProgress(forceFresh = false): Promise<void> {
 			diagnostics.refreshOpenDocuments();
 			styleDiagnostics.refreshOpenDocuments();
 			namingDiagnostics.refreshOpenDocuments();
+			enumInlayHintsProvider.refresh();
 			void namingIndex.refresh(forceFresh);
 			outlineTree.refresh();
 			void plainOutlineTree.refresh();

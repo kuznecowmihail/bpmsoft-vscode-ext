@@ -539,6 +539,11 @@
           "default": true,
           "description": "Disable JS word/name history suggestions in workspace so indexed BPMSoft completions rank first"
         },
+        "bpmsoft.enumInlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline hints decoding coded numeric fields (dataValueType, itemType, contentType, comparisonType, business-rule ruleType/property) to their BPMSoft.* constant, and a short description at each rules/businessRules rule"
+        },
         "bpmsoft.styleDiagnostics": {
           "type": "boolean",
           "default": true,

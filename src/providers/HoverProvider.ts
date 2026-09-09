@@ -15,6 +15,10 @@ import {
 } from "./platformLookup";
 import { findSchemaDir } from "../index/schemaResourceLookup";
 import { resolveLocalizedString, resolveLocalizedImage } from "../index/localizationLookup";
+import { parseJs } from "../parse/jsAst";
+import { collectEnumHintSites } from "../parse/enumHintSites";
+import { resolveGenericEnumField, resolveRuleEnumField } from "../parse/enumHints";
+import { describeRule } from "../parse/businessRuleDescription";
 
 function memberHover(
 	title: string,
@@ -39,6 +43,11 @@ export class HoverProvider implements vscode.HoverProvider {
 		const text = document.getText();
 		const offset = document.offsetAt(position);
 		const filePath = document.uri.fsPath;
+
+		const enumHint = this.enumHintHover(text, offset);
+		if (enumHint) {
+			return enumHint;
+		}
 
 		const rootCtx = getRootSchemaNameContext(text, offset);
 		if (rootCtx?.name) {
@@ -239,6 +248,37 @@ export class HoverProvider implements vscode.HoverProvider {
 		}
 
 		return undefined;
+	}
+
+	/** Hovering a coded numeric literal (`dataValueType`/`itemType`/
+	 * `contentType`/`comparisonType` anywhere, `ruleType`/`property` inside a
+	 * `rules`/`businessRules` rule) shows its resolved symbolic constant;
+	 * hovering a `rules`/`businessRules` rule-id key shows what that rule
+	 * does. Shares `enumHintSites.ts`'s site list with
+	 * `EnumInlayHintsProvider.ts` so hover and inlay hint always agree. */
+	private enumHintHover(text: string, offset: number): vscode.Hover | undefined {
+		const ast = parseJs(text);
+		if (!ast) {
+			return undefined;
+		}
+		const site = collectEnumHintSites(ast).find((s) => offset >= s.start && offset <= s.end);
+		if (!site) {
+			return undefined;
+		}
+		if (site.kind === "literal") {
+			const resolved =
+				site.scope === "generic"
+					? resolveGenericEnumField(this.index, site.fieldName, site.rawValue)
+					: resolveRuleEnumField(site.fieldName, site.rawValue, site.ruleTypeRaw);
+			if (!resolved) {
+				return undefined;
+			}
+			return markdownHover([`**${site.rawValue}** → \`${resolved.symbol}\``]);
+		}
+		const description = describeRule(site.ruleObj, (raw) =>
+			this.index.resolvePlatformEnumMemberName("ComparisonType", raw)
+		);
+		return markdownHover([`**${site.attrName}** *(rule)*`, description.full]);
 	}
 
 	/** Entity/schema hover (root ESQ argument, or a schema landed on mid-path

@@ -9,6 +9,14 @@ import {
 	memberDedupeKey
 } from "./types";
 import { AnyNode, childNodes, posFromNode, leadingComment } from "./jsAst";
+import {
+	ALL_RULE_PROPERTY_NAMES,
+	RULE_PROPERTY_CODE_NAMES,
+	RULE_TYPE_CODE_NAMES,
+	describeRule,
+	describeRuleCode,
+	normalizeRuleCode
+} from "./businessRuleDescription";
 
 export const IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 
@@ -1202,52 +1210,9 @@ function objectPropsByName(node: AnyNode | undefined): Map<string, AnyNode> {
 	return map;
 }
 
-// The authoritative source, not a guess: `conf\content\BusinessRuleModule.js`
-// declares these numeric values directly (`var enums = {Property: {VISIBLE:
-// 0, ENABLED: 1, REQUIRED: 2, READONLY: 3}, RuleType: {DISABLED: -1,
-// BINDPARAMETER: 0, FILTRATION: 1, AUTOCOMPLETE: 2, POPULATE_ATTRIBUTE: 3},
-// ...}`) — see CLAUDE.md §4b.
-const RULE_TYPE_CODE_NAMES: Record<string, string> = {
-	"-1": "DISABLED",
-	"0": "BINDPARAMETER",
-	"1": "FILTRATION",
-	"2": "AUTOCOMPLETE",
-	"3": "POPULATE_ATTRIBUTE"
-};
-const RULE_PROPERTY_CODE_NAMES: Record<string, string> = {
-	"0": "VISIBLE",
-	"1": "ENABLED",
-	"2": "REQUIRED",
-	"3": "READONLY"
-};
-/** Ordered so the "available" list below reads in the same order the
- * platform declares them, not alphabetically. */
-const ALL_RULE_PROPERTY_NAMES = ["VISIBLE", "ENABLED", "REQUIRED", "READONLY"];
-
-function describeRuleCode(preview: string | undefined, names: Record<string, string>): string | undefined {
-	if (!preview) {
-		return undefined;
-	}
-	const mapped = names[preview];
-	return mapped ? `${mapped} (${preview})` : preview;
-}
-
-/** Resolves a rule's `ruleType`/`property` to its canonical enum name
- * regardless of which authoring path produced it: the Designer's numeric
- * code ("2") via `codeNames`, or hand-written `rules`' own symbolic constant
- * ("BusinessRuleModule.enums.Property.REQUIRED", matched by its trailing
- * identifier) — both mean the same thing, just spelled differently. */
-function normalizeRuleCode(preview: string | undefined, codeNames: Record<string, string>): string | undefined {
-	if (!preview) {
-		return undefined;
-	}
-	const direct = codeNames[preview];
-	if (direct) {
-		return direct;
-	}
-	const tail = preview.slice(preview.lastIndexOf(".") + 1);
-	return Object.values(codeNames).includes(tail) ? tail : undefined;
-}
+// Rule-type/property code tables + describeRuleCode/normalizeRuleCode moved
+// to `businessRuleDescription.ts` (imported above) — shared with the hover,
+// inlay-hints, and GUID-rule-id naming quick-fix, not just this Outline.
 
 /** `rules` (hand-written, symbolic `BusinessRuleModule.enums.*` constants)
  * and `businessRules` (Designer "Бизнес-правила" panel output, numeric
@@ -1284,11 +1249,12 @@ export function collectBusinessRuleMembers(
 			const property = describeRuleCode(propertyRaw, RULE_PROPERTY_CODE_NAMES);
 			const source = businessRuleProp && ruleProp ? "rules + businessRules" : businessRuleProp ? "businessRules" : "rules";
 			const anchorProp = ruleProp ?? businessRuleProp;
+			const description = describeRule(ruleObj);
 			children.push({
 				name: ruleId,
 				kind: "property",
 				detail: [ruleType, property].filter(Boolean).join(" · ") || undefined,
-				documentation: `Источник: ${source}`,
+				documentation: `${description.full}\n\nИсточник: ${source}`,
 				position: anchorProp ? posFromNode((anchorProp as AnyNode).key ?? anchorProp) : undefined
 			});
 			// Only BINDPARAMETER rules target a `Property` (VISIBLE/ENABLED/
