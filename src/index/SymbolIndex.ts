@@ -25,6 +25,13 @@ import {
 import { loadStockEntityCaptions } from "../parse/stockEntityResources";
 import { buildSandboxStubs } from "../stubs/sandboxGlobals";
 import {
+	ResolvedJsDoc,
+	findInheritDocTarget,
+	hasOverrideTag,
+	otherTags,
+	parseJsDocComment
+} from "../parse/jsDocResolve";
+import {
 	inheritdocTarget,
 	isPageSchema,
 	mixinIndexKeys,
@@ -35,6 +42,7 @@ import {
 } from "./modulePaths";
 
 const MAX_INHERIT_DEPTH = 25;
+const MAX_INHERITDOC_RESOLVE_DEPTH = 10;
 const BASE_MODAL_BOX_PAGE = "BaseModalBoxPage";
 const MODAL_BOX_SCHEMA_MODULE = "ModalBoxSchemaModule";
 
@@ -737,6 +745,65 @@ export class SymbolIndex {
 		}
 		this.forEachMixinModule(chainMods, addFrom);
 		return out;
+	}
+
+	/** Member declared as `name` directly on a module resolvable by `owner`
+	 * (its schema/class name or alternate class name). Used to walk
+	 * `@inheritdoc Owner#member` pointers, which already name the exact
+	 * owner - no chain-walking needed, unlike `resolveThisMembers`. */
+	private findMemberByOwnerName(owner: string, name: string): IndexedMember | undefined {
+		for (const mod of this.getAllByName(owner)) {
+			const member = mod.members.find((m) => m.name === name);
+			if (member) {
+				return member;
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * Resolves a raw JSDoc comment body (`IndexedMember.documentation`) into
+	 * a description plus styling metadata, following `@inheritdoc
+	 * Owner#member` pointers up the chain until a real description is
+	 * found, an implementation with no further pointer is reached, the
+	 * target can't be found, or `MAX_INHERITDOC_RESOLVE_DEPTH` hops are
+	 * exhausted. `undefined` when there's nothing here at all (no
+	 * description, no tags). See `jsDocResolve.ts` for the pure parsing
+	 * half and `formatResolvedJsDoc` for rendering the result.
+	 */
+	resolveJsDoc(documentation: string | undefined): ResolvedJsDoc | undefined {
+		const parsed = parseJsDocComment(documentation);
+		if (!parsed.description && !parsed.tags.length) {
+			return undefined;
+		}
+		const overridden = hasOverrideTag(parsed.tags);
+		const extraTags = otherTags(parsed.tags);
+		let description = parsed.description;
+		let target = findInheritDocTarget(parsed.tags);
+		const chain: string[] = [];
+		const seen = new Set<string>();
+		let unresolved: string | undefined;
+		let truncated = false;
+
+		while (!description && target) {
+			const key = `${target.owner}#${target.name}`;
+			if (seen.has(key) || chain.length >= MAX_INHERITDOC_RESOLVE_DEPTH) {
+				truncated = true;
+				break;
+			}
+			seen.add(key);
+			chain.push(key);
+			const member = this.findMemberByOwnerName(target.owner, target.name);
+			if (!member) {
+				unresolved = key;
+				break;
+			}
+			const next = parseJsDocComment(member.documentation);
+			description = next.description;
+			target = description ? undefined : findInheritDocTarget(next.tags);
+		}
+
+		return { description, overridden, chain, unresolved, truncated, extraTags };
 	}
 
 	findThisMemberLocations(

@@ -19,22 +19,81 @@ import { parseJs } from "../parse/jsAst";
 import { collectEnumHintSites } from "../parse/enumHintSites";
 import { resolveGenericEnumField, resolveRuleEnumField } from "../parse/enumHints";
 import { describeRule } from "../parse/businessRuleDescription";
-
-function memberHover(
-	title: string,
-	m: Pick<IndexedMember, "detail" | "documentation">,
-	extra: string[] = []
-): vscode.Hover {
-	return markdownHover([
-		title,
-		...(m.detail ? [m.detail] : []),
-		...(m.documentation ? ["", m.documentation] : []),
-		...extra
-	]);
-}
+import { formatResolvedJsDoc } from "../parse/jsDocResolve";
 
 export class HoverProvider implements vscode.HoverProvider {
 	constructor(private readonly index: SymbolIndex) {}
+
+	/** `@inheritdoc`/`@override` in `m.documentation` get resolved (chain
+	 * walked to the nearest real description) and styled as their own
+	 * paragraphs, rather than dumped as raw JSDoc tag lines - see the
+	 * conversation that prompted this for why the default TS/JS hover can't
+	 * be fixed the same way (it's not ours to restyle). */
+	private memberHover(
+		title: string,
+		m: Pick<IndexedMember, "detail" | "documentation">,
+		extra: string[] = []
+	): vscode.Hover {
+		const resolved = this.index.resolveJsDoc(m.documentation);
+		return markdownHover([
+			title,
+			...(m.detail ? [m.detail] : []),
+			...(resolved ? ["", ...formatResolvedJsDoc(resolved)] : []),
+			...extra
+		]);
+	}
+
+	/** Hovering a member's own declaration key inside `methods: {}` / an
+	 * `Ext.define` class body - as opposed to a `this.name`/`Owner.name`
+	 * usage, which the branches in `provideHover` already cover. This is
+	 * the one hover position VS Code's built-in TS/JS "quick info" also
+	 * fires for, showing the raw JSDoc comment with no special handling for
+	 * `@inheritdoc`/`@overriden`; ours stacks alongside it with the
+	 * resolved, styled version (there's no API to suppress the built-in
+	 * one). Only fires on a genuine object-literal key: next non-space char
+	 * is `:`, and the nearest non-space char before the identifier is `{`
+	 * or `,` (same check `objectKeyPrefix` in amdOverride.ts uses for the
+	 * override-snippet completion) - guards against a ternary's `a : b` or
+	 * a label statement matching by accident. Matched against the member's
+	 * own recorded declaration position (not just name) so an unrelated key
+	 * elsewhere in the file that happens to share a method's name doesn't
+	 * borrow its docs. */
+	private declarationHover(
+		document: vscode.TextDocument,
+		text: string,
+		ident: { name: string; start: number; end: number }
+	): vscode.Hover | undefined {
+		let after = ident.end;
+		while (after < text.length && /[ \t]/.test(text[after])) {
+			after++;
+		}
+		if (text[after] !== ":") {
+			return undefined;
+		}
+		let before = ident.start - 1;
+		while (before >= 0 && /\s/.test(text[before])) {
+			before--;
+		}
+		if (text[before] !== "{" && text[before] !== ",") {
+			return undefined;
+		}
+		const mod = this.index.ensureModule(document.uri.fsPath);
+		if (!mod) {
+			return undefined;
+		}
+		const identPos = document.positionAt(ident.start);
+		const member = mod.members.find(
+			(m) =>
+				m.name === ident.name &&
+				(m.kind === "method" || m.kind === "property" || m.kind === "attribute") &&
+				m.position?.line === identPos.line &&
+				m.position?.character === identPos.character
+		);
+		if (!member) {
+			return undefined;
+		}
+		return this.memberHover(`**${member.name}** *(${member.kind})*`, member);
+	}
 
 	provideHover(
 		document: vscode.TextDocument,
@@ -99,7 +158,7 @@ export class HoverProvider implements vscode.HoverProvider {
 				(x) => x.name === getSet.name && x.kind === "attribute"
 			);
 			if (m) {
-				return memberHover(
+				return this.memberHover(
 					`**this.${getSet.method}("${m.name}")** *(attribute)*`,
 					m
 				);
@@ -126,13 +185,18 @@ export class HoverProvider implements vscode.HoverProvider {
 			);
 			if (m) {
 				const kindLabel = m.kind === "method" ? "method" : "attribute";
-				return memberHover(`**bindTo: "${m.name}"** *(${kindLabel})*`, m);
+				return this.memberHover(`**bindTo: "${m.name}"** *(${kindLabel})*`, m);
 			}
 		}
 
 		const ident = getIdentifierAt(text, offset);
 		if (!ident) {
 			return undefined;
+		}
+
+		const declHover = this.declarationHover(document, text, ident);
+		if (declHover) {
+			return declHover;
 		}
 
 		const lookupAccess = getThisLookupAccessContext(text, offset);
@@ -166,7 +230,7 @@ export class HoverProvider implements vscode.HoverProvider {
 				ident.name
 			);
 			if (nested) {
-				return memberHover(`**${left}.${nested.name}** *(${nested.kind})*`, nested);
+				return this.memberHover(`**${left}.${nested.name}** *(${nested.kind})*`, nested);
 			}
 		}
 
@@ -179,7 +243,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			const m = members.find((x) => x.name === ident.name);
 			if (m) {
 				const titleRoot = runtimePrefix ? `this.${globalLeft}` : globalLeft;
-				return memberHover(
+				return this.memberHover(
 					`**${titleRoot}.${m.name}** *(${m.kind})*`,
 					m,
 					m.filePath ? [`\`${m.filePath}\``] : []
@@ -197,7 +261,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			if (m) {
 				const title =
 					m.kind === "attribute" ? `**$${m.name}** *(attribute)*` : `**${m.name}** *(${m.kind})*`;
-				return memberHover(title, m);
+				return this.memberHover(title, m);
 			}
 		}
 
@@ -205,7 +269,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			const classNames = resolveQueryClassNames(text, ident.start, left);
 			const m = this.index.findQueryInstanceMember(classNames, ident.name);
 			if (m) {
-				return memberHover(
+				return this.memberHover(
 					`**${left}.${m.name}** *(${m.kind})*`,
 					m,
 					m.filePath ? [`\`${m.filePath}\``] : []
@@ -217,11 +281,11 @@ export class HoverProvider implements vscode.HoverProvider {
 			for (const mod of modulesFromExpr(this.index, filePath, left)) {
 				const m = mod.members.find((x) => x.name === ident.name);
 				if (m) {
-					return markdownHover([
+					return this.memberHover(
 						`**${mod.name}.${m.name}** *(${m.kind})*`,
-						`\`${mod.filePath}\``,
-						...(m.documentation ? ["", m.documentation] : [])
-					]);
+						m,
+						[`\`${mod.filePath}\``]
+					);
 				}
 			}
 		}
