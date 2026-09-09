@@ -289,7 +289,7 @@ ${STYLE}
 </div>
 <div id="highlightBox" hidden>
   <div id="highlightHeader" class="boxHeader"></div>
-  <p class="muted">Подсветка строк в консоли по уровню лога (настройки NLog для ColoredConsole).</p>
+  <p class="muted">Только для таргетов с типом <code>ColoredConsole</code> — это версия консольного таргета, которая раскрашивает вывод по уровню лога (например Error — красным, Warn — жёлтым), чтобы важные строки было легче заметить глазами при просмотре консоли вживую (обычно это окно <code>WorkspaceConsole</code> при запуске сборки). На файлы и остальные таргеты это никак не влияет — если консоль никто не смотрит "вживую" (только обычный <code>Console</code>/<code>File</code>), эта секция не нужна.</p>
   <label class="muted"><input type="checkbox" id="h-useDefault" /> Использовать встроенные правила по умолчанию (Fatal/Error — красный, Warn — жёлтый, Info — белый, Debug/Trace — серый)</label>
   <div id="highlightRowsWrap"></div>
   <button id="addHighlightRowBtn" class="secondary">+ Добавить правило</button>
@@ -314,6 +314,11 @@ ${CLIENT_SCRIPT}
 }
 
 const STYLE = `
+	/* Must come before any "#foo { display: flex/... }" rule below — an ID
+	   selector otherwise outranks the browser's default "[hidden]{display:none}"
+	   (attribute selector, lowest specificity) and the box stays visibly open
+	   even after its "hidden" property is set to true from script. */
+	[hidden] { display: none !important; }
 	body { color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); padding: 8px 12px; }
 	#toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 	#filter { flex: 0 0 260px; padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
@@ -690,7 +695,10 @@ document.getElementById('referenceBtn').addEventListener('click', () => {
 	renderReferenceList();
 	referenceBox.hidden = false;
 });
-document.getElementById('referenceCloseBtn').addEventListener('click', () => { referenceBox.hidden = true; });
+document.getElementById('referenceCloseBtn').addEventListener('click', () => {
+	referenceBox.hidden = true;
+	referenceFilterEl.value = '';
+});
 referenceFilterEl.addEventListener('input', renderReferenceList);
 
 document.getElementById('addBtn').addEventListener('click', openAddEditor);

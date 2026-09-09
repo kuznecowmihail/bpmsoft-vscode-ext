@@ -337,6 +337,11 @@ ${CLIENT_SCRIPT}
 }
 
 const STYLE = `
+	/* Must come before any "#foo { display: flex/... }" rule below — an ID
+	   selector otherwise outranks the browser's default "[hidden]{display:none}"
+	   (attribute selector, lowest specificity) and the box stays visibly open
+	   even after its "hidden" property is set to true from script. */
+	[hidden] { display: none !important; }
 	body { color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); padding: 8px 12px; }
 	#toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 	#filter { flex: 0 0 260px; padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
@@ -503,7 +508,10 @@ if (referenceBtn) {
 		referenceBox.hidden = !referenceBox.hidden;
 		if (!referenceBox.hidden) { referenceFilterEl.value = ''; renderReferenceList(); }
 	});
-	document.getElementById('referenceCloseBtn').addEventListener('click', () => { referenceBox.hidden = true; });
+	document.getElementById('referenceCloseBtn').addEventListener('click', () => {
+		referenceBox.hidden = true;
+		referenceFilterEl.value = '';
+	});
 	referenceFilterEl.addEventListener('input', renderReferenceList);
 }
 
