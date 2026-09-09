@@ -15,6 +15,7 @@ export type ThisMemberAccessKind =
 	| "methodCall"
 	| "bare"
 	| "attribute"
+	| "lookupField"
 	| "mixin"
 	| "mixinMethod"
 	| "mixinProperty"
@@ -30,6 +31,8 @@ export interface ThisMemberAccess {
 	argNames?: string[];
 	/** Local mixin name for this.mixins.Name.foo / this.Name.foo */
 	mixinName?: string;
+	/** Lookup attribute for this.$Attr.field / this.get("Attr").field */
+	attrName?: string;
 }
 
 export type CreateMemberKind = "method" | "property" | "attribute";
@@ -110,6 +113,17 @@ export function collectThisMemberAccesses(
 					}
 					return;
 				}
+				const lookupAttr = lookupAttrFromReceiver(object);
+				if (lookupAttr) {
+					out.push({
+						kind: "lookupField",
+						name,
+						attrName: lookupAttr,
+						start,
+						end
+					});
+					return;
+				}
 				if (object?.type !== "ThisExpression") {
 					return;
 				}
@@ -152,7 +166,7 @@ function uniqueAccesses(items: ThisMemberAccess[]): ThisMemberAccess[] {
 	const seen = new Set<string>();
 	const out: ThisMemberAccess[] = [];
 	for (const item of items) {
-		const key = `${item.kind}:${item.name}:${item.start}:${item.end}:${item.mixinName ?? ""}`;
+		const key = `${item.kind}:${item.name}:${item.start}:${item.end}:${item.mixinName ?? ""}:${item.attrName ?? ""}`;
 		if (seen.has(key)) {
 			continue;
 		}
@@ -254,6 +268,39 @@ function thisDotIdentifier(object: AnyNode | undefined): string | undefined {
 	}
 	const inner = object.property as AnyNode;
 	return inner?.type === "Identifier" ? (inner.name as string) : undefined;
+}
+
+function lookupAttrFromReceiver(object: AnyNode | undefined): string | undefined {
+	if (!object) {
+		return undefined;
+	}
+	if (object.type === "ChainExpression") {
+		return lookupAttrFromReceiver(object.expression as AnyNode);
+	}
+	const dollarId = thisDotIdentifier(object);
+	if (dollarId && dollarId.startsWith("$") && dollarId.length > 1) {
+		return dollarId.slice(1);
+	}
+	if (object.type === "CallExpression") {
+		const callee = object.callee as AnyNode;
+		if (
+			callee?.type === "MemberExpression" &&
+			!callee.computed &&
+			(callee.object as AnyNode)?.type === "ThisExpression" &&
+			(callee.property as AnyNode)?.type === "Identifier" &&
+			(callee.property as AnyNode).name === "get"
+		) {
+			const arg0 = (object.arguments as AnyNode[])?.[0];
+			if (
+				arg0?.type === "Literal" &&
+				typeof arg0.value === "string" &&
+				IDENT_RE.test(arg0.value)
+			) {
+				return arg0.value;
+			}
+		}
+	}
+	return undefined;
 }
 
 /** `this.mixins.Name` → Name */

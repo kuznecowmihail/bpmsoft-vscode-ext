@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert, getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, collectEsqColumnAccesses, getConstructorConfigContext, isObjectKeyDeclaration, getIdentifierAt } = require("../out/parse/amdParser");
+const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert, getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, collectEsqColumnAccesses, getConstructorConfigContext, isObjectKeyDeclaration, getIdentifierAt, collectLookupListConfigColumns } = require("../out/parse/amdParser");
 const { parsePkgEntityColumns, parseEntityResourceCaptions } = require("../out/parse/entityMetadata");
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
@@ -24,6 +24,19 @@ const {
 	pascalSchemaTypeToEnum,
 	parsePkgPropertiesSchemaType
 } = require("../out/index/SchemaHierarchyResolver");
+const { findSchemaDir, findSchemaDirForAnyPath } = require("../out/index/schemaResourceLookup");
+const {
+	resolveLocalizedString,
+	resolveLocalizedImage,
+	parseMetadataNameRegistrations
+} = require("../out/index/localizationLookup");
+const {
+	collectCsharpEsqDeclarations,
+	getCsharpEsqColumnContext,
+	findEsqDeclarationForOffset
+} = require("../out/parse/esqCsharp");
+const { collectDbQueryChains, getDbQueryColumnContext } = require("../out/parse/dbQueryCsharp");
+const { getEsqBracketContext } = require("../out/parse/esqColumnPath");
 
 function resolveSmokeRoot() {
 	const candidates = [
@@ -968,10 +981,10 @@ if (!pkgWeighted) {
 		"Expected Lead Pkg column this.$GoWeightedPenetration from Schemas/Lead/metadata.json"
 	);
 	failed = true;
-} else if (!/Взвешенное проникновение/.test(pkgWeighted.documentation || "")) {
+} else if (!/Взвешенное проникновение/.test(pkgWeighted.caption || "")) {
 	console.error(
 		"Expected GoWeightedPenetration caption from Lead.Entity resource.ru-RU.xml",
-		pkgWeighted.documentation
+		pkgWeighted.caption
 	);
 	failed = true;
 }
@@ -2782,6 +2795,381 @@ if (!syntheticAttrChild || !syntheticAttrParent) {
 		failed = true;
 	} else {
 		console.log("synthetic attributes this.$ / get / set OK");
+	}
+}
+
+const llcSrc = `
+define("GoLlcPage", [], function() {
+	return {
+		details: {
+			Foo: { lookupListConfig: { columns: ["Ignored"] } }
+		},
+		attributes: {
+			Owner: {
+				dataValueType: BPMSoft.DataValueType.LOOKUP,
+				referenceSchemaName: "Contact",
+				lookupListConfig: { columns: ["Phone", "NoSuchColXYZ"] }
+			},
+			TitleText: {
+				dataValueType: BPMSoft.DataValueType.TEXT
+			}
+		}
+	};
+});
+`;
+const llcMod = parseAmdModule(llcSrc, path.join(root, "synthetic/GoLlcPage.js"));
+const llcOwner = llcMod?.members.find((m) => m.name === "Owner");
+const llcText = llcMod?.members.find((m) => m.name === "TitleText");
+if (!llcMod || !llcOwner || !llcText) {
+	console.error("Failed to parse GoLlcPage synthetic module");
+	failed = true;
+} else {
+	const expectedOwnerChildren = ["value", "displayValue", "Phone", "NoSuchColXYZ"];
+	const ownerChildNames = (llcOwner.children || []).map((c) => c.name);
+	if (ownerChildNames.length !== expectedOwnerChildren.length ||
+		!expectedOwnerChildren.every((n, i) => ownerChildNames[i] === n)) {
+		console.error(
+			"Expected Owner lookupListConfig children",
+			expectedOwnerChildren.join(","),
+			"got",
+			ownerChildNames.join(",")
+		);
+		failed = true;
+	}
+	if (llcText.children?.length) {
+		console.error("TitleText must have no lookupListConfig children");
+		failed = true;
+	}
+	const llcCols = collectLookupListConfigColumns(llcSrc);
+	const hasOwnerPhone = llcCols.some((c) => c.attrName === "Owner" && c.column === "Phone");
+	const hasOwnerNoSuch = llcCols.some((c) => c.attrName === "Owner" && c.column === "NoSuchColXYZ");
+	const hasIgnored = llcCols.some((c) => c.column === "Ignored");
+	if (!hasOwnerPhone || !hasOwnerNoSuch || hasIgnored) {
+		console.error(
+			"collectLookupListConfigColumns expected Owner/Phone and Owner/NoSuchColXYZ, no Ignored",
+			llcCols.map((c) => `${c.attrName}/${c.column}`).join(",")
+		);
+		failed = true;
+	} else {
+		console.log("lookupListConfig parse-only collector OK");
+	}
+}
+
+const llcParentMod = parseAmdModule(
+	`
+define("GoLlcChild", [], function() {
+	return {
+		attributes: {
+			Country: {
+				dataValueType: BPMSoft.DataValueType.LOOKUP,
+				lookupListConfig: { columns: ["Email"] }
+			}
+		}
+	};
+});
+`,
+	path.join(root, "synthetic/GoLlcParent.js")
+);
+const llcChildMod = parseAmdModule(
+	`
+define("GoLlcChild", [], function() {
+	return {
+		attributes: {
+			Country: {
+				lookupListConfig: { columns: ["Phone"] }
+			}
+		}
+	};
+});
+`,
+	path.join(root, "synthetic/GoLlcChild.js")
+);
+if (!llcParentMod || !llcChildMod) {
+	console.error("Failed to parse GoLlc hierarchy synthetic modules");
+	failed = true;
+} else {
+	const llcIndex = new SymbolIndex();
+	llcIndex.upsertModule(llcParentMod);
+	llcIndex.upsertModule(llcChildMod);
+	const llcThis = llcIndex.resolveThisMembers(llcChildMod.filePath);
+	const llcCountry = llcThis.find((m) => m.name === "Country" && m.kind === "attribute");
+	const countryChildNames = (llcCountry?.children || []).map((c) => c.name);
+	const expectedCountryChildren = ["value", "displayValue", "Phone", "Email"];
+	if (!llcCountry ||
+		countryChildNames.length !== expectedCountryChildren.length ||
+		!expectedCountryChildren.every((n, i) => countryChildNames[i] === n)) {
+		console.error(
+			"Expected Country hierarchy lookupListConfig children",
+			expectedCountryChildren.join(","),
+			"got",
+			countryChildNames.join(",")
+		);
+		failed = true;
+	}
+	if (llcCountry?.dataValueType !== "BPMSoft.DataValueType.LOOKUP") {
+		console.error("Expected Country dataValueType LOOKUP from parent");
+		failed = true;
+	}
+	if (!failed) {
+		console.log("lookupListConfig hierarchy merge OK");
+	}
+}
+
+const llcOverrideSrc = `define("GoLlcOverridePage", [], function() {
+  return {
+    entitySchemaName: "Lead",
+    attributes: {
+      Industry: { lookupListConfig: { columns: ["Id", "NoSuchColXYZ"] } }
+    }
+  };
+});`;
+const llcOverrideMod = parseAmdModule(
+	llcOverrideSrc,
+	path.join(root, "synthetic/GoLlcOverridePage.js")
+);
+if (!llcOverrideMod) {
+	console.error("Failed to parse GoLlcOverridePage synthetic module");
+	failed = true;
+} else {
+	index.upsertModule(llcOverrideMod);
+	const llcOverrideThis = index.resolveThisMembers(llcOverrideMod.filePath);
+	const ind = llcOverrideThis.find((m) => m.name === "Industry" && m.kind === "attribute");
+	const indChildNames = (ind?.children || []).map((c) => c.name);
+	const expectedIndChildren = ["value", "displayValue", "Id", "NoSuchColXYZ"];
+	if (!ind ||
+		indChildNames.length !== expectedIndChildren.length ||
+		!expectedIndChildren.every((n, i) => indChildNames[i] === n)) {
+		console.error(
+			"Expected Industry lookupListConfig children with entity backfill",
+			expectedIndChildren.join(","),
+			"got",
+			indChildNames.join(",")
+		);
+		failed = true;
+	} else if (!ind.referenceSchemaName) {
+		console.error(
+			"Expected Industry referenceSchemaName from Lead entity column (Lead.Industry is a stock lookup in this smoke volume)"
+		);
+		failed = true;
+	} else if (!index.isKnownEsqColumn([ind.referenceSchemaName], "Id")) {
+		console.error("Expected isKnownEsqColumn true for Industry/Id");
+		failed = true;
+	} else if (index.isKnownEsqColumn([ind.referenceSchemaName], "NoSuchColXYZ")) {
+		console.error("Expected isKnownEsqColumn false for Industry/NoSuchColXYZ");
+		failed = true;
+	} else {
+		console.log("lookupListConfig entity backfill OK");
+	}
+}
+
+{
+	const llcFieldSrc = `
+define("GoLlcFieldPage", [], function() {
+	return {
+		attributes: { Country: { dataValueType: BPMSoft.DataValueType.LOOKUP } },
+		methods: {
+			foo: function() {
+				this.$Country.GoYandexMapsCode1;
+				this.get("Country").Phone;
+				this.get("Country")?.Id;
+				this.$Country.value;
+				this.foo.bar;
+			}
+		}
+	};
+});
+`;
+	const llcFieldAccesses = collectThisMemberAccesses(llcFieldSrc);
+	let llcFieldFailed = false;
+	if (
+		!llcFieldAccesses.some(
+			(a) =>
+				a.kind === "lookupField" &&
+				a.name === "GoYandexMapsCode1" &&
+				a.attrName === "Country"
+		)
+	) {
+		console.error("collectThisMemberAccesses missing lookupField GoYandexMapsCode1/Country");
+		llcFieldFailed = true;
+	}
+	if (
+		!llcFieldAccesses.some(
+			(a) => a.kind === "lookupField" && a.name === "Phone" && a.attrName === "Country"
+		)
+	) {
+		console.error("collectThisMemberAccesses missing lookupField Phone/Country");
+		llcFieldFailed = true;
+	}
+	if (
+		!llcFieldAccesses.some(
+			(a) => a.kind === "lookupField" && a.name === "Id" && a.attrName === "Country"
+		)
+	) {
+		console.error("collectThisMemberAccesses missing lookupField Id/Country");
+		llcFieldFailed = true;
+	}
+	if (
+		!llcFieldAccesses.some(
+			(a) => a.kind === "lookupField" && a.name === "value" && a.attrName === "Country"
+		)
+	) {
+		console.error("collectThisMemberAccesses missing lookupField value/Country");
+		llcFieldFailed = true;
+	}
+	if (!llcFieldAccesses.some((a) => a.kind === "attribute" && a.name === "Country")) {
+		console.error("collectThisMemberAccesses missing attribute Country");
+		llcFieldFailed = true;
+	}
+	const fooBarAccess = llcFieldAccesses.find((a) => a.name === "bar" && a.mixinName === "foo");
+	if (
+		!fooBarAccess ||
+		(fooBarAccess.kind !== "mixinProperty" && fooBarAccess.kind !== "mixinMethod")
+	) {
+		console.error(
+			"collectThisMemberAccesses this.foo.bar must be mixinProperty/mixinMethod, not lookupField",
+			fooBarAccess
+		);
+		llcFieldFailed = true;
+	}
+	if (llcFieldAccesses.some((a) => a.kind === "lookupField" && a.name === "bar")) {
+		console.error("collectThisMemberAccesses this.foo.bar must not be lookupField");
+		llcFieldFailed = true;
+	}
+	if (llcFieldFailed) {
+		failed = true;
+	} else {
+		console.log("collectThisMemberAccesses lookupField access OK");
+	}
+}
+
+{
+	const llcDiagSrc = `
+define("GoLlcDiagPage", [], function() {
+	return {
+		attributes: {
+			Country: {
+				dataValueType: BPMSoft.DataValueType.LOOKUP,
+				lookupListConfig: { columns: ["Phone"] }
+			}
+		},
+		methods: {
+			foo: function() {
+				this.$Country.GoYandexMapsCode1;
+				this.$Country.Phone;
+				this.$Country.value;
+			}
+		}
+	};
+});
+`;
+	const llcDiagMod = parseAmdModule(
+		llcDiagSrc,
+		path.join(root, "synthetic/GoLlcDiagPage.js")
+	);
+	const llcDiagCountry = llcDiagMod?.members.find((m) => m.name === "Country");
+	const llcDiagChildNames = (llcDiagCountry?.children || []).map((c) => c.name);
+	const llcDiagAccesses = collectThisMemberAccesses(llcDiagSrc);
+	let llcDiagFailed = false;
+	const expectedDiagChildren = ["value", "displayValue", "Phone"];
+	if (
+		!llcDiagCountry ||
+		llcDiagChildNames.length !== expectedDiagChildren.length ||
+		!expectedDiagChildren.every((n, i) => llcDiagChildNames[i] === n)
+	) {
+		console.error(
+			"Expected Country lookupListConfig children without GoYandexMapsCode1",
+			expectedDiagChildren.join(","),
+			"got",
+			llcDiagChildNames.join(",")
+		);
+		llcDiagFailed = true;
+	}
+	if (llcDiagChildNames.includes("GoYandexMapsCode1")) {
+		console.error("GoYandexMapsCode1 must not be in Country children when not in lookupListConfig.columns");
+		llcDiagFailed = true;
+	}
+	if (
+		!llcDiagAccesses.some(
+			(a) =>
+				a.kind === "lookupField" &&
+				a.name === "GoYandexMapsCode1" &&
+				a.attrName === "Country"
+		)
+	) {
+		console.error("collectThisMemberAccesses missing lookupField GoYandexMapsCode1 on diag page");
+		llcDiagFailed = true;
+	}
+	if (
+		!llcDiagAccesses.some(
+			(a) => a.kind === "lookupField" && a.name === "Phone" && a.attrName === "Country"
+		)
+	) {
+		console.error("collectThisMemberAccesses missing lookupField Phone on diag page");
+		llcDiagFailed = true;
+	}
+	const diagLookupAccesses = llcDiagAccesses.filter(
+		(a) => a.kind === "lookupField" && a.attrName === "Country"
+	);
+	for (const access of diagLookupAccesses) {
+		const inChildren = llcDiagChildNames.includes(access.name);
+		const alwaysAllowed = access.name === "value" || access.name === "displayValue";
+		if (access.name === "GoYandexMapsCode1" && inChildren) {
+			console.error("GoYandexMapsCode1 unexpectedly in Country children");
+			llcDiagFailed = true;
+		}
+		if (access.name === "GoYandexMapsCode1" && !inChildren) {
+			// diagnostic would warn — expected
+		} else if (access.name === "Phone" && !inChildren) {
+			console.error("Phone must be in Country children (lookupListConfig.columns)");
+			llcDiagFailed = true;
+		} else if (access.name === "value" && !alwaysAllowed) {
+			console.error("value must always be allowed on lookup children");
+			llcDiagFailed = true;
+		}
+	}
+	if (llcDiagFailed) {
+		failed = true;
+	} else {
+		console.log("lookupField diagnostic vs children OK");
+	}
+}
+
+{
+	const goLeclickLeadPagePath = path.join(
+		root,
+		"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/GoLeclickLeadPage/GoLeclickLeadPage.js"
+	);
+	if (fs.existsSync(goLeclickLeadPagePath)) {
+		const goLeclickSrc = fs.readFileSync(goLeclickLeadPagePath, "utf8");
+		const goLeclickAccesses = collectThisMemberAccesses(goLeclickSrc);
+		const goLeclickMod = parseAmdModule(goLeclickSrc, goLeclickLeadPagePath);
+		const goLeclickIndex = new SymbolIndex();
+		if (goLeclickMod) {
+			goLeclickIndex.upsertModule(goLeclickMod);
+		}
+		const goLeclickThis = goLeclickMod
+			? goLeclickIndex.resolveThisMembers(goLeclickLeadPagePath)
+			: [];
+		const goLeclickCountry = goLeclickThis.find(
+			(m) => m.name === "Country" && m.kind === "attribute"
+		);
+		const goLeclickCountryChildren = (goLeclickCountry?.children || []).map((c) => c.name);
+		const hasGoYandexAccess = goLeclickAccesses.some(
+			(a) =>
+				a.kind === "lookupField" &&
+				a.name === "GoYandexMapsCode1" &&
+				a.attrName === "Country"
+		);
+		if (goLeclickCountryChildren.includes("GoYandexMapsCode1")) {
+			console.log("GoLeclickLeadPage Country children include GoYandexMapsCode1 — skip access check");
+		} else if (!hasGoYandexAccess) {
+			console.error(
+				"GoLeclickLeadPage: collectThisMemberAccesses missing lookupField GoYandexMapsCode1/Country"
+			);
+			failed = true;
+		} else {
+			console.log("GoLeclickLeadPage lookupField Country/GoYandexMapsCode1 OK");
+		}
 	}
 }
 
@@ -4997,6 +5385,320 @@ public class Sample
 		`classBound=${esqClassBound}`,
 		`entities=${esqEntities.size}`
 	);
+
+	// GoRestaurantsMain extra feature coverage
+	let extraFeaturesOk = true;
+	const contactPagePath = requirePkgFile("ContactPageV2/ContactPageV2.js");
+	if (contactPagePath) {
+		const contactSchema = findSchemaDir(contactPagePath);
+		if (!contactSchema || contactSchema.schemaName !== "ContactPageV2") {
+			console.error("GoRestaurantsMain extra: ContactPageV2 findSchemaDir", contactSchema);
+			failed = true;
+			extraFeaturesOk = false;
+		} else {
+			const goUserCaption = resolveLocalizedString(
+				contactSchema.schemaDir,
+				contactSchema.schemaName,
+				"GoUserCaption"
+			);
+			const goUserCaptionRu = goUserCaption?.values.find((v) => v.culture === "ru-RU")?.value;
+			if (goUserCaptionRu !== "Пользователь") {
+				console.error("GoRestaurantsMain extra: GoUserCaption ru-RU", goUserCaptionRu);
+				failed = true;
+				extraFeaturesOk = false;
+			}
+		}
+		const contactResXml = path.join(
+			root,
+			"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Resources/ContactPageV2.ClientUnit/resource.ru-RU.xml"
+		);
+		if (fs.existsSync(contactResXml)) {
+			const xmlSchema = findSchemaDirForAnyPath(contactResXml);
+			if (!xmlSchema || xmlSchema.schemaName !== "ContactPageV2") {
+				console.error("GoRestaurantsMain extra: ContactPageV2 resource.xml schema", xmlSchema);
+				failed = true;
+				extraFeaturesOk = false;
+			}
+		}
+	} else {
+		extraFeaturesOk = false;
+	}
+
+	const oppListenerPath = requirePkgFile("GoOpportunityEventListener/GoOpportunityEventListener.cs");
+	if (oppListenerPath) {
+		const oppListenerSchema = findSchemaDir(oppListenerPath);
+		if (!oppListenerSchema || oppListenerSchema.schemaName !== "GoOpportunityEventListener") {
+			console.error("GoRestaurantsMain extra: GoOpportunityEventListener findSchemaDir", oppListenerSchema);
+			failed = true;
+			extraFeaturesOk = false;
+		} else {
+			const refusalText = resolveLocalizedString(
+				oppListenerSchema.schemaDir,
+				oppListenerSchema.schemaName,
+				"RefusalLetterText"
+			);
+			const refusalRu = refusalText?.values.find((v) => v.culture === "ru-RU")?.value || "";
+			if (!refusalRu.includes("Письмо с отказом")) {
+				console.error("GoRestaurantsMain extra: RefusalLetterText ru-RU", refusalRu);
+				failed = true;
+				extraFeaturesOk = false;
+			}
+		}
+	} else {
+		extraFeaturesOk = false;
+	}
+
+	const leadFileDetailPath = requirePkgFile("GoLeadFileDetail/GoLeadFileDetail.js");
+	if (leadFileDetailPath) {
+		const leadFileDetailDir = path.dirname(leadFileDetailPath);
+		const hd8Regs = parseMetadataNameRegistrations(leadFileDetailDir, "HD8");
+		if (!hd8Regs.some((r) => r.name === "GoCancelIcon")) {
+			console.error("GoRestaurantsMain extra: GoCancelIcon HD8 registration missing");
+			failed = true;
+			extraFeaturesOk = false;
+		}
+		const cancelImages = resolveLocalizedImage(leadFileDetailDir, "GoLeadFileDetail", "GoCancelIcon");
+		if (
+			!cancelImages?.length ||
+			!cancelImages.some((img) => img.base64 && img.base64.length > 0)
+		) {
+			console.error("GoRestaurantsMain extra: GoCancelIcon image missing base64", cancelImages);
+			failed = true;
+			extraFeaturesOk = false;
+		}
+	} else {
+		extraFeaturesOk = false;
+	}
+
+	const oppPagePath = requirePkgFile("OpportunityPageV2/OpportunityPageV2.js");
+	if (oppPagePath) {
+		const oppPageSrc = fs.readFileSync(oppPagePath, "utf8");
+		if (
+			!oppPageSrc.includes('rootSchemaName: "OpportunityContact"') ||
+			!oppPageSrc.includes('esq.addColumn("Contact.Name")')
+		) {
+			console.error("GoRestaurantsMain extra: OpportunityPageV2 Contact.Name snippet missing");
+			failed = true;
+			extraFeaturesOk = false;
+		} else {
+			const oppContactResolved = index.resolveEsqColumnFull(["OpportunityContact"], "Contact.Name");
+			if (
+				!oppContactResolved ||
+				oppContactResolved.member.name !== "Name" ||
+				!oppContactResolved.hops.some((h) => h.schemaName === "Contact")
+			) {
+				console.error("GoRestaurantsMain extra: resolveEsqColumnFull Contact.Name", oppContactResolved);
+				failed = true;
+				extraFeaturesOk = false;
+			}
+			const contactNameNeedle = 'esq.addColumn("Contact.Name")';
+			const contactNameAt = oppPageSrc.indexOf(contactNameNeedle);
+			if (contactNameAt < 0) {
+				console.error("GoRestaurantsMain extra: Contact.Name addColumn offset missing");
+				failed = true;
+				extraFeaturesOk = false;
+			} else {
+				const contactNameInside = contactNameAt + 'esq.addColumn("'.length + 1;
+				const contactNameCtx = getQueryColumnContext(oppPageSrc, contactNameInside);
+				const contactNameEnts = resolveQueryEntities(
+					oppPageSrc,
+					contactNameInside,
+					contactNameCtx && contactNameCtx.queryIdent
+				);
+				if (!contactNameEnts.includes("OpportunityContact")) {
+					console.error(
+						"GoRestaurantsMain extra: Contact.Name query entities",
+						contactNameCtx,
+						contactNameEnts
+					);
+					failed = true;
+					extraFeaturesOk = false;
+				}
+			}
+		}
+	} else {
+		extraFeaturesOk = false;
+	}
+
+	if (contactPagePath) {
+		const contactPageSrc = fs.readFileSync(contactPagePath, "utf8");
+		const reversePath = "[VwSysAdminUnit:Contact:Id].Id";
+		if (!contactPageSrc.includes(`columnPath: "${reversePath}"`)) {
+			console.error("GoRestaurantsMain extra: ContactPageV2 reverse join path missing");
+			failed = true;
+			extraFeaturesOk = false;
+		} else {
+			const reverseResolved = index.resolveEsqColumnFull(["Contact"], reversePath);
+			if (
+				!reverseResolved ||
+				reverseResolved.member.name !== "Id" ||
+				!reverseResolved.hops.some((h) => h.schemaName === "VwSysAdminUnit")
+			) {
+				console.error("GoRestaurantsMain extra: resolveEsqColumnFull reverse join", reverseResolved);
+				failed = true;
+				extraFeaturesOk = false;
+			}
+			const vwOffset = reversePath.indexOf("VwSysAdminUnit");
+			const vwTarget = index.resolveEsqTargetAtOffset(["Contact"], reversePath, vwOffset);
+			if (!vwTarget || vwTarget.kind !== "schema" || vwTarget.schemaName !== "VwSysAdminUnit") {
+				console.error("GoRestaurantsMain extra: resolveEsqTargetAtOffset VwSysAdminUnit", vwTarget);
+				failed = true;
+				extraFeaturesOk = false;
+			}
+			const finalIdOffset = reversePath.lastIndexOf("Id");
+			const idTarget = index.resolveEsqTargetAtOffset(["Contact"], reversePath, finalIdOffset);
+			if (!idTarget || idTarget.kind !== "column" || idTarget.member.name !== "Id") {
+				console.error("GoRestaurantsMain extra: resolveEsqTargetAtOffset final Id", idTarget);
+				failed = true;
+				extraFeaturesOk = false;
+			}
+			const bracketCtx = getEsqBracketContext("[VwSysAdminUnit");
+			if (!bracketCtx || bracketCtx.stage !== "schema" || bracketCtx.prefix !== "VwSysAdminUnit") {
+				console.error("GoRestaurantsMain extra: getEsqBracketContext", bracketCtx);
+				failed = true;
+				extraFeaturesOk = false;
+			} else {
+				const bracketCandidates = index.resolveEsqBracketCandidates(bracketCtx, ["Contact"]);
+				if (
+					bracketCandidates.kind !== "schema" ||
+					!bracketCandidates.names.includes("VwSysAdminUnit")
+				) {
+					console.error("GoRestaurantsMain extra: resolveEsqBracketCandidates", bracketCandidates);
+					failed = true;
+					extraFeaturesOk = false;
+				}
+			}
+		}
+	}
+
+	const accountListenerPath = requirePkgFile("GoAccountEventListener/GoAccountEventListener.cs");
+	if (accountListenerPath) {
+		const accountListenerSrc = fs.readFileSync(accountListenerPath, "utf8");
+		const esqDecls = collectCsharpEsqDeclarations(accountListenerSrc);
+		if (!esqDecls.some((d) => d.schemaName === "GoPlace")) {
+			console.error("GoRestaurantsMain extra: GoAccountEventListener GoPlace ESQ decl missing", esqDecls);
+			failed = true;
+			extraFeaturesOk = false;
+		}
+		const stagePath = "[Opportunity:GoPlace:Id].Stage";
+		const stageNeedle = `"${stagePath}"`;
+		const stageAt = accountListenerSrc.indexOf(stageNeedle);
+		if (stageAt < 0) {
+			console.error("GoRestaurantsMain extra: GoAccountEventListener Stage path missing");
+			failed = true;
+			extraFeaturesOk = false;
+		} else {
+			const stageInside = stageAt + 1 + stagePath.indexOf("Stage");
+			const stageColCtx = getCsharpEsqColumnContext(accountListenerSrc, stageInside);
+			if (!stageColCtx || stageColCtx.path !== stagePath || !stageColCtx.varName) {
+				console.error("GoRestaurantsMain extra: getCsharpEsqColumnContext Stage", stageColCtx);
+				failed = true;
+				extraFeaturesOk = false;
+			} else {
+				const stageDecl = findEsqDeclarationForOffset(esqDecls, stageColCtx.varName, stageInside);
+				if (!stageDecl || stageDecl.schemaName !== "GoPlace") {
+					console.error("GoRestaurantsMain extra: findEsqDeclarationForOffset GoPlace", stageDecl);
+					failed = true;
+					extraFeaturesOk = false;
+				}
+				const stageResolved = index.resolveEsqColumnFull(["GoPlace"], stageColCtx.path);
+				if (!stageResolved || stageResolved.member.name !== "Stage") {
+					console.error("GoRestaurantsMain extra: resolveEsqColumnFull Stage", stageResolved);
+					failed = true;
+					extraFeaturesOk = false;
+				}
+			}
+		}
+	} else {
+		extraFeaturesOk = false;
+	}
+
+	const leadQueueHandlerPath = requirePkgFile("GoLeadQueueItemsHandler/GoLeadQueueItemsHandler.cs");
+	if (leadQueueHandlerPath) {
+		const leadQueueHandlerSrc = fs.readFileSync(leadQueueHandlerPath, "utf8");
+		const dbChains = collectDbQueryChains(leadQueueHandlerSrc);
+		const ownerIdNeedle = '.Column("OwnerId")';
+		const ownerIdAt = leadQueueHandlerSrc.indexOf(ownerIdNeedle);
+		const opportunityFromAt = leadQueueHandlerSrc.indexOf('.From("Opportunity")', ownerIdAt);
+		if (ownerIdAt < 0 || opportunityFromAt < 0) {
+			console.error("GoRestaurantsMain extra: GoLeadQueueItemsHandler OwnerId/Opportunity chain missing");
+			failed = true;
+			extraFeaturesOk = false;
+		} else {
+			const ownerIdInside = ownerIdAt + '.Column("'.length + 1;
+			const ownerIdCtx = getDbQueryColumnContext(leadQueueHandlerSrc, ownerIdInside, dbChains);
+			if (!ownerIdCtx || ownerIdCtx.schemaName !== "Opportunity" || ownerIdCtx.columnName !== "OwnerId") {
+				console.error("GoRestaurantsMain extra: getDbQueryColumnContext OwnerId", ownerIdCtx);
+				failed = true;
+				extraFeaturesOk = false;
+			} else if (!index.isKnownEsqColumn(["Opportunity"], "Owner")) {
+				console.error("GoRestaurantsMain extra: isKnownEsqColumn Owner");
+				failed = true;
+				extraFeaturesOk = false;
+			}
+			const typeIdNeedle = '.Where("TypeId")';
+			let typeIdOk = false;
+			let typeIdSearchFrom = ownerIdAt;
+			while (true) {
+				const typeIdAt = leadQueueHandlerSrc.indexOf(typeIdNeedle, typeIdSearchFrom);
+				if (typeIdAt < 0) {
+					break;
+				}
+				const typeIdInside = typeIdAt + '.Where("'.length + 1;
+				const typeIdCtx = getDbQueryColumnContext(leadQueueHandlerSrc, typeIdInside, dbChains);
+				if (typeIdCtx && typeIdCtx.schemaName === "Opportunity" && typeIdCtx.columnName === "TypeId") {
+					typeIdOk = true;
+					if (!index.isKnownEsqColumn(["Opportunity"], "Type")) {
+						console.error("GoRestaurantsMain extra: isKnownEsqColumn Type");
+						failed = true;
+						extraFeaturesOk = false;
+					}
+					break;
+				}
+				typeIdSearchFrom = typeIdAt + 1;
+			}
+			if (!typeIdOk) {
+				console.error("GoRestaurantsMain extra: GoLeadQueueItemsHandler TypeId Where missing");
+				failed = true;
+				extraFeaturesOk = false;
+			}
+		}
+	} else {
+		extraFeaturesOk = false;
+	}
+
+	if (leadPagePath) {
+		const leadThisExtra = index.resolveThisMembers(leadPagePath);
+		const titleMember = leadThisExtra.find((m) => m.name === "Title");
+		if (!titleMember || !/Обращение/.test(String(titleMember.caption || ""))) {
+			console.error("GoRestaurantsMain extra: Lead.Title caption", titleMember?.caption);
+			failed = true;
+			extraFeaturesOk = false;
+		}
+		const leadModExtra = index.ensureModule(leadPagePath);
+		if (!leadModExtra) {
+			console.error("GoRestaurantsMain extra: ensureModule LeadPageV2 failed");
+			failed = true;
+			extraFeaturesOk = false;
+		} else {
+			if (!leadModExtra.diffMembers.length) {
+				console.error("GoRestaurantsMain extra: LeadPageV2 diffMembers empty");
+				failed = true;
+				extraFeaturesOk = false;
+			}
+			if (!leadModExtra.businessRuleMembers.length) {
+				console.error("GoRestaurantsMain extra: LeadPageV2 businessRuleMembers empty");
+				failed = true;
+				extraFeaturesOk = false;
+			}
+		}
+	} else {
+		extraFeaturesOk = false;
+	}
+
+	if (extraFeaturesOk) {
+		console.log("GoRestaurantsMain extra features OK");
+	}
 
 	// Lead entity metadata
 	const leadMetaPath = path.join(pkgSchemas, "Lead/metadata.json");

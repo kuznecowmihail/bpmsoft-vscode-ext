@@ -34,7 +34,7 @@ export class HoverProvider implements vscode.HoverProvider {
 	 * `formatResolvedJsDoc` renders it alongside everything else. */
 	private memberHover(
 		title: string,
-		m: Pick<IndexedMember, "detail" | "documentation">,
+		m: Pick<IndexedMember, "detail" | "documentation" | "caption">,
 		extra: string[] = [],
 		base?: { owner: string; description?: string }
 	): vscode.Hover {
@@ -42,6 +42,7 @@ export class HoverProvider implements vscode.HoverProvider {
 		const withBase = base && resolved ? { ...resolved, base } : resolved;
 		return markdownHover([
 			title,
+			...(m.caption ? [`*${m.caption}*`] : []),
 			...(m.detail ? [m.detail] : []),
 			...(withBase ? ["", ...formatResolvedJsDoc(withBase)] : []),
 			...extra
@@ -225,6 +226,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			if (attr && field) {
 				return markdownHover([
 					`**${field.name}** *(${attr.name} lookup/enum)*`,
+					...(attr.caption ? [`*${attr.caption}*`] : []),
 					...(field.documentation ? ["", field.documentation] : []),
 					...(attr.documentation ? ["", attr.documentation] : [])
 				]);

@@ -12,8 +12,10 @@ import {
 	applyExtDefine,
 	findSchemaSection,
 	collectSchemaAttributes,
-	parseDefineCall
+	parseDefineCall,
+	collectLookupListConfigColumns
 } from "./amdAst";
+import type { LookupListConfigColumn } from "./amdAst";
 
 /**
  * Parse a BPMSoft AMD schema / Ext class file into an IndexedModule.
@@ -177,3 +179,6 @@ export {
 	getConstructorConfigContext
 } from "./esqQuery";
 export type { EsqNameSpan, EsqColumnContext, EsqColumnAccess, ConstructorConfigContext } from "./esqQuery";
+
+export { collectLookupListConfigColumns };
+export type { LookupListConfigColumn };

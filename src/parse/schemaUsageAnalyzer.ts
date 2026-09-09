@@ -388,6 +388,9 @@ function collectSections(
 function collectUsedNames(source: string, ast: AnyNode): Set<string> {
 	const used = new Set<string>();
 	for (const access of collectThisMemberAccesses(source, ast)) {
+		if (access.kind === "lookupField") {
+			continue;
+		}
 		used.add(access.name);
 	}
 	collectStringLiterals(ast, used);

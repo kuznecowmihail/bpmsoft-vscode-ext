@@ -20,7 +20,7 @@
 | `this.get("` / `this.set("` | Имена атрибутов |
 | `this.sandbox.publish("` / `this.sandbox.subscribe("` | Сообщения из `messages` схемы/иерархии и ядра `NavigationModule` |
 | `diff` / `methods` → `bindTo: "` (ключи с кавычками или без) | Методы и атрибуты схемы/иерархии |
-| `this.$Lookup.` / `this.get("Lookup").` | Поля lookup/enum: `value`, `displayValue` |
+| `this.$Lookup.` / `this.get("Lookup").` | Поля lookup/enum: `value`, `displayValue`, плюс колонки из `lookupListConfig.columns` (схема и иерархия) |
 | `this.sandbox.` | `publish`, `subscribe`, `loadModule`, …; после `publish`/`subscribe` сразу список сообщений |
 | `this.Ext.` / `this.BPMSoft.` | Тот же API, что у глобальных `Ext` / `BPMSoft` |
 | `BPMSoft.` | Enums (`SysValue`, `DataValueType`, …), классы, `configuration.Structures.*` из **этого** проекта (`conf/content`) |
@@ -148,6 +148,8 @@ Hover по тем же конструкциям: вид члена, докуме
 | `this.sandbox.publish("Msg")` | `Msg` нет в `messages` схемы/модуля/иерархии **или** направление не `PUBLISH` / `BIDIRECTIONAL` | предупреждение | — |
 | `this.sandbox.subscribe("Msg")` | `Msg` нет в `messages` **или** направление не `SUBSCRIBE` / `BIDIRECTIONAL` | предупреждение | — |
 | `diff` / `methods` → `bindTo: "foo"` | метода/атрибута `foo` нет в схеме и иерархии | предупреждение | создать метод **или** атрибут `BOOLEAN` |
+| `lookupListConfig.columns: "Foo"` | колонки нет на объекте lookup (`referenceSchemaName` / колонка entity), объект проиндексирован | предупреждение | — |
+| `this.$Lookup.Foo` / `this.get("Lookup").Foo` | lookup/enum, поле не `value`/`displayValue` и нет в `lookupListConfig.columns` (схема и иерархия) | предупреждение | — |
 
 «Существует» = текущий файл + `Structures` (stack / `structureParent`) + миксины + колонки entity (`conf/content/{Entity}.js`, плюс колонки из `Pkg/**/Schemas/{Entity}/metadata.json`, подписи из `Pkg/**/Resources/{Entity}.Entity/resource.ru-RU.xml`) + `BPMSoft.BaseSchemaViewModel` (скрытый родитель SchemaBuilder) + `extend` платформы + runtime `sandbox` / `Ext` / `BPMSoft`. Если колонка есть и в conf, и в Pkg, берётся conf (включая описание).
 

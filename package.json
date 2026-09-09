@@ -2,7 +2,7 @@
   "name": "bpmsoft-toolkit",
   "displayName": "BPMSoft Toolkit",
   "description": "Autocomplete, navigation, localization and naming tools for BPMSoft AMD modules in Pkg",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "publisher": "NAU",
   "engines": {
     "vscode": "^1.85.0"

@@ -69,7 +69,11 @@ function toItems(
 				? `${m.name} ${m.name.slice(1)}`
 				: m.name;
 		item.preselect = i === 0;
-		if (m.documentation) {
+		if (m.caption) {
+			item.documentation = new vscode.MarkdownString(
+				`*${m.caption}*${m.documentation ? `\n\n${m.documentation}` : ""}`
+			);
+		} else if (m.documentation) {
 			item.documentation = new vscode.MarkdownString(m.documentation);
 		}
 		if (thisPath === "" && m.name === "sandbox") {
@@ -106,7 +110,11 @@ function toGetSetItems(
 			item.sortText = `!${String(i).padStart(5, "0")}_${m.name}`;
 			item.filterText = m.name;
 			item.preselect = i === 0;
-			if (m.documentation) {
+			if (m.caption) {
+				item.documentation = new vscode.MarkdownString(
+					`*${m.caption}*${m.documentation ? `\n\n${m.documentation}` : ""}`
+				);
+			} else if (m.documentation) {
 				item.documentation = new vscode.MarkdownString(m.documentation);
 			}
 			if (!ctx.quote) {
