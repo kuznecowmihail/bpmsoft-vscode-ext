@@ -201,6 +201,56 @@
         "title": "По категории",
         "category": "BPMSoft",
         "toggled": "bpmsoftPlainOutlineSortCategory"
+      },
+      {
+        "command": "bpmsoftFormatting.focus",
+        "title": "Focus on Formatting View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftPackageSettings.focus",
+        "title": "Focus on Package Settings View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftDevMode.focus",
+        "title": "Focus on Dev Mode View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftEnvConfig.focus",
+        "title": "Focus on Config Files View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftViewModelOutline.focus",
+        "title": "Focus on ViewModel Outline View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftPlainOutline.focus",
+        "title": "Focus on Outline View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftSchemaHistory.focus",
+        "title": "Focus on Timeline View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftOpenSchemas.focus",
+        "title": "Focus on Open Schemas View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftPackages.focus",
+        "title": "Focus on Packages View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftNamingIssues.focus",
+        "title": "Focus on Naming Issues View",
+        "category": "BPMSoft Explorer"
       }
     ],
     "submenus": [
