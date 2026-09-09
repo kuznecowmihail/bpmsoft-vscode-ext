@@ -46,7 +46,7 @@ export class ModuleIndexer {
 	 * version upgrade, or anything else that touched these files) on its
 	 * own, so a normal activation only pays for a full parse when one is
 	 * actually needed. */
-	async rebuild(progress?: vscode.Progress<{ message?: string }>, forceFresh = false): Promise<number> {
+	async rebuild(forceFresh = false): Promise<number> {
 		this.index.clearModules();
 		const folders =
 			vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
@@ -80,7 +80,6 @@ export class ModuleIndexer {
 		let processed = 0;
 		const bump = (filePath: string) => {
 			processed++;
-			progress?.report({ message: path.basename(filePath) });
 			this.reporter?.reportModuleProgress(processed, total, path.basename(filePath));
 		};
 

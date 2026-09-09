@@ -3,14 +3,11 @@ import { IndexingProgressReporter } from "../index/indexingProgress";
 
 /**
  * Persistent bottom-of-window indicator for the two startup scans
- * (`ModuleIndexer.rebuild` / `NamingIssuesIndex.refresh`) — unlike the
- * transient `vscode.window.withProgress`/`setStatusBarMessage` calls already
- * in `extension.ts` (a notification that's easy to miss, and a status-bar
- * message that self-clears after a few seconds), this stays visible for the
- * whole run and keeps a live "N/total" count. On a workspace big enough to
- * hit the cold-file-cache latency documented in `concurrency.ts`, that scan
- * can take anywhere from a couple of seconds to a couple of minutes — this
- * is what turns that wait from "the whole sidebar looks frozen" into
+ * (`ModuleIndexer.rebuild` / `NamingIssuesIndex.refresh`). This stays visible
+ * for the whole run and keeps a live "N/total" count. On a workspace big
+ * enough to hit the cold-file-cache latency documented in `concurrency.ts`,
+ * that scan can take anywhere from a couple of seconds to a couple of minutes
+ * — this is what turns that wait from "the whole sidebar looks frozen" into
  * "visibly working, this many schemas so far."
  */
 export class IndexingStatusBar implements vscode.Disposable, IndexingProgressReporter {
