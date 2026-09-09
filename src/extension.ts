@@ -84,6 +84,7 @@ import { WorkspaceConsoleOperationsPanel } from "./providers/WorkspaceConsoleOpe
 import { getDebuggingEnabled, getFileDesignModeEnabled, resolveWebHostConfigPath, setDebugging, setFileDesignMode } from "./index/devModeSettings";
 import { autoConfigureWorkspaceConsole, getWorkspaceConsoleStatus } from "./index/workspaceConsoleSetup";
 import { AppConfigEntry } from "./index/appConfigDiscovery";
+import { FeedbackTreeProvider } from "./providers/FeedbackTreeProvider";
 
 let index: SymbolIndex;
 let indexer: ModuleIndexer;
@@ -732,6 +733,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 							"открытием готовой команды в терминале для проверки перед запуском.\n\n" +
 							"Каждая строка кликабельна и переключает/чинит своё состояние " +
 							"(со спросом подтверждения)."
+					}
+				);
+			}),
+			vscode.window.registerTreeDataProvider("bpmsoftFeedback", new FeedbackTreeProvider()),
+			vscode.commands.registerCommand("bpmsoft.feedback.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Обратная связь — сообщить об ошибке или предложить улучшение",
+					{
+						modal: true,
+						detail:
+							"У расширения нет отдельного трекера задач — багрепорты и " +
+							"пожелания принимаются напрямую в Mattermost. Клик по строке " +
+							"открывает личный чат с автором."
 					}
 				);
 			}),

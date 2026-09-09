@@ -108,6 +108,12 @@
         "icon": "$(info)"
       },
       {
+        "command": "bpmsoft.feedback.showHelp",
+        "title": "О разделе Обратная связь",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
         "command": "bpmsoft.editLocalizedStrings",
         "title": "Редактировать локализуемые строки…",
         "category": "BPMSoft",
@@ -412,6 +418,11 @@
           "command": "bpmsoft.devMode.showHelp",
           "when": "view == bpmsoftDevMode",
           "group": "navigation@2"
+        },
+        {
+          "command": "bpmsoft.feedback.showHelp",
+          "when": "view == bpmsoftFeedback",
+          "group": "navigation@1"
         }
       ],
       "bpmsoft.viewModelOutline.actionsMenu": [
@@ -733,6 +744,10 @@
         {
           "id": "bpmsoftEnvConfig",
           "name": "Config Files"
+        },
+        {
+          "id": "bpmsoftFeedback",
+          "name": "Обратная связь"
         }
       ],
       "bpmsoftExplorer": [
