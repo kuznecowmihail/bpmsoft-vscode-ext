@@ -80,7 +80,10 @@ export function readPackageDescriptor(packageDir: string): PackageDescriptor | u
  * here — it names *one specific* package new objects should default into,
  * which isn't something a static per-file check can meaningfully validate
  * (legitimately editing other in-stream packages isn't a violation); it's
- * kept as a reference value in the Package Settings view instead.
+ * kept as a reference value in the Package Settings view instead. The check
+ * always runs; clearing `bpmsoft.namingPrefixes` and/or
+ * `bpmsoft.expectedMaintainers` disables the corresponding part (no issues
+ * → status bar stays hidden).
  */
 export function checkPackageOwnership(
 	descriptor: PackageDescriptor,

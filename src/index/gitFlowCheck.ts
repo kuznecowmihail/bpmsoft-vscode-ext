@@ -13,7 +13,7 @@ export interface GitFlowSettings {
 	checkBranchParent: boolean;
 }
 
-type BranchKind = "main" | "develop" | "sprint" | "release" | "feature" | "bugfix";
+export type GitFlowBranchKind = "main" | "develop" | "sprint" | "release" | "feature" | "bugfix";
 
 const SPRINT_RE = /^sprint\/\d+\.\d+\.\d+$/;
 const RELEASE_RE = /^release\/\d+\.\d+\.\d+$/;
@@ -35,7 +35,10 @@ export function getCurrentBranch(gitRoot: string): Promise<string | undefined> {
 	);
 }
 
-function branchKind(branch: string, settings: GitFlowSettings): BranchKind | undefined {
+export function classifyGitFlowBranch(
+	branch: string,
+	settings: GitFlowSettings
+): GitFlowBranchKind | undefined {
 	if (branch === settings.mainBranch) {
 		return "main";
 	}
@@ -157,7 +160,7 @@ export async function checkGitFlow(gitRoot: string, settings: GitFlowSettings): 
 		return issues;
 	}
 
-	const kind = branchKind(branch, settings);
+	const kind = classifyGitFlowBranch(branch, settings);
 	if (!kind) {
 		issues.push({ message: `Branch name incorrect: ${branch}` });
 	}

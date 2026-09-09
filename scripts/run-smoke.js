@@ -40,7 +40,7 @@ const { getEsqBracketContext } = require("../out/parse/esqColumnPath");
 const { checkClientSchemaNaming } = require("../out/parse/schemaNamingAnalyzer");
 const { checkEntityCodeNaming, checkEntityColumnNaming, stripPrefix } = require("../out/parse/entityNamingAnalyzer");
 const { checkProcessCodeNaming } = require("../out/parse/processNamingAnalyzer");
-const { checkProcessUserTaskCodeNaming } = require("../out/parse/processUserTaskNamingAnalyzer");
+const { checkProcessUserTaskCodeNaming, checkProcessUserTaskParameterNaming } = require("../out/parse/processUserTaskNamingAnalyzer");
 const { checkDataSchemaCodeNaming, findSysSettingsPairingIssues } = require("../out/parse/dataSchemaNamingAnalyzer");
 const { parseDataSchemaDescriptor, readDataRowColumnValue } = require("../out/parse/dataSchemaMetadata");
 const { checkSqlScriptNaming } = require("../out/parse/sqlNamingAnalyzer");
@@ -5870,6 +5870,37 @@ public class Sample
 			failed = true;
 			namingBatteryOk = false;
 		}
+		const emptyOwnershipIssues = checkPackageOwnership(pkgDesc, {
+			prefixes: [],
+			expectedMaintainers: []
+		});
+		if (emptyOwnershipIssues.length) {
+			console.error(
+				"GoRestaurantsMain naming: empty ownership settings should produce no issues",
+				emptyOwnershipIssues
+			);
+			failed = true;
+			namingBatteryOk = false;
+		}
+		const wrongMaintainerIssues = checkPackageOwnership(pkgDesc, {
+			prefixes: ["Go"],
+			expectedMaintainers: ["OtherCorp"]
+		});
+		if (
+			!wrongMaintainerIssues.some(
+				(issue) =>
+					issue.message.includes("OtherCorp") ||
+					issue.message.includes("Maintainer") ||
+					issue.message.includes("YandexGo")
+			)
+		) {
+			console.error(
+				"GoRestaurantsMain naming: expected wrong maintainer ownership issue",
+				wrongMaintainerIssues
+			);
+			failed = true;
+			namingBatteryOk = false;
+		}
 	}
 	const leadPageJsPath = path.join(pkgSchemas, "LeadPageV2/LeadPageV2.js");
 	const resolvedPkgDir = findPackageDir(leadPageJsPath);
@@ -5919,7 +5950,7 @@ public class Sample
 		} else {
 			const leadPageNamingIssues = checkClientSchemaNaming(
 				"LeadPageV2",
-				{ prefixes: [], checkModuleSuffix: false },
+				{ prefixes: [] },
 				{ schemaType: "EDIT_VIEW_MODEL_SCHEMA", parentName: leadPageParent }
 			);
 			if (leadPageNamingIssues.length) {
@@ -5934,7 +5965,7 @@ public class Sample
 		const leadSectionParent = parseDescriptorParent(leadSectionDescText);
 		const leadSectionNamingIssues = checkClientSchemaNaming(
 			"LeadSectionV2",
-			{ prefixes: [], checkModuleSuffix: false },
+			{ prefixes: [] },
 			{ schemaType: "MODULE_VIEW_MODEL_SCHEMA", parentName: leadSectionParent }
 		);
 		if (leadSectionNamingIssues.length) {
@@ -5948,7 +5979,7 @@ public class Sample
 		const goLeclickParent = parseDescriptorParent(goLeclickDescText);
 		const goLeclickNamingIssues = checkClientSchemaNaming(
 			"GoLeclickLeadPage",
-			{ prefixes: ["Go"], checkModuleSuffix: false },
+			{ prefixes: ["Go"] },
 			{ schemaType: "EDIT_VIEW_MODEL_SCHEMA", parentName: goLeclickParent }
 		);
 		if (goLeclickNamingIssues.length) {
@@ -6059,8 +6090,7 @@ public class Sample
 		}
 		const userTaskNamingIssues = checkProcessUserTaskCodeNaming(userTaskName, {
 			prefixes: ["Go"],
-			actionVerbs: [],
-			checkParameterDirectionSuffix: false
+			actionVerbs: []
 		});
 		if (userTaskNamingIssues.length) {
 			console.error("GoRestaurantsMain naming: user task naming issues", userTaskNamingIssues);
@@ -6078,6 +6108,19 @@ public class Sample
 					console.error("GoRestaurantsMain naming: user task parameters not array", userTaskParams);
 					failed = true;
 					namingBatteryOk = false;
+				} else if (userTaskParams.length) {
+					for (const paramName of userTaskParams) {
+						const paramIssues = checkProcessUserTaskParameterNaming(paramName);
+						if (paramIssues.length) {
+							console.error(
+								"GoRestaurantsMain naming: user task parameter issues",
+								paramName,
+								paramIssues
+							);
+							failed = true;
+							namingBatteryOk = false;
+						}
+					}
 				}
 			} catch (err) {
 				console.error("GoRestaurantsMain naming: user task metadata parse threw", err);
@@ -6300,9 +6343,7 @@ public class Sample
 				oppListenerCsSrc,
 				{
 					prefixes: ["Go"],
-					checkRoleSuffix: false,
-					roleSuffixes: DEFAULT_ROLE_SUFFIXES,
-					checkSingleClassPerSchema: false
+					roleSuffixes: DEFAULT_ROLE_SUFFIXES
 				},
 				"GoOpportunityEventListener"
 			);

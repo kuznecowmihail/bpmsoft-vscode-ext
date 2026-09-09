@@ -58,9 +58,9 @@ export function extractTopLevelClass(source: string): TopLevelClass | undefined 
  * for a *different* role — `GoGeofinServiceHelper`, `GoBulkEntityHandlerCreate`,
  * a `...EventListener` — so it's a secondary capability some Helpers/
  * Handlers/EventListeners happen to also have, not a reliable "this class
- * IS a background job" signal). So `checkRoleSuffix`/`checkSingleClassPerSchema`
- * (see `CsharpNamingSettings`) stay heuristic, opt-in checks rather than
- * verified ones like Service/EventListener. */
+ * IS a background job" signal). Only Service/EventListener are verified
+ * against a platform marker; the rest are used for chained-suffix detection
+ * via `roleSuffixes`. */
 export const DEFAULT_ROLE_SUFFIXES = [
 	"Service",
 	"EventListener",
@@ -77,26 +77,9 @@ export const DEFAULT_ROLE_SUFFIXES = [
 
 export interface CsharpNamingSettings {
 	prefixes: string[];
-	/** Opt-in: flag a Code that ends in none of `roleSuffixes` at all. Off by
-	 * default — confirmed ~37-45% of real Source Code schemas in both
-	 * installs don't end in any of the default list, and a good chunk of
-	 * those are legitimately something else the guideline's table doesn't
-	 * cover at all (Constants/DTO/Exception/Extensions/Callout classes, …),
-	 * not a missed role suffix — so this needs a team to tune
-	 * `roleSuffixes` to their own real patterns before it's worth turning
-	 * on (`bpmsoft.csharpNaming.checkRoleSuffix`). */
-	checkRoleSuffix: boolean;
 	/** Configurable via `bpmsoft.csharpNaming.roleSuffixes` — defaults to
-	 * `DEFAULT_ROLE_SUFFIXES`. Used both by `checkRoleSuffix` and by the
-	 * always-on chained-suffix check below. */
+	 * `DEFAULT_ROLE_SUFFIXES`. Used by the always-on chained-suffix check. */
 	roleSuffixes: string[];
-	/** Opt-in: flag a file declaring more than one top-level class. Off by
-	 * default — confirmed ~26-27% of real Source Code schemas are
-	 * legitimately multi-class (naming-guidelines.md's own "может быть
-	 * объектная модель данных" exception for a DTO/request-response bundle
-	 * living alongside the main class), so this is a team preference to opt
-	 * into, not a default-on check (`bpmsoft.csharpNaming.checkSingleClassPerSchema`). */
-	checkSingleClassPerSchema: boolean;
 }
 
 /** Every `roleSuffixes` entry chained at the very end of `name`, left to
@@ -134,9 +117,7 @@ function findChainedRoleSuffixes(name: string, roleSuffixes: string[]): string[]
  * registered name corresponding to an actual class in the file, no
  * redundant "SourceCode" suffix (the name should reflect the class's
  * *role*, not restate that it's a source-code schema at all), no temporary/
- * placeholder designation, no chained role suffixes, and — both opt-in, see
- * `CsharpNamingSettings` — a recognizable role suffix at all, and no more
- * than one top-level class per file.
+ * placeholder designation, and no chained role suffixes.
  *
  * The name being *validated* is the schema's registered name — `code`, read
  * from `descriptor.json` by the caller — not necessarily the literal C#
@@ -207,16 +188,6 @@ export function checkCsharpSchemaNaming(
 	const chainedSuffixes = findChainedRoleSuffixes(name, settings.roleSuffixes);
 	if (chainedSuffixes.length > 1) {
 		push(`Класс «${name}»: не смешивайте суффиксы ролей без необходимости (${chainedSuffixes.join(" + ")})`);
-	}
-	if (settings.checkRoleSuffix && settings.roleSuffixes.length && !settings.roleSuffixes.some((s) => name.endsWith(s))) {
-		push(
-			`Класс «${name}»: код не заканчивается ни на один известный суффикс роли (${settings.roleSuffixes.join("/")}) — по гайдлайну имя должно отражать роль класса (проверить автоматически, какая роль верна, нельзя — нет надёжного маркера для Helper/Manager/Handler/Repository/Client/Connector/Job)`
-		);
-	}
-	if (settings.checkSingleClassPerSchema && classes.length > 1) {
-		push(
-			`Класс «${name}»: файл схемы содержит ${classes.length} классов верхнего уровня — по гайдлайну один класс = одна схема (обоснованное исключение — объектная модель данных)`
-		);
 	}
 
 	return issues;

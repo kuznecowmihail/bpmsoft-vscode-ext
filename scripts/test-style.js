@@ -6,8 +6,22 @@
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
 const { checkClientSchemaNaming } = require("../out/parse/schemaNamingAnalyzer");
-const { checkCsharpSchemaNaming } = require("../out/parse/csharpSchemaAnalyzer");
+const { checkCsharpSchemaNaming, DEFAULT_ROLE_SUFFIXES } = require("../out/parse/csharpSchemaAnalyzer");
 const { checkSqlScriptNaming } = require("../out/parse/sqlNamingAnalyzer");
+const {
+	checkEntityCodeNaming,
+	checkEntityColumnNaming,
+	findEntityCodeCollisions
+} = require("../out/parse/entityNamingAnalyzer");
+const { checkProcessCodeNaming, checkProcessElementNaming } = require("../out/parse/processNamingAnalyzer");
+const {
+	checkProcessUserTaskCodeNaming,
+	checkProcessUserTaskParameterNaming
+} = require("../out/parse/processUserTaskNamingAnalyzer");
+const { checkDataSchemaCodeNaming, findSysSettingsPairingIssues } = require("../out/parse/dataSchemaNamingAnalyzer");
+const { checkPackageOwnership } = require("../out/index/packageOwnershipCheck");
+const { checkCaptionCoverage, extractNamingSubject } = require("../out/parse/namingCommon");
+const { classifyGitFlowBranch } = require("../out/index/gitFlowCheck");
 
 let passed = 0;
 let failed = 0;
@@ -530,13 +544,19 @@ function runNamingCase(name, actual, expectCount) {
 	pass(name);
 }
 
-const defaultClientNamingSettings = { prefixes: [], checkModuleSuffix: false };
+const defaultClientNamingSettings = { prefixes: [] };
 const defaultCsharpNamingSettings = {
 	prefixes: [],
-	checkRoleSuffix: false,
-	roleSuffixes: [],
-	checkSingleClassPerSchema: false
+	roleSuffixes: []
 };
+const defaultEntityNamingSettings = {
+	prefixes: [],
+	checkSingularName: true,
+	singularExceptions: ["Settings", "Permissions", "Statistics"],
+	dateSuffixes: ["On", "Date"],
+	booleanPrefixes: ["Is", "Has", "Can"]
+};
+const gitFlowSettings = { mainBranch: "main", developBranch: "develop", checkBranchParent: true };
 
 const namingCases = [
 	{
@@ -589,7 +609,7 @@ const namingCases = [
 		run: () =>
 			checkClientSchemaNaming(
 				"AccountPageV2",
-				{ prefixes: ["Nau"], checkModuleSuffix: false },
+				{ prefixes: ["Nau"] },
 				{ schemaType: "EDIT_VIEW_MODEL_SCHEMA" }
 			)
 	},
@@ -599,7 +619,7 @@ const namingCases = [
 		run: () =>
 			checkClientSchemaNaming(
 				"NauAccountPageV2",
-				{ prefixes: ["Nau"], checkModuleSuffix: false },
+				{ prefixes: ["Nau"] },
 				{ schemaType: "EDIT_VIEW_MODEL_SCHEMA" }
 			)
 	},
@@ -694,6 +714,605 @@ const namingCases = [
 		name: "naming(sql): name with no recognizable operation is flagged",
 		expect: 1,
 		run: () => checkSqlScriptNaming("RandomScriptName")
+	},
+	{
+		name: "naming(schema): MiniPage parent requires MiniPage suffix",
+		expect: 1,
+		run: () =>
+			checkClientSchemaNaming("GoTicketPageV2", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA",
+				parentName: "AccountMiniPage"
+			})
+	},
+	{
+		name: "naming(schema): MiniPage parent with MiniPage suffix is clean",
+		expect: 0,
+		run: () =>
+			checkClientSchemaNaming("GoTicketMiniPage", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA",
+				parentName: "AccountMiniPage"
+			})
+	},
+	{
+		name: "naming(schema): ModalPage parent requires ModalPage suffix",
+		expect: 1,
+		run: () =>
+			checkClientSchemaNaming("GoTicketPageV2", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA",
+				parentName: "AccountModalPage"
+			})
+	},
+	{
+		name: "naming(schema): CSS structurally without Css suffix is flagged",
+		expect: 1,
+		run: () =>
+			checkClientSchemaNaming("GoTheme", defaultClientNamingSettings, {
+				schemaType: "MODULE",
+				moduleSource: { js: "\n", less: ".a { color: red; }" }
+			})
+	},
+	{
+		name: "naming(schema): CSS named Css with empty js and real less is clean",
+		expect: 0,
+		run: () =>
+			checkClientSchemaNaming("GoThemeCss", defaultClientNamingSettings, {
+				schemaType: "MODULE",
+				moduleSource: { js: "\n", less: ".a { color: red; }" }
+			})
+	},
+	{
+		name: "naming(schema): named Css but js not empty is flagged",
+		expect: 1,
+		run: () =>
+			checkClientSchemaNaming("GoThemeCss", defaultClientNamingSettings, {
+				schemaType: "MODULE",
+				moduleSource: {
+					js: 'define("GoThemeCss", [], function () { return {}; });\n'
+				}
+			})
+	},
+	{
+		name: "naming(schema): define() name mismatch is flagged",
+		expect: 1,
+		run: () =>
+			checkClientSchemaNaming("GoDateFilterModule", defaultClientNamingSettings, {
+				schemaType: "MODULE",
+				moduleSource: {
+					js: 'define("GoDateFilterViewModel", [], function () {});\n'
+				}
+			})
+	},
+	{
+		name: "naming(schema): helper without Module/Mixin suffix is clean (regression)",
+		expect: 0,
+		run: () =>
+			checkClientSchemaNaming("GoFooHelper", defaultClientNamingSettings, {
+				schemaType: "MODULE",
+				moduleSource: {
+					js: 'define("GoFooHelper", [], function () {});\n'
+				}
+			})
+	},
+	{
+		name: "naming(schema): GUID tail is flagged",
+		expect: 1,
+		run: () =>
+			checkClientSchemaNaming("NauAccount213312123Section", defaultClientNamingSettings, {
+				schemaType: "MODULE_VIEW_MODEL_SCHEMA",
+				parentName: "AccountSectionV2"
+			})
+	},
+	{
+		name: "naming(schema): temp designation New is flagged",
+		expect: 1,
+		run: () =>
+			checkClientSchemaNaming("GoNewTicketPageV2", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA",
+				parentName: "BaseModulePageV2"
+			})
+	},
+	{
+		name: "naming(cs): SourceCode suffix is flagged",
+		expect: 1,
+		run: () =>
+			checkCsharpSchemaNaming("public class NauFooSourceCode\n{\n}\n", defaultCsharpNamingSettings)
+	},
+	{
+		name: "naming(cs): temp New in class name is flagged",
+		expect: 1,
+		run: () => checkCsharpSchemaNaming("public class NauNewAccount\n{\n}\n", defaultCsharpNamingSettings)
+	},
+	{
+		name: "naming(cs): prefix missing with Nau is flagged",
+		expect: 1,
+		run: () =>
+			checkCsharpSchemaNaming(
+				"public class AccountService : BaseService\n{\n}\n",
+				{ prefixes: ["Nau"], roleSuffixes: [] }
+			)
+	},
+	{
+		name: "naming(cs): schema name not in file is flagged",
+		expect: 1,
+		run: () =>
+			checkCsharpSchemaNaming(
+				"public class NauOther\n{\n}\n",
+				defaultCsharpNamingSettings,
+				"NauAccount"
+			)
+	},
+	{
+		name: "naming(cs): chained ServiceHelper is flagged",
+		expect: 1,
+		run: () =>
+			checkCsharpSchemaNaming("public class NauAccountServiceHelper\n{\n}\n", {
+				prefixes: [],
+				roleSuffixes: DEFAULT_ROLE_SUFFIXES
+			})
+	},
+	{
+		name: "naming(cs): two top-level classes are not flagged (regression)",
+		expect: 0,
+		run: () =>
+			checkCsharpSchemaNaming(
+				"public class NauFoo\n{\n}\npublic class NauFooDto\n{\n}\n",
+				{ prefixes: [], roleSuffixes: DEFAULT_ROLE_SUFFIXES },
+				"NauFoo"
+			)
+	},
+	{
+		name: "naming(entity): plural entity code is flagged",
+		expect: 1,
+		run: () => checkEntityCodeNaming("GoTickets", defaultEntityNamingSettings)
+	},
+	{
+		name: "naming(entity): Settings exception is clean",
+		expect: 0,
+		run: () => checkEntityCodeNaming("Settings", defaultEntityNamingSettings)
+	},
+	{
+		name: "naming(entity): checkSingularName off skips plural",
+		expect: 0,
+		run: () =>
+			checkEntityCodeNaming("GoTickets", {
+				...defaultEntityNamingSettings,
+				checkSingularName: false
+			})
+	},
+	{
+		name: "naming(entity): Tbl affix is flagged",
+		expect: 1,
+		run: () => checkEntityCodeNaming("GoLeadTbl", defaultEntityNamingSettings)
+	},
+	{
+		name: "naming(entity): prefix missing is flagged",
+		expect: 1,
+		run: () =>
+			checkEntityCodeNaming("Lead", {
+				...defaultEntityNamingSettings,
+				prefixes: ["Go"]
+			})
+	},
+	{
+		name: "naming(entity): boolean without verb prefix is flagged",
+		expect: 1,
+		run: () =>
+			checkEntityColumnNaming(
+				"Account",
+				{ name: "GoActive", dataValueType: "BOOLEAN", isLookup: false },
+				{ ...defaultEntityNamingSettings, prefixes: ["Go"] }
+			)
+	},
+	{
+		name: "naming(entity): boolean IsActive is clean",
+		expect: 0,
+		run: () =>
+			checkEntityColumnNaming(
+				"Account",
+				{ name: "GoIsActive", dataValueType: "BOOLEAN", isLookup: false },
+				{ ...defaultEntityNamingSettings, prefixes: ["Go"] }
+			)
+	},
+	{
+		name: "naming(entity): date without suffix is flagged",
+		expect: 1,
+		run: () =>
+			checkEntityColumnNaming(
+				"Account",
+				{ name: "GoStart", dataValueType: "DATE", isLookup: false },
+				{ ...defaultEntityNamingSettings, prefixes: ["Go"] }
+			)
+	},
+	{
+		name: "naming(entity): date CreatedOn is clean",
+		expect: 0,
+		run: () =>
+			checkEntityColumnNaming(
+				"Account",
+				{ name: "GoCreatedOn", dataValueType: "DATE_TIME", isLookup: false },
+				{ ...defaultEntityNamingSettings, prefixes: ["Go"] }
+			)
+	},
+	{
+		name: "naming(entity): lookup Id suffix is flagged",
+		expect: 1,
+		run: () =>
+			checkEntityColumnNaming(
+				"Lead",
+				{ name: "GoAccountId", dataValueType: "LOOKUP", isLookup: true },
+				{ ...defaultEntityNamingSettings, prefixes: ["Go"] }
+			)
+	},
+	{
+		name: "naming(entity): lookup without Id is clean",
+		expect: 0,
+		run: () =>
+			checkEntityColumnNaming(
+				"Account",
+				{ name: "GoAccount", isLookup: true, dataValueType: "LOOKUP" },
+				{ ...defaultEntityNamingSettings, prefixes: ["Go"] }
+			)
+	},
+	{
+		name: "naming(entity): redundant entity name in column is flagged",
+		expect: 1,
+		run: () =>
+			checkEntityColumnNaming(
+				"Customer",
+				{ name: "GoCustomerName", isLookup: false },
+				{ ...defaultEntityNamingSettings, prefixes: ["Go"] }
+			)
+	},
+	{
+		name: "naming(entity): two originals with same name are collisions",
+		expect: 2,
+		run: () =>
+			findEntityCodeCollisions([
+				{ name: "Lead", filePath: "a", isSubstitution: false },
+				{ name: "Lead", filePath: "b", isSubstitution: false }
+			])
+	},
+	{
+		name: "naming(entity): substitution is not a collision",
+		expect: 0,
+		run: () =>
+			findEntityCodeCollisions([
+				{ name: "Lead", filePath: "a", isSubstitution: false },
+				{ name: "Lead", filePath: "b", isSubstitution: true }
+			])
+	},
+	{
+		name: "naming(process): missing Process suffix is flagged",
+		expect: 1,
+		run: () => checkProcessCodeNaming("GoSendPayment", { prefixes: ["Go"] })
+	},
+	{
+		name: "naming(process): prefix missing is flagged",
+		expect: 1,
+		run: () => checkProcessCodeNaming("SendPaymentProcess", { prefixes: ["Go"] })
+	},
+	{
+		name: "naming(process): temp Temp in code is flagged",
+		expect: 1,
+		run: () => checkProcessCodeNaming("GoTempSendProcess", { prefixes: ["Go"] })
+	},
+	{
+		name: "naming(process): action infinitive caption is clean",
+		expect: 0,
+		run: () =>
+			checkProcessElementNaming({
+				name: "a1",
+				category: "action",
+				caption: "Позвонить клиенту"
+			})
+	},
+	{
+		name: "naming(process): action without verb is flagged",
+		expect: 1,
+		run: () =>
+			checkProcessElementNaming({
+				name: "a1",
+				category: "action",
+				caption: "Клиенту звонок"
+			})
+	},
+	{
+		name: "naming(process): event past-tense caption is clean",
+		expect: 0,
+		run: () =>
+			checkProcessElementNaming({
+				name: "e1",
+				category: "event",
+				caption: "Договор подписан"
+			})
+	},
+	{
+		name: "naming(process): event not past tense is flagged",
+		expect: 1,
+		run: () =>
+			checkProcessElementNaming({
+				name: "e1",
+				category: "event",
+				caption: "Подписать договор"
+			})
+	},
+	{
+		name: "naming(process): exclusive gateway with ? is clean",
+		expect: 0,
+		run: () =>
+			checkProcessElementNaming({
+				name: "g1",
+				category: "gatewayExclusive",
+				caption: "Документы заполнены?"
+			})
+	},
+	{
+		name: "naming(process): exclusive gateway without ? is flagged",
+		expect: 1,
+		run: () =>
+			checkProcessElementNaming({
+				name: "g1",
+				category: "gatewayExclusive",
+				caption: "Документы заполнены"
+			})
+	},
+	{
+		name: "naming(process): sequence flow with caption is flagged",
+		expect: 1,
+		run: () =>
+			checkProcessElementNaming({
+				name: "f1",
+				category: "flowSequence",
+				caption: "Далее"
+			})
+	},
+	{
+		name: "naming(process): sequence flow unnamed is clean",
+		expect: 0,
+		run: () =>
+			checkProcessElementNaming({
+				name: "f1",
+				category: "flowSequence"
+			})
+	},
+	{
+		name: "naming(process): eventTimer not checked for past tense",
+		expect: 0,
+		run: () =>
+			checkProcessElementNaming({
+				name: "t1",
+				category: "eventTimer",
+				caption: "Каждый день"
+			})
+	},
+	{
+		name: "naming(userTask): missing UserTask suffix is flagged",
+		expect: 1,
+		run: () =>
+			checkProcessUserTaskCodeNaming("GoChangeData", {
+				prefixes: ["Go"],
+				actionVerbs: ["Change"]
+			})
+	},
+	{
+		name: "naming(userTask): verb not in list is flagged",
+		expect: 1,
+		run: () =>
+			checkProcessUserTaskCodeNaming("GoFooDataUserTask", {
+				prefixes: ["Go"],
+				actionVerbs: ["Change", "Get"]
+			})
+	},
+	{
+		name: "naming(userTask): verb Change is clean",
+		expect: 0,
+		run: () =>
+			checkProcessUserTaskCodeNaming("GoChangeDataUserTask", {
+				prefixes: ["Go"],
+				actionVerbs: ["Change", "Get"]
+			})
+	},
+	{
+		name: "naming(userTask): parameter Tbl affix is flagged",
+		expect: 1,
+		run: () => checkProcessUserTaskParameterNaming("AccountTbl")
+	},
+	{
+		name: "naming(userTask): parameter clean name is clean",
+		expect: 0,
+		run: () => checkProcessUserTaskParameterNaming("AccountName")
+	},
+	{
+		name: "naming(data): code not starting with table is flagged",
+		expect: 1,
+		run: () => checkDataSchemaCodeNaming("City_Main", "Lookup")
+	},
+	{
+		name: "naming(data): Lookup_GoPaymentStatus is clean",
+		expect: 0,
+		run: () => checkDataSchemaCodeNaming("Lookup_GoPaymentStatus", "Lookup")
+	},
+	{
+		name: "naming(data): GUID segment is flagged",
+		expect: 1,
+		run: () =>
+			checkDataSchemaCodeNaming(
+				"SysModuleEdit_1ecde34cf83743188a3f82763a8ed267",
+				"SysModuleEdit"
+			)
+	},
+	{
+		name: "naming(data): pairing missing value",
+		expect: 1,
+		run: () => {
+			const r = findSysSettingsPairingIssues(
+				[{ code: "S1", filePath: "a", rowId: "id-1" }],
+				[]
+			);
+			return r.missingValue;
+		}
+	},
+	{
+		name: "naming(data): pairing missing settings",
+		expect: 1,
+		run: () => {
+			const r = findSysSettingsPairingIssues(
+				[],
+				[{ code: "V1", filePath: "b", referencedSysSettingsId: "id-1" }]
+			);
+			return r.missingSettings;
+		}
+	},
+	{
+		name: "naming(data): paired settings and value is clean",
+		expect: 0,
+		run: () => {
+			const r = findSysSettingsPairingIssues(
+				[{ code: "S1", filePath: "a", rowId: "id-1" }],
+				[{ code: "V1", filePath: "b", referencedSysSettingsId: "id-1" }]
+			);
+			return [...r.missingValue, ...r.missingSettings];
+		}
+	},
+	{
+		name: "naming(ownership): empty prefixes and maintainers is clean",
+		expect: 0,
+		run: () =>
+			checkPackageOwnership(
+				{ name: "GoRestaurantsMain", maintainer: "YandexGo" },
+				{ prefixes: [], expectedMaintainers: [] }
+			)
+	},
+	{
+		name: "naming(ownership): wrong prefix is flagged",
+		expect: 1,
+		run: () =>
+			checkPackageOwnership(
+				{ name: "GoRestaurantsMain", maintainer: "YandexGo" },
+				{ prefixes: ["Nau"], expectedMaintainers: ["YandexGo"] }
+			)
+	},
+	{
+		name: "naming(ownership): wrong maintainer is flagged",
+		expect: 1,
+		run: () =>
+			checkPackageOwnership(
+				{ name: "GoRestaurantsMain", maintainer: "YandexGo" },
+				{ prefixes: ["Go"], expectedMaintainers: ["OtherCorp"] }
+			)
+	},
+	{
+		name: "naming(ownership): empty maintainers skips maintainer check",
+		expect: 0,
+		run: () =>
+			checkPackageOwnership(
+				{ name: "GoRestaurantsMain", maintainer: "YandexGo" },
+				{ prefixes: ["Go"], expectedMaintainers: [] }
+			)
+	},
+	{
+		name: "naming(caption): missing RU caption is flagged",
+		expect: 1,
+		run: () => checkCaptionCoverage("Object", "Lead", false, true)
+	},
+	{
+		name: "naming(caption): both captions missing is flagged twice",
+		expect: 2,
+		run: () => checkCaptionCoverage("Object", "Lead", false, false)
+	},
+	{
+		name: "naming(caption): both captions present is clean",
+		expect: 0,
+		run: () => checkCaptionCoverage("Object", "Lead", true, true)
+	},
+	{
+		name: "naming(subject): guillemet form extracts schema name",
+		expect: 0,
+		run: () => {
+			const s = extractNamingSubject('Схема «LeadPageV2»: хвост');
+			return s === "LeadPageV2" ? [] : [{ message: "bad " + s }];
+		}
+	},
+	{
+		name: "naming(subject): quotes form extracts schema name",
+		expect: 0,
+		run: () => {
+			const s = extractNamingSubject('Object "Lead": code must be PascalCase');
+			return s === "Lead" ? [] : [{ message: "bad " + s }];
+		}
+	},
+	{
+		name: "naming(sql): PascalCase segment after operation is flagged",
+		expect: 1,
+		run: () => checkSqlScriptNaming("Account_Alter_addStatus")
+	},
+	{
+		name: "naming(gitFlow): main branch classified as main",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("main", gitFlowSettings) === "main" ? [] : [{ message: "not main" }]
+	},
+	{
+		name: "naming(gitFlow): develop branch classified as develop",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("develop", gitFlowSettings) === "develop"
+				? []
+				: [{ message: "not develop" }]
+	},
+	{
+		name: "naming(gitFlow): sprint/x.y.z classified as sprint",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("sprint/1.2.3", gitFlowSettings) === "sprint"
+				? []
+				: [{ message: "not sprint" }]
+	},
+	{
+		name: "naming(gitFlow): release/x.y.z classified as release",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("release/2.0.0", gitFlowSettings) === "release"
+				? []
+				: [{ message: "not release" }]
+	},
+	{
+		name: "naming(gitFlow): feature/foo classified as feature",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("feature/foo", gitFlowSettings) === "feature"
+				? []
+				: [{ message: "not feature" }]
+	},
+	{
+		name: "naming(gitFlow): bugfix/bar classified as bugfix",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("bugfix/bar", gitFlowSettings) === "bugfix"
+				? []
+				: [{ message: "not bugfix" }]
+	},
+	{
+		name: "naming(gitFlow): hotfix/x is unknown",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("hotfix/x", gitFlowSettings) ? [{ message: "should be unknown" }] : []
+	},
+	{
+		name: "naming(gitFlow): master with mainBranch master classified as main",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("master", { ...gitFlowSettings, mainBranch: "master" }) === "main"
+				? []
+				: [{ message: "not main" }]
+	},
+	{
+		name: "naming(gitFlow): sprint/1.2 without patch is unknown",
+		expect: 0,
+		run: () =>
+			classifyGitFlowBranch("sprint/1.2", gitFlowSettings)
+				? [{ message: "should be unknown" }]
+				: []
 	}
 ];
 

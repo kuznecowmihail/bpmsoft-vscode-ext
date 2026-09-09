@@ -20,9 +20,9 @@ interface PackageSettingField {
  * "Пакеты" section asks a dev to set up before starting work (`CurrentPackageId`
  * / `SchemaNamePrefix` / `Maintainer`) — this extension has no DB connection
  * to read or write those directly, so these are manually entered here
- * instead and used by `PackageOwnershipStatusBar`'s checks (prefix and
- * maintainer; `currentPackage` is reference-only, see
- * `packageOwnershipCheck.ts` for why).
+ * instead and used by `PackageOwnershipStatusBar`'s always-on checks
+ * (prefix and maintainer — empty prefixes/maintainers disable each check;
+ * `currentPackage` is reference-only, see `packageOwnershipCheck.ts` for why).
  */
 const FIELDS: PackageSettingField[] = [
 	{

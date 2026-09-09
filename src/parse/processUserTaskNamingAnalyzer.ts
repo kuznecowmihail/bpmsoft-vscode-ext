@@ -10,12 +10,6 @@ export interface ProcessUserTaskNamingSettings {
 	 * `GoChangeDataUserTask` → "Change". Configurable via
 	 * `bpmsoft.processUserTask.actionVerbs`. */
 	actionVerbs: string[];
-	/** naming-guidelines.md §8's "Input"/"Output" parameter-suffix
-	 * recommendation is real but, confirmed against 176 real parameters
-	 * across two installs, has 0% adoption in existing code — enforcing it
-	 * flags nearly every multi-parameter UserTask. Off unless explicitly
-	 * turned on (`bpmsoft.processUserTask.checkParameterDirectionSuffix`). */
-	checkParameterDirectionSuffix: boolean;
 }
 
 /**
@@ -53,10 +47,7 @@ export function checkProcessUserTaskCodeNaming(
 }
 
 /** Checks one parameter's own Code — no technical affix (`Tbl`/`Entity`/
- * `Field`, same list as an Object's columns). The Input/Output suffix
- * recommendation is checked separately, at the whole-schema level (see
- * `checkProcessUserTaskParameterDirectionSuffix`) since it only makes sense
- * to ask "does *any* parameter here indicate direction", not per-parameter. */
+ * `Field`, same list as an Object's columns). */
 export function checkProcessUserTaskParameterNaming(parameterName: string): NamingIssue[] {
 	const issues: NamingIssue[] = [];
 	const affix = hasTechnicalAffix(parameterName);
@@ -64,30 +55,4 @@ export function checkProcessUserTaskParameterNaming(parameterName: string): Nami
 		issues.push({ message: `Parameter "${parameterName}": avoid the technical affix "${affix}"` });
 	}
 	return issues;
-}
-
-/**
- * naming-guidelines.md §8: "хорошая практика — указывать направление в
- * коде, если параметров несколько" (Input/Output suffix). One finding for
- * the whole schema, not per-parameter — the recommendation is about the
- * parameter *set* having no direction markers at all, not about any single
- * parameter's own name. Off by default (`settings.checkParameterDirectionSuffix`)
- * — see that field's own doc for why.
- */
-export function checkProcessUserTaskParameterDirectionSuffix(
-	parameterNames: string[],
-	settings: ProcessUserTaskNamingSettings
-): NamingIssue[] {
-	if (!settings.checkParameterDirectionSuffix || parameterNames.length <= 1) {
-		return [];
-	}
-	const hasAnyDirectionSuffix = parameterNames.some((name) => /(Input|Output)$/.test(name));
-	if (hasAnyDirectionSuffix) {
-		return [];
-	}
-	return [
-		{
-			message: `UserTask has ${parameterNames.length} parameters, none named with an Input/Output suffix — recommended when there's more than one, to indicate direction`
-		}
-	];
 }

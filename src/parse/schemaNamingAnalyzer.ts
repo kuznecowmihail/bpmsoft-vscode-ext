@@ -2,11 +2,6 @@ import { NamingIssue, TEMP_DESIGNATION_WORDS, pascalCaseSegments } from "./namin
 
 export interface ClientSchemaNamingSettings {
 	prefixes: string[];
-	/** Off by default — real data shows only ~20-25% of Module-type schemas
-	 * that aren't already Mixin/Css actually end in "Module" (the rest are
-	 * Helper/Constants/Container/Override/... — an open role vocabulary, same
-	 * situation as the C# `checkRoleSuffix` opt-in). */
-	checkModuleSuffix: boolean;
 }
 
 /**
@@ -121,7 +116,7 @@ export function checkClientSchemaNaming(
 		}
 	}
 	if (schemaType === "MODULE" && moduleSource) {
-		checkModuleTypeNaming(code, moduleSource, settings.checkModuleSuffix, issues);
+		checkModuleTypeNaming(code, moduleSource, issues);
 	}
 	if (settings.prefixes.length && !settings.prefixes.some((prefix) => code.startsWith(prefix))) {
 		issues.push({
@@ -178,16 +173,13 @@ function extractModuleDefineName(js: string): string | undefined {
  *   flagged too, defensively — no real occurrence of that direction was
  *   found, but it would mean the schema's actual role doesn't match its
  *   name.
- * The bare "must end in Module/Mixin/Css" requirement is NOT enforced
- * unconditionally — real data shows 74-84% of real Module-type schemas
- * legitimately use neither (Helper/Constants/Container/Override/...), the
- * same open-role-vocabulary situation as C#'s Helper/Manager/Handler. Only
- * checked when `checkModuleSuffix` is explicitly turned on.
+ * The bare "must end in Module/Mixin/Css" requirement is NOT enforced —
+ * real data shows 74-84% of real Module-type schemas legitimately use neither
+ * (Helper/Constants/Container/Override/...), an open role vocabulary.
  */
 function checkModuleTypeNaming(
 	schemaName: string,
 	moduleSource: { js: string; less?: string },
-	checkModuleSuffix: boolean,
 	issues: NamingIssue[]
 ): void {
 	const looksCss = looksLikeCssSchema(moduleSource.js, moduleSource.less);
@@ -211,15 +203,6 @@ function checkModuleTypeNaming(
 	if (defineName && defineName !== schemaName) {
 		issues.push({
 			message: `Модуль «${schemaName}»: внутреннее имя (define/Ext.define/alternateClassName — «${defineName}») не совпадает с именем схемы`
-		});
-	}
-	if (
-		checkModuleSuffix &&
-		!schemaName.endsWith("Module") &&
-		!schemaName.endsWith("Mixin")
-	) {
-		issues.push({
-			message: `Схема «${schemaName}»: для типа Module ожидается суффикс Module или Mixin`
 		});
 	}
 }

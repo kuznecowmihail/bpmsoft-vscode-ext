@@ -859,8 +859,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				if (
 					e.affectsConfiguration("bpmsoft.namingDiagnostics") ||
 					e.affectsConfiguration("bpmsoft.namingPrefixes") ||
-					e.affectsConfiguration("bpmsoft.naming.ignoredNames") ||
-					e.affectsConfiguration("bpmsoft.clientSchemaNaming.checkModuleSuffix")
+					e.affectsConfiguration("bpmsoft.naming.ignoredNames")
 				) {
 					namingDiagnostics.refreshOpenDocuments();
 					if (namingIndex.hasScanned) {
@@ -877,7 +876,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					void gitFlowStatusBar.refresh();
 				}
 				if (
-					e.affectsConfiguration("bpmsoft.packageOwnershipDiagnostics") ||
 					e.affectsConfiguration("bpmsoft.currentPackage") ||
 					e.affectsConfiguration("bpmsoft.namingPrefixes") ||
 					e.affectsConfiguration("bpmsoft.expectedMaintainers")

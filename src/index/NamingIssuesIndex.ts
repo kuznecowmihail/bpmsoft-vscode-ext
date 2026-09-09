@@ -54,7 +54,6 @@ import {
 import {
 	ProcessUserTaskNamingSettings,
 	checkProcessUserTaskCodeNaming,
-	checkProcessUserTaskParameterDirectionSuffix,
 	checkProcessUserTaskParameterNaming
 } from "../parse/processUserTaskNamingAnalyzer";
 import { parseDataSchemaDescriptor, readDataRowColumnValue } from "../parse/dataSchemaMetadata";
@@ -66,9 +65,6 @@ import {
 } from "../parse/dataSchemaNamingAnalyzer";
 import { SymbolIndex } from "./SymbolIndex";
 import {
-	clientSchemaNamingCheckModuleSuffix,
-	csharpNamingCheckRoleSuffix,
-	csharpNamingCheckSingleClassPerSchema,
 	csharpNamingDiagnosticsEnabled,
 	csharpNamingRoleSuffixes,
 	dataNamingDiagnosticsEnabled,
@@ -82,7 +78,6 @@ import {
 	namingPrefixes,
 	processNamingDiagnosticsEnabled,
 	processUserTaskActionVerbs,
-	processUserTaskCheckParameterDirectionSuffix,
 	processUserTaskNamingDiagnosticsEnabled,
 	sqlTempScriptMaxAgeDays
 } from "../config";
@@ -273,21 +268,17 @@ export class NamingIssuesIndex {
 		const processDiagnosticsOn = processNamingDiagnosticsEnabled();
 		const userTaskSettings: ProcessUserTaskNamingSettings = {
 			prefixes,
-			actionVerbs: processUserTaskActionVerbs(),
-			checkParameterDirectionSuffix: processUserTaskCheckParameterDirectionSuffix()
+			actionVerbs: processUserTaskActionVerbs()
 		};
 		const userTaskDiagnosticsOn = processUserTaskNamingDiagnosticsEnabled();
 		const dataDiagnosticsOn = dataNamingDiagnosticsEnabled();
 		const csharpDiagnosticsOn = csharpNamingDiagnosticsEnabled();
 		const csharpSettings: CsharpNamingSettings = {
 			prefixes,
-			checkRoleSuffix: csharpNamingCheckRoleSuffix(),
-			roleSuffixes: csharpNamingRoleSuffixes(),
-			checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
+			roleSuffixes: csharpNamingRoleSuffixes()
 		};
 		const clientSchemaSettings: ClientSchemaNamingSettings = {
-			prefixes,
-			checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
+			prefixes
 		};
 
 		// A finding's verdict depends on these settings as much as on the
@@ -568,16 +559,14 @@ export class NamingIssuesIndex {
 					info,
 					{
 						prefixes,
-						actionVerbs: processUserTaskActionVerbs(),
-						checkParameterDirectionSuffix: processUserTaskCheckParameterDirectionSuffix()
+						actionVerbs: processUserTaskActionVerbs()
 					},
 					undefined,
 					undefined
 				);
 			}
 			return this.findingsForClientSchemaText(filePath, text, {
-				prefixes,
-				checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
+				prefixes
 			});
 		}
 		if (/\.cs$/i.test(normalized) && /\/Schemas\//i.test(normalized)) {
@@ -588,9 +577,7 @@ export class NamingIssuesIndex {
 				filePath,
 				{
 					prefixes,
-					checkRoleSuffix: csharpNamingCheckRoleSuffix(),
-					roleSuffixes: csharpNamingRoleSuffixes(),
-					checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
+					roleSuffixes: csharpNamingRoleSuffixes()
 				},
 				undefined,
 				undefined
@@ -973,15 +960,6 @@ export class NamingIssuesIndex {
 					});
 				}
 			}
-			for (const issue of checkProcessUserTaskParameterDirectionSuffix(parameterNames, settings)) {
-				findings.push({
-					packageName: packageFromPath(filePath),
-					label: schemaName,
-					message: issue.message,
-					filePath,
-					position: namePosition
-				});
-			}
 		}
 
 		if (nextCache) {
@@ -1051,17 +1029,7 @@ export class NamingIssuesIndex {
 		if (text === undefined) {
 			return [];
 		}
-		// The role-suffix vocabulary is naming-guidelines.md §4's own — a
-		// Process/UserTask/Entity schema's own attached .cs file is subject
-		// to that OTHER guideline point's own suffix instead (e.g.
-		// "UserTask", not in §4's list), so checking it here would just be a
-		// guaranteed false positive. Same scoping as the Title-coverage
-		// check below.
-		const effectiveSettings: CsharpNamingSettings = {
-			...settings,
-			checkRoleSuffix: settings.checkRoleSuffix && isSourceCode
-		};
-		const findings = checkCsharpSchemaNaming(text, effectiveSettings, schemaName).map((issue) => ({
+		const findings = checkCsharpSchemaNaming(text, settings, schemaName).map((issue) => ({
 			packageName: packageFromPath(filePath),
 			label: schemaName || path.basename(filePath, ".cs"),
 			message: issue.message,

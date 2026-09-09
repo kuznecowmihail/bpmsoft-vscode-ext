@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { checkPackageOwnership, findPackageDir, readPackageDescriptor } from "../index/packageOwnershipCheck";
-import { expectedMaintainers, namingPrefixes, packageOwnershipDiagnosticsEnabled } from "../config";
+import { expectedMaintainers, namingPrefixes } from "../config";
 
 /**
  * Bottom-of-window indicator for the active file's package — see
@@ -20,10 +20,6 @@ export class PackageOwnershipStatusBar implements vscode.Disposable {
 	}
 
 	refresh(): void {
-		if (!packageOwnershipDiagnosticsEnabled()) {
-			this.item.hide();
-			return;
-		}
 		const document = vscode.window.activeTextEditor?.document;
 		if (!document || document.uri.scheme !== "file") {
 			this.item.hide();

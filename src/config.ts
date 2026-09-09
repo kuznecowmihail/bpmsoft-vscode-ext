@@ -33,12 +33,6 @@ export function namingPrefixes(): string[] {
 		.filter(Boolean);
 }
 
-export function packageOwnershipDiagnosticsEnabled(): boolean {
-	return vscode.workspace
-		.getConfiguration("bpmsoft")
-		.get<boolean>("packageOwnershipDiagnostics", true);
-}
-
 /** The package the team's `CurrentPackageId` system setting would normally
  * point at — we have no DB connection to read that setting directly, so
  * this is the manually-configured stand-in (see README's "Настройки
@@ -126,15 +120,6 @@ export function csharpNamingDiagnosticsEnabled(): boolean {
 		.get<boolean>("csharpNamingDiagnostics", true);
 }
 
-/** Off by default — see `CsharpNamingSettings.checkRoleSuffix`'s own doc
- * (`csharpSchemaAnalyzer.ts`) for the real noise-rate data behind that
- * choice. */
-export function csharpNamingCheckRoleSuffix(): boolean {
-	return vscode.workspace
-		.getConfiguration("bpmsoft")
-		.get<boolean>("csharpNaming.checkRoleSuffix", false);
-}
-
 export function csharpNamingRoleSuffixes(): string[] {
 	return commaList(
 		"csharpNaming.roleSuffixes",
@@ -142,28 +127,10 @@ export function csharpNamingRoleSuffixes(): string[] {
 	);
 }
 
-/** Off by default — see `CsharpNamingSettings.checkSingleClassPerSchema`'s
- * own doc for the real noise-rate data behind that choice. */
-export function csharpNamingCheckSingleClassPerSchema(): boolean {
-	return vscode.workspace
-		.getConfiguration("bpmsoft")
-		.get<boolean>("csharpNaming.checkSingleClassPerSchema", false);
-}
-
 export function dataNamingDiagnosticsEnabled(): boolean {
 	return vscode.workspace
 		.getConfiguration("bpmsoft")
 		.get<boolean>("dataNamingDiagnostics", true);
-}
-
-/** naming-guidelines.md §8's Input/Output parameter-suffix recommendation
- * has 0% real adoption in either surveyed install — off by default so it
- * doesn't flag nearly every existing multi-parameter UserTask; a team that
- * wants to start enforcing it going forward can turn it on. */
-export function processUserTaskCheckParameterDirectionSuffix(): boolean {
-	return vscode.workspace
-		.getConfiguration("bpmsoft")
-		.get<boolean>("processUserTask.checkParameterDirectionSuffix", false);
 }
 
 /** A `_Temp` SQL script (naming-guidelines.md §6) is meant to be removed
@@ -173,15 +140,6 @@ export function processUserTaskCheckParameterDirectionSuffix(): boolean {
  * look" rather than a hard violation. `0` disables it. */
 export function sqlTempScriptMaxAgeDays(): number {
 	return vscode.workspace.getConfiguration("bpmsoft").get<number>("sqlTempScriptMaxAgeDays", 30);
-}
-
-/** Off by default — see `ClientSchemaNamingSettings.checkModuleSuffix`'s own
- * doc (`schemaNamingAnalyzer.ts`) for the real noise-rate data behind that
- * choice. */
-export function clientSchemaNamingCheckModuleSuffix(): boolean {
-	return vscode.workspace
-		.getConfiguration("bpmsoft")
-		.get<boolean>("clientSchemaNaming.checkModuleSuffix", false);
 }
 
 /** Schema/process/data/class names excluded from every naming-guidelines.md

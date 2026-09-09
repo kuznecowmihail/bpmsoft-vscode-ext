@@ -21,9 +21,6 @@ import { checkDataSchemaCodeNaming } from "../parse/dataSchemaNamingAnalyzer";
 import { extractNamingSubject } from "../parse/namingCommon";
 import { SymbolIndex } from "../index/SymbolIndex";
 import {
-	clientSchemaNamingCheckModuleSuffix,
-	csharpNamingCheckRoleSuffix,
-	csharpNamingCheckSingleClassPerSchema,
 	csharpNamingRoleSuffixes,
 	namingDiagnosticsEnabled,
 	namingIgnoredNames,
@@ -135,8 +132,7 @@ export class NamingDiagnostics implements vscode.Disposable {
 		const schemaType = this.index.hierarchy.resolveSchemaType(schemaName);
 		const moduleSource = schemaType === "MODULE" ? readModuleSource(document.uri.fsPath, schemaName) : undefined;
 		const settings: ClientSchemaNamingSettings = {
-			prefixes: namingPrefixes(),
-			checkModuleSuffix: clientSchemaNamingCheckModuleSuffix()
+			prefixes: namingPrefixes()
 		};
 		const context: ClientSchemaNamingContext = { schemaType, parentName, moduleSource };
 		const pos = locateJsonNameValue(text, schemaName);
@@ -177,16 +173,7 @@ export class NamingDiagnostics implements vscode.Disposable {
 			document.getText(),
 			{
 				prefixes: namingPrefixes(),
-				// The role-suffix vocabulary is naming-guidelines.md §4's own
-				// (Service/Helper/Manager/...) — a Process/UserTask/Entity
-				// schema's own attached .cs file is subject to that OTHER
-				// guideline point's own suffix instead (e.g. "UserTask"),
-				// which isn't in §4's list, so checking it here would just be
-				// a guaranteed false positive. Same scoping as the
-				// Title-coverage check in NamingIssuesIndex.ts.
-				checkRoleSuffix: csharpNamingCheckRoleSuffix() && info?.managerName === "SourceCodeSchemaManager",
-				roleSuffixes: csharpNamingRoleSuffixes(),
-				checkSingleClassPerSchema: csharpNamingCheckSingleClassPerSchema()
+				roleSuffixes: csharpNamingRoleSuffixes()
 			},
 			info?.name
 		);
