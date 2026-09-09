@@ -147,6 +147,7 @@ ${DIALOG_STYLE}
     <div id="opForm" hidden>
       <h2 id="opCaption"></h2>
       <p id="opDescription" class="muted"></p>
+      <p id="opConfiguratorPath" class="configuratorPath" hidden></p>
       <div id="warningBox" class="warning" hidden></div>
       <div class="boxHeader">Общие параметры</div>
       <div id="baseFields" class="fields"></div>
@@ -190,6 +191,8 @@ const STYLE = `
 	#opTree { max-height: 78vh; overflow: auto; border: 1px solid var(--vscode-panel-border); }
 	.catHeader { padding: 4px 8px; font-weight: 600; font-size: 12px; background: var(--vscode-sideBar-background); position: sticky; top: 0; }
 	.catHeader.favHeader { color: var(--vscode-charts-yellow, #cca700); }
+	.configuratorPath { color: var(--vscode-textLink-foreground); font-size: 12px; margin: -4px 0 10px; }
+	.opRow .configuratorMark { color: var(--vscode-textLink-foreground); margin-right: 3px; font-size: 11px; }
 	.opRow { padding: 4px 8px 4px 4px; cursor: pointer; border-bottom: 1px solid var(--vscode-panel-border); font-size: 13px; display: flex; align-items: center; gap: 2px; }
 	.opRow:hover { background: var(--vscode-list-hoverBackground); }
 	.opRow.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
@@ -248,6 +251,7 @@ const emptyStateEl = document.getElementById('emptyState');
 const opFormEl = document.getElementById('opForm');
 const opCaptionEl = document.getElementById('opCaption');
 const opDescriptionEl = document.getElementById('opDescription');
+const opConfiguratorPathEl = document.getElementById('opConfiguratorPath');
 const warningBoxEl = document.getElementById('warningBox');
 const baseFieldsEl = document.getElementById('baseFields');
 const opFieldsHeaderEl = document.getElementById('opFieldsHeader');
@@ -261,11 +265,14 @@ function escapeHtml(s) {
 
 function opRowHtml(op) {
 	const mark = op.destructive ? '<span class="destructiveMark" title="Меняет/удаляет данные">⚠</span>' : '';
+	const configMark = op.configuratorMenuPath
+		? '<span class="configuratorMark" title="Есть аналог в веб-конфигураторе: ' + escapeHtml(op.configuratorMenuPath) + '">🖱</span>'
+		: '';
 	const isFav = favorites.includes(op.op);
 	const star = '<button class="starBtn' + (isFav ? ' active' : '') + '" type="button" data-op="' + escapeHtml(op.op) + '" title="' +
 		(isFav ? 'Убрать из избранного' : 'Добавить в избранное') + '">' + (isFav ? '★' : '☆') + '</button>';
 	return '<div class="opRow' + (selectedOp && selectedOp.op === op.op ? ' selected' : '') + '" data-op="' + escapeHtml(op.op) + '">' +
-		star + mark + escapeHtml(op.caption) + '</div>';
+		star + mark + configMark + escapeHtml(op.caption) + '</div>';
 }
 
 function wireOpRows(container) {
@@ -376,6 +383,12 @@ function selectOp(opName) {
 	opFormEl.hidden = false;
 	opCaptionEl.textContent = selectedOp.caption;
 	opDescriptionEl.textContent = selectedOp.description;
+	if (selectedOp.configuratorMenuPath) {
+		opConfiguratorPathEl.hidden = false;
+		opConfiguratorPathEl.textContent = '🖱 ' + selectedOp.configuratorMenuPath;
+	} else {
+		opConfiguratorPathEl.hidden = true;
+	}
 	renderOpTree();
 	renderBaseFields();
 	renderOpFields();

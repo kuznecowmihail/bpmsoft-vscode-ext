@@ -68,6 +68,16 @@ export interface WCOperation {
 	 * is documented as "the only operation that doesn't need -workspaceName"
 	 * (official BPMSoft docs, confirmed not contradicted by the decompile). */
 	optionalBaseParams?: string[];
+	/** Human breadcrumb to the equivalent item in the web Configurator's own
+	 * «Действия» dropdown (Package Explorer toolbar), when one exists — so a
+	 * developer who already knows that menu recognizes the same action here.
+	 * Semantic match based on operation description vs. menu-item wording, not
+	 * a confirmed shared code path (the Configurator doesn't call
+	 * WorkspaceConsole itself) — a leading "≈" marks a plausible-but-unverified
+	 * match rather than a near-certain one; only set when there IS a
+	 * Configurator equivalent (most operations, e.g. license/encryption/script
+	 * ones, have none — leave unset rather than forcing a match). */
+	configuratorMenuPath?: string;
 }
 
 /** Always shown, on every operation — required by `BaseApplicationCommandLine<T>`/`Validate()` regardless of operation. */
@@ -126,7 +136,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		category: "Сборка и компиляция",
 		caption: "Пересобрать рабочее пространство (полностью)",
 		description: "То же, что «Собрать», но force=true — пересобирает вообще все схемы, а не только изменённые. Долго.",
-		params: [continueIfError()]
+		params: [continueIfError()],
+		configuratorMenuPath: "≈ Действия → Исходный код → Сгенерировать для всех схем"
 	},
 	{
 		op: "UpdateWorkspaceSolution",
@@ -161,6 +172,7 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		category: "Сборка и компиляция",
 		caption: "Собрать конфигурацию (клиентский контент)",
 		description: "Генерирует runtime-контент (conf\\content) — то, что реально отдаётся браузеру. Использует IBuildConfigurationOperation.",
+		configuratorMenuPath: "Действия → Актуализировать элементы → Скомпилировать приложение клиентского интерфейса",
 		params: [
 			destinationPath(),
 			P("force", "Собрать всё, не только изменённое (force)", "bool"),
@@ -172,7 +184,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		category: "Сборка и компиляция",
 		caption: "Догенерировать устаревший исходный код схем",
 		description: "Устанавливает связанные данные схем с устаревшими исходниками и пересобирает рабочее пространство.",
-		params: []
+		params: [],
+		configuratorMenuPath: "Действия → Исходный код → Сгенерировать для требующих генерации"
 	},
 	{
 		op: "RegenerateAdditionalSchemaSources",
@@ -186,7 +199,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		category: "Сборка и компиляция",
 		caption: "Обновить связанные данные схем + пересобрать",
 		description: "UpdateSchemasAssociatedData() + BuildWorkspace() одним вызовом.",
-		params: []
+		params: [],
+		configuratorMenuPath: "≈ Действия → Исходный код → Сгенерировать для изменённых"
 	},
 
 	// --- Установка и обновление пакетов -----------------------------------
@@ -239,7 +253,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		category: "Установка и обновление пакетов",
 		caption: "Выгрузить пакеты из БД в файловую систему",
 		description: "Обратная операция — сохраняет пакеты из БД в Pkg\\ (файловый режим разработки).",
-		params: []
+		params: [],
+		configuratorMenuPath: "Действия → Разработка в файловой системе → Выгрузить все пакеты в файловую систему"
 	},
 	{
 		op: "LoadPackagesToDB",
@@ -247,7 +262,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		caption: "Загрузить пакеты из файловой системы в БД",
 		description: "Загружает пакеты из Pkg\\ обратно в БД.",
 		params: [...installOptionParams()],
-		destructive: true
+		destructive: true,
+		configuratorMenuPath: "Действия → Разработка в файловой системе → Обновить пакеты из файловой системы"
 	},
 	{
 		op: "InstallRequiredSqlScripts",
@@ -255,7 +271,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		caption: "Доустановить неустановленные SQL-скрипты",
 		description: "Находит и выполняет SQL-скрипты пакетов, которые ещё не были установлены.",
 		params: [],
-		destructive: true
+		destructive: true,
+		configuratorMenuPath: "Действия → Актуализировать элементы → Установить SQL сценарии для требующих установки"
 	},
 	{
 		op: "InstallRequiredData",
@@ -263,7 +280,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		caption: "Доустановить неустановленные данные пакетов",
 		description: "Находит и устанавливает данные пакетов (записи объектов), которые ещё не были установлены.",
 		params: [],
-		destructive: true
+		destructive: true,
+		configuratorMenuPath: "Действия → Актуализировать элементы → Установить данные для требующих установки"
 	},
 	{
 		op: "UpdateRequiredSchemasDBStructure",
@@ -271,7 +289,8 @@ export const WORKSPACE_CONSOLE_OPERATIONS: WCOperation[] = [
 		caption: "Обновить структуру БД для устаревших таблиц схем",
 		description: "Находит объекты, чья структура в БД отстала от схемы, и обновляет их.",
 		params: [],
-		destructive: true
+		destructive: true,
+		configuratorMenuPath: "Действия → Актуализировать элементы → Обновить структуру БД для требующих обновления"
 	},
 	{
 		op: "InstallPackageData",
