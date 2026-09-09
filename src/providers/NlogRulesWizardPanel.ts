@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { AppConfigEntry } from "../index/appConfigDiscovery";
 import { NlogRule, addRule, deleteRule, listRules, moveRule, updateRule } from "../index/nlogConfigEditor";
+import { DIALOG_CLIENT_SCRIPT, DIALOG_HTML, DIALOG_STYLE } from "./webviewDialogs";
 
 const LEVELS = ["", "Trace", "Debug", "Info", "Warn", "Error", "Fatal", "Off"];
 
@@ -109,6 +110,7 @@ export class NlogRulesWizardPanel {
 <title>${this.entry.label}</title>
 <style>
 ${STYLE}
+${DIALOG_STYLE}
 </style>
 </head>
 <body>
@@ -134,8 +136,10 @@ ${STYLE}
   <th></th>
 </tr></thead><tbody id="rows"></tbody></table></div>
 <div id="toast"></div>
+${DIALOG_HTML}
 <script nonce="${csp}">
 window.__LEVELS = ${JSON.stringify(LEVELS)};
+${DIALOG_CLIENT_SCRIPT}
 ${CLIENT_SCRIPT}
 </script>
 </body>
@@ -239,8 +243,8 @@ function render() {
 		tr.querySelectorAll('select.cell, input[type=checkbox]').forEach((el) => el.addEventListener('change', commit));
 		tr.querySelector('button[data-act="up"]').addEventListener('click', () => vscode.postMessage({ type: 'move', index, direction: 'up' }));
 		tr.querySelector('button[data-act="down"]').addEventListener('click', () => vscode.postMessage({ type: 'move', index, direction: 'down' }));
-		tr.querySelector('button[data-act="delete"]').addEventListener('click', () => {
-			if (confirm('Удалить правило "' + rules[index].name + '"?')) vscode.postMessage({ type: 'delete', index });
+		tr.querySelector('button[data-act="delete"]').addEventListener('click', async () => {
+			if (await showConfirm('Удалить правило "' + rules[index].name + '"?')) vscode.postMessage({ type: 'delete', index });
 		});
 	});
 }

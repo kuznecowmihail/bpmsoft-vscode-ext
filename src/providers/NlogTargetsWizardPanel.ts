@@ -19,6 +19,7 @@ import {
 	toggleTargetEnabled
 } from "../index/nlogConfigEditor";
 import { NLOG_LAYOUT_RENDERERS, NLOG_TARGET_TYPES } from "../index/nlogCatalog";
+import { DIALOG_CLIENT_SCRIPT, DIALOG_HTML, DIALOG_STYLE } from "./webviewDialogs";
 
 function nonce(): string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -212,6 +213,7 @@ export class NlogTargetsWizardPanel {
 <title>${this.entry.label}</title>
 <style>
 ${STYLE}
+${DIALOG_STYLE}
 </style>
 </head>
 <body>
@@ -299,6 +301,7 @@ ${STYLE}
   </div>
 </div>
 <div id="toast"></div>
+${DIALOG_HTML}
 <script nonce="${csp}">
 window.__CATALOG = ${JSON.stringify(NLOG_TARGET_TYPES)};
 window.__LAYOUT_RENDERERS = ${JSON.stringify(NLOG_LAYOUT_RENDERERS)};
@@ -306,6 +309,7 @@ window.__ARCHIVE_EVERY_VALUES = ${JSON.stringify(NLOG_ARCHIVE_EVERY_VALUES)};
 window.__ARCHIVE_NUMBERING_VALUES = ${JSON.stringify(NLOG_ARCHIVE_NUMBERING_VALUES)};
 window.__CONSOLE_COLORS = ${JSON.stringify(NLOG_CONSOLE_COLORS)};
 window.__CONDITION_LEVELS = ${JSON.stringify(NLOG_CONDITION_LEVELS)};
+${DIALOG_CLIENT_SCRIPT}
 ${CLIENT_SCRIPT}
 </script>
 </body>
@@ -457,13 +461,13 @@ function renderTable() {
 	rowsEl.querySelectorAll('tr').forEach((tr) => {
 		const index = Number(tr.dataset.index);
 		tr.querySelector('button[data-act="edit"]').addEventListener('click', () => openEditEditor(index));
-		tr.querySelector('button[data-act="duplicate"]').addEventListener('click', () => {
-			const newName = prompt('Имя для копии таргета "' + targets[index].name + '":', targets[index].name + 'Copy');
+		tr.querySelector('button[data-act="duplicate"]').addEventListener('click', async () => {
+			const newName = await showPrompt('Имя для копии таргета "' + targets[index].name + '":', targets[index].name + 'Copy');
 			if (newName) vscode.postMessage({ type: 'duplicate', index, newName });
 		});
 		tr.querySelector('button[data-act="toggle"]').addEventListener('click', () => vscode.postMessage({ type: 'toggle', index }));
-		tr.querySelector('button[data-act="delete"]').addEventListener('click', () => {
-			if (confirm('Удалить таргет "' + (targets[index].name || '') + '"?')) vscode.postMessage({ type: 'delete', index });
+		tr.querySelector('button[data-act="delete"]').addEventListener('click', async () => {
+			if (await showConfirm('Удалить таргет "' + (targets[index].name || '') + '"?')) vscode.postMessage({ type: 'delete', index });
 		});
 		const retentionBtn = tr.querySelector('button[data-act="retention"]');
 		if (retentionBtn) retentionBtn.addEventListener('click', () => vscode.postMessage({ type: 'requestRetention', index }));

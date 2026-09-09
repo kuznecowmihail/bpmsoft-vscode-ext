@@ -9,10 +9,18 @@
  *
  * A "leaf" is any path whose value isn't a plain object — string / number /
  * boolean / null, or an array (edited whole, as raw JSON text, rather than
- * per-element — covers list-shaped settings like
- * `ConfigurationServices.AnonymousRoutes.*` without a bespoke array UI).
- * Renaming a leaf's key isn't supported (delete + add covers it) — the extra
- * UI for it wasn't worth it next to editing/adding/removing values.
+ * per-element). Renaming a leaf's key isn't supported (delete + add covers
+ * it) — the extra UI for it wasn't worth it next to editing/adding/removing
+ * values.
+ *
+ * One subtree is deliberately excluded from the generic leaf walk and gets
+ * its own dedicated editor below instead: `ConfigurationServices.AnonymousRoutes`
+ * (the "which web services are reachable without authentication" list). Its
+ * own keys are themselves full, namespace-qualified service class names
+ * (`BPMSoft.Configuration.Foo.BarService`) — dotted, same as this module's own
+ * nesting delimiter — so the generic dot-joined leaf path can't tell "one key
+ * with dots in it" from "several levels of nested object" apart, and every
+ * entry in this section would resolve to the wrong (nonexistent) path.
  */
 
 import * as fs from "fs";
@@ -25,6 +33,10 @@ export interface EditResult {
 }
 
 export type JsonLeafKind = "string" | "number" | "boolean" | "null" | "array";
+
+const ANON_ROUTES_SECTION = "ConfigurationServices";
+const ANON_ROUTES_KEY = "AnonymousRoutes";
+const ANON_ROUTES_PREFIX = `${ANON_ROUTES_SECTION}.${ANON_ROUTES_KEY}`;
 
 export interface JsonLeafRow {
 	path: string;
@@ -52,6 +64,9 @@ function displayOf(value: unknown, kind: JsonLeafKind): string {
 }
 
 function walk(value: unknown, prefix: string, out: JsonLeafRow[]): void {
+	if (prefix === ANON_ROUTES_PREFIX) {
+		return;
+	}
 	if (value !== null && typeof value === "object" && !Array.isArray(value)) {
 		for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
 			walk(child, prefix ? `${prefix}.${key}` : key, out);
@@ -226,6 +241,150 @@ export function deleteJsonLeaf(filePath: string, path: string): EditResult {
 		return { ok: false, error: `Путь "${path}" не найден` };
 	}
 	delete parent[key];
+	writeBack(filePath, loaded);
+	return { ok: true };
+}
+
+/**
+ * Dedicated editor for `ConfigurationServices.AnonymousRoutes` — "anonymous
+ * web services", the routes reachable without authentication. See this
+ * module's own file-level doc for why this can't go through the generic
+ * path-based leaf editor above (its keys are themselves dotted namespaces).
+ */
+export interface AnonymousRouteRow {
+	serviceClassName: string;
+	routes: string[];
+}
+
+function anonymousRoutesContainer(root: Record<string, unknown>): Record<string, unknown> | undefined {
+	const section = root[ANON_ROUTES_SECTION];
+	if (!section || typeof section !== "object" || Array.isArray(section)) {
+		return undefined;
+	}
+	const container = (section as Record<string, unknown>)[ANON_ROUTES_KEY];
+	if (!container || typeof container !== "object" || Array.isArray(container)) {
+		return undefined;
+	}
+	return container as Record<string, unknown>;
+}
+
+function asRouteList(value: unknown): string[] | undefined {
+	return Array.isArray(value) && value.every((v) => typeof v === "string") ? (value as string[]) : undefined;
+}
+
+export function listAnonymousRoutes(filePath: string): AnonymousRouteRow[] | undefined {
+	const raw = readFileSafe(filePath);
+	if (raw === undefined) {
+		return undefined;
+	}
+	const json = parseJsonNoBom<unknown>(raw);
+	if (json === undefined || typeof json !== "object" || json === null || Array.isArray(json)) {
+		return undefined;
+	}
+	const container = anonymousRoutesContainer(json as Record<string, unknown>);
+	if (!container) {
+		return [];
+	}
+	const out: AnonymousRouteRow[] = [];
+	for (const [serviceClassName, value] of Object.entries(container)) {
+		const routes = asRouteList(value);
+		if (routes) {
+			out.push({ serviceClassName, routes });
+		}
+	}
+	return out;
+}
+
+export function setAnonymousRouteRoutes(filePath: string, serviceClassName: string, routes: string[]): EditResult {
+	const loaded = loadForEdit(filePath);
+	if (!loaded) {
+		return { ok: false, error: "Не удалось прочитать appsettings.json" };
+	}
+	const container = anonymousRoutesContainer(loaded.obj);
+	if (!container || !Object.prototype.hasOwnProperty.call(container, serviceClassName)) {
+		return { ok: false, error: `Сервис "${serviceClassName}" не найден` };
+	}
+	container[serviceClassName] = routes;
+	writeBack(filePath, loaded);
+	return { ok: true };
+}
+
+/** Auto-vivifies `ConfigurationServices`/`AnonymousRoutes` if either is
+ * missing entirely — a fresh appsettings.json with no anonymous services
+ * configured yet legitimately lacks both. */
+function ensureAnonymousRoutesContainer(root: Record<string, unknown>): { ok: true; container: Record<string, unknown> } | { ok: false; error: string } {
+	let section = root[ANON_ROUTES_SECTION];
+	if (section === undefined) {
+		section = {};
+		root[ANON_ROUTES_SECTION] = section;
+	}
+	if (typeof section !== "object" || section === null || Array.isArray(section)) {
+		return { ok: false, error: `"${ANON_ROUTES_SECTION}" уже существует и не является объектом` };
+	}
+	const sectionObj = section as Record<string, unknown>;
+	let container = sectionObj[ANON_ROUTES_KEY];
+	if (container === undefined) {
+		container = {};
+		sectionObj[ANON_ROUTES_KEY] = container;
+	}
+	if (typeof container !== "object" || container === null || Array.isArray(container)) {
+		return { ok: false, error: `"${ANON_ROUTES_KEY}" уже существует и не является объектом` };
+	}
+	return { ok: true, container: container as Record<string, unknown> };
+}
+
+export function addAnonymousRoute(filePath: string, serviceClassName: string, routes: string[]): EditResult {
+	if (!serviceClassName.trim()) {
+		return { ok: false, error: "Имя класса сервиса не может быть пустым" };
+	}
+	const loaded = loadForEdit(filePath);
+	if (!loaded) {
+		return { ok: false, error: "Не удалось прочитать appsettings.json" };
+	}
+	const ensured = ensureAnonymousRoutesContainer(loaded.obj);
+	if (!ensured.ok) {
+		return ensured;
+	}
+	if (Object.prototype.hasOwnProperty.call(ensured.container, serviceClassName)) {
+		return { ok: false, error: `Сервис "${serviceClassName}" уже есть в списке` };
+	}
+	ensured.container[serviceClassName] = routes;
+	writeBack(filePath, loaded);
+	return { ok: true };
+}
+
+export function renameAnonymousRoute(filePath: string, oldName: string, newName: string): EditResult {
+	if (!newName.trim()) {
+		return { ok: false, error: "Имя класса сервиса не может быть пустым" };
+	}
+	const loaded = loadForEdit(filePath);
+	if (!loaded) {
+		return { ok: false, error: "Не удалось прочитать appsettings.json" };
+	}
+	const container = anonymousRoutesContainer(loaded.obj);
+	if (!container || !Object.prototype.hasOwnProperty.call(container, oldName)) {
+		return { ok: false, error: `Сервис "${oldName}" не найден` };
+	}
+	if (oldName !== newName && Object.prototype.hasOwnProperty.call(container, newName)) {
+		return { ok: false, error: `Сервис "${newName}" уже есть в списке` };
+	}
+	const value = container[oldName];
+	delete container[oldName];
+	container[newName] = value;
+	writeBack(filePath, loaded);
+	return { ok: true };
+}
+
+export function deleteAnonymousRoute(filePath: string, serviceClassName: string): EditResult {
+	const loaded = loadForEdit(filePath);
+	if (!loaded) {
+		return { ok: false, error: "Не удалось прочитать appsettings.json" };
+	}
+	const container = anonymousRoutesContainer(loaded.obj);
+	if (!container || !Object.prototype.hasOwnProperty.call(container, serviceClassName)) {
+		return { ok: false, error: `Сервис "${serviceClassName}" не найден` };
+	}
+	delete container[serviceClassName];
 	writeBack(filePath, loaded);
 	return { ok: true };
 }

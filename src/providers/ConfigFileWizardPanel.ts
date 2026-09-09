@@ -12,9 +12,14 @@ import {
 } from "../index/dotnetConfigEditor";
 import {
 	JsonLeafKind,
+	addAnonymousRoute,
 	addJsonLeaf,
+	deleteAnonymousRoute,
 	deleteJsonLeaf,
+	listAnonymousRoutes,
 	listJsonLeaves,
+	renameAnonymousRoute,
+	setAnonymousRouteRoutes,
 	setJsonLeafValue
 } from "../index/jsonSettingsEditor";
 import {
@@ -29,6 +34,7 @@ import {
 	setVariable
 } from "../index/nlogConfigEditor";
 import { NLOG_LAYOUT_RENDERERS } from "../index/nlogCatalog";
+import { DIALOG_CLIENT_SCRIPT, DIALOG_HTML, DIALOG_STYLE } from "./webviewDialogs";
 
 type WizardMode = "connectionStrings" | "appSettings" | "json" | "nlogVariables" | "nlogExtensions";
 
@@ -208,7 +214,8 @@ export class ConfigFileWizardPanel {
 			type: "init",
 			canRename: this.mode !== "json" && this.mode !== "nlogExtensions",
 			idLabel: this.idLabel(),
-			rows
+			rows,
+			anonymousRoutes: this.mode === "json" ? listAnonymousRoutes(this.entry.filePath) ?? [] : undefined
 		});
 	}
 
@@ -286,6 +293,27 @@ export class ConfigFileWizardPanel {
 				case "deleteEntry":
 					this.reportEdit(this.deleteEntry(String(msg.id)), true);
 					break;
+				case "setAnonymousRoute":
+					this.reportEdit(
+						setAnonymousRouteRoutes(this.entry.filePath, String(msg.serviceClassName), msg.routes as string[]),
+						true
+					);
+					break;
+				case "addAnonymousRoute":
+					this.reportEdit(
+						addAnonymousRoute(this.entry.filePath, String(msg.serviceClassName), msg.routes as string[]),
+						true
+					);
+					break;
+				case "renameAnonymousRoute":
+					this.reportEdit(
+						renameAnonymousRoute(this.entry.filePath, String(msg.oldName), String(msg.newName)),
+						true
+					);
+					break;
+				case "deleteAnonymousRoute":
+					this.reportEdit(deleteAnonymousRoute(this.entry.filePath, String(msg.serviceClassName)), true);
+					break;
 			}
 		} catch (e) {
 			void this.panel.webview.postMessage({ type: "error", message: e instanceof Error ? e.message : String(e) });
@@ -302,10 +330,22 @@ export class ConfigFileWizardPanel {
 <title>${this.entry.label}</title>
 <style>
 ${STYLE}
+${DIALOG_STYLE}
 </style>
 </head>
 <body>
 <p class="intro">${this.introText()}</p>
+${
+	this.mode === "json"
+		? `<div id="anonBox">
+  <div class="boxHeader">Анонимные веб-сервисы (без авторизации)</div>
+  <p class="muted">Сервисы, к которым можно обращаться по HTTP БЕЗ авторизации BPMSoft (<code>ConfigurationServices.AnonymousRoutes</code>) — например вебхуки от внешних систем, которые не могут прислать логин/пароль или токен. «Класс сервиса» — полное имя класса (с namespace), «Маршруты» — один или несколько (через запятую) адресов вида <code>/ServiceModel/ИмяСервиса.svc</code>. ⚠ Любой, кто знает маршрут, может вызвать сервис без входа в систему — добавляйте сюда только то, что действительно должно быть публичным.</p>
+  <input id="anonFilter" type="text" placeholder="Поиск по классу/маршруту..." />
+  <div id="anonGridWrap"><table id="anonGrid"><thead><tr><th>Класс сервиса</th><th>Маршруты</th><th></th></tr></thead><tbody id="anonRows"></tbody></table></div>
+  <div id="anonAddBox"></div>
+</div>`
+		: ""
+}
 <div id="toolbar">
   <input id="filter" type="text" placeholder="Поиск..." />
   <span id="count"></span>
@@ -326,9 +366,11 @@ ${
 <div id="gridWrap"><table id="grid"><thead><tr id="headRow"></tr></thead><tbody id="rows"></tbody></table></div>
 <div id="addBox"></div>
 <div id="toast"></div>
+${DIALOG_HTML}
 <script nonce="${csp}">
 window.__isJson = ${JSON.stringify(this.mode === "json")};
 window.__LAYOUT_RENDERERS = ${this.mode === "nlogVariables" ? JSON.stringify(NLOG_LAYOUT_RENDERERS) : "[]"};
+${DIALOG_CLIENT_SCRIPT}
 ${CLIENT_SCRIPT}
 </script>
 </body>
@@ -372,6 +414,10 @@ const STYLE = `
 	#referenceList { max-height: 40vh; overflow: auto; border: 1px solid var(--vscode-panel-border); }
 	.refItem { padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
 	.refItem .refDesc { color: var(--vscode-descriptionForeground); font-size: 12px; }
+	#anonBox { margin-bottom: 14px; padding: 10px; border: 1px solid var(--vscode-panel-border); display: flex; flex-direction: column; gap: 8px; }
+	#anonBox .muted { max-width: 900px; }
+	#anonFilter { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
+	#anonGridWrap { max-height: 30vh; overflow: auto; border: 1px solid var(--vscode-panel-border); }
 `;
 
 /** Plain browser JS, no build step — same CSP-friendly convention as
@@ -444,18 +490,18 @@ function renderRows() {
 		});
 	});
 	rowsEl.querySelectorAll('button[data-act="rename"]').forEach((btn) => {
-		btn.addEventListener('click', () => {
+		btn.addEventListener('click', async () => {
 			const tr = btn.closest('tr');
 			const oldId = tr.dataset.id;
-			const newId = prompt('Новое имя для "' + oldId + '":', oldId);
+			const newId = await showPrompt('Новое имя для "' + oldId + '":', oldId);
 			if (newId && newId !== oldId) vscode.postMessage({ type: 'renameEntry', oldId, newId });
 		});
 	});
 	rowsEl.querySelectorAll('button[data-act="delete"]').forEach((btn) => {
-		btn.addEventListener('click', () => {
+		btn.addEventListener('click', async () => {
 			const tr = btn.closest('tr');
 			const id = tr.dataset.id;
-			if (confirm('Удалить "' + id + '"?')) vscode.postMessage({ type: 'deleteEntry', id });
+			if (await showConfirm('Удалить "' + id + '"?')) vscode.postMessage({ type: 'deleteEntry', id });
 		});
 	});
 }
@@ -485,6 +531,78 @@ function render() {
 }
 
 filterEl.addEventListener('input', renderRows);
+
+// --- Anonymous web services (ConfigurationServices.AnonymousRoutes) ----
+
+let anonRoutes = [];
+const anonRowsEl = document.getElementById('anonRows');
+if (anonRowsEl) {
+	const anonFilterEl = document.getElementById('anonFilter');
+	const anonAddBox = document.getElementById('anonAddBox');
+
+	const anonMatchesFilter = (row) => {
+		const q = anonFilterEl.value.trim().toLowerCase();
+		return !q || row.serviceClassName.toLowerCase().includes(q) || row.routes.join(',').toLowerCase().includes(q);
+	};
+
+	function renderAnonRows() {
+		let html = '';
+		for (const row of anonRoutes) {
+			if (!anonMatchesFilter(row)) continue;
+			html += '<tr data-name="' + escapeHtml(row.serviceClassName) + '">';
+			html += '<td class="key">' + escapeHtml(row.serviceClassName) + '</td>';
+			html += '<td class="valCell"><input class="val anonRoutesInput" type="text" value="' + escapeHtml(row.routes.join(', ')) + '" /></td>';
+			html += '<td class="actions"><button class="icon" data-act="rename" title="Переименовать">✎</button> ' +
+				'<button class="icon" data-act="delete" title="Убрать анонимный доступ">\u{1F5D1}</button></td>';
+			html += '</tr>';
+		}
+		anonRowsEl.innerHTML = html || '<tr><td colspan="3" class="muted">Ничего не найдено</td></tr>';
+
+		anonRowsEl.querySelectorAll('input.anonRoutesInput').forEach((el) => {
+			const initial = el.value;
+			el.addEventListener('blur', () => {
+				if (el.value === initial) return;
+				const tr = el.closest('tr');
+				const routes = el.value.split(',').map((s) => s.trim()).filter(Boolean);
+				vscode.postMessage({ type: 'setAnonymousRoute', serviceClassName: tr.dataset.name, routes });
+			});
+		});
+		anonRowsEl.querySelectorAll('button[data-act="rename"]').forEach((btn) => {
+			btn.addEventListener('click', async () => {
+				const tr = btn.closest('tr');
+				const oldName = tr.dataset.name;
+				const newName = await showPrompt('Новое имя класса сервиса для "' + oldName + '":', oldName);
+				if (newName && newName !== oldName) vscode.postMessage({ type: 'renameAnonymousRoute', oldName, newName });
+			});
+		});
+		anonRowsEl.querySelectorAll('button[data-act="delete"]').forEach((btn) => {
+			btn.addEventListener('click', async () => {
+				const tr = btn.closest('tr');
+				const serviceClassName = tr.dataset.name;
+				if (await showConfirm('Убрать анонимный доступ для "' + serviceClassName + '"?')) {
+					vscode.postMessage({ type: 'deleteAnonymousRoute', serviceClassName });
+				}
+			});
+		});
+	}
+
+	function renderAnonAddBox() {
+		anonAddBox.innerHTML =
+			'<strong>Добавить сервис:</strong> <input type="text" id="newAnonName" placeholder="напр. BPMSoft.Configuration.MyService" style="min-width:320px;" />' +
+			'<input type="text" id="newAnonRoutes" placeholder="/ServiceModel/MyService.svc" style="flex:1;min-width:200px;" />' +
+			'<button id="addAnonBtn">Добавить</button>';
+		document.getElementById('addAnonBtn').addEventListener('click', () => {
+			const serviceClassName = document.getElementById('newAnonName').value.trim();
+			if (!serviceClassName) return;
+			const routes = document.getElementById('newAnonRoutes').value.split(',').map((s) => s.trim()).filter(Boolean);
+			vscode.postMessage({ type: 'addAnonymousRoute', serviceClassName, routes });
+		});
+	}
+
+	anonFilterEl.addEventListener('input', renderAnonRows);
+	renderAnonAddBox();
+	window.__renderAnonRows = renderAnonRows;
+}
 
 const referenceBtn = document.getElementById('referenceBtn');
 if (referenceBtn) {
@@ -522,6 +640,10 @@ window.addEventListener('message', (event) => {
 		idLabel = msg.idLabel;
 		rows = msg.rows;
 		render();
+		if (msg.anonymousRoutes) {
+			anonRoutes = msg.anonymousRoutes;
+			if (window.__renderAnonRows) window.__renderAnonRows();
+		}
 	} else if (msg.type === 'error') {
 		showToast(msg.message);
 	}

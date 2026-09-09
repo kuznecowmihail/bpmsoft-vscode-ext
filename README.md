@@ -406,6 +406,8 @@ Hover по тем же конструкциям: вид члена, докуме
 
 `BPMSoft.WebHost.dll.config`, у которого `<connectionStrings configSource="ConnectionStrings.config" />` (редирект на отдельный файл, не инлайн-блок), в списке не дублируется — редактируется через сам `ConnectionStrings.config`.
 
+В мастере **appsettings.json** отдельным блоком сверху вынесены **анонимные веб-сервисы** (`ConfigurationServices.AnonymousRoutes` — сервисы, доступные по HTTP без авторизации BPMSoft, например вебхуки от внешних систем) — своя таблица «класс сервиса → маршруты» с поиском, добавлением, переименованием и удалением, вместо правки вложенного JSON-объекта, чьи собственные ключи (полные имена классов с точками) конфликтуют с общим представлением «путь через точку» у остальных настроек.
+
 **nlog.config** — отдельно от остального, четырьмя пунктами (Variables / Extensions / Targets / Rules), т.к. в реальных инсталляциях он раскидан по нескольким файлам: `nlog.config` (корень, несёт `<rules>` и `<include file="nlog.targets.config" />`) + включаемый `nlog.targets.config` (`<variable>`, `<extensions>`, `<targets>`), плюс отдельный самодостаточный `WorkspaceConsole\BPMSoft.Tools.WorkspaceConsole.nlog.config` (без `<include>`, свой набор таргетов). Секция ищется там, где реально нашлась — `<include>` резолвится так же, как это делает сам NLog.
 
 - **Variables / Extensions** — та же таблица имя/значение, что и для ConnectionStrings/appSettings.
