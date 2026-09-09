@@ -55,6 +55,12 @@
         "icon": "$(sync)"
       },
       {
+        "command": "bpmsoft.namingIssues.refresh",
+        "title": "Rebuild Naming Issues",
+        "category": "BPMSoft",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "bpmsoft.naming.markFalsePositive",
         "title": "Пометить как ложное срабатывание (игнорировать это имя во всех проверках нейминга)",
         "category": "BPMSoft",
@@ -224,6 +230,48 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "bpmsoftFormatting.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftPackageSettings.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftDevMode.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftEnvConfig.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftViewModelOutline.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftPlainOutline.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftSchemaHistory.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftOpenSchemas.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftPackages.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftNamingIssues.focus",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "bpmsoft.schemaHistory.pin",
@@ -266,13 +314,33 @@
           "group": "navigation@1"
         },
         {
-          "command": "bpmsoft.packageSettings.showHelp",
+          "command": "bpmsoft.namingIssues.refresh",
           "when": "view == bpmsoftPackageSettings",
           "group": "navigation@2"
         },
         {
+          "command": "bpmsoft.packageSettings.showHelp",
+          "when": "view == bpmsoftPackageSettings",
+          "group": "navigation@3"
+        },
+        {
           "command": "bpmsoft.formatting.showHelp",
           "when": "view == bpmsoftFormatting",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.rebuildIndex",
+          "when": "view == bpmsoftPackages",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.namingIssues.refresh",
+          "when": "view == bpmsoftPackages",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bpmsoft.namingIssues.refresh",
+          "when": "view == bpmsoftNamingIssues",
           "group": "navigation@1"
         },
         {

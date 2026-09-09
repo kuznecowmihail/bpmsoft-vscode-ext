@@ -442,6 +442,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand("bpmsoft.rebuildIndex", async () => {
 				await rebuildWithProgress(true);
 			}),
+			vscode.commands.registerCommand("bpmsoft.namingIssues.refresh", async () => {
+				await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Window,
+						title: "BPMSoft: rebuilding naming issues"
+					},
+					async () => {
+						await namingIndex.refresh(true);
+						namingDiagnostics.refreshOpenDocuments();
+					}
+				);
+			}),
 			vscode.commands.registerCommand(
 				"bpmsoft.naming.markFalsePositive",
 				async (arg: string | { finding?: NamingFinding } | undefined) => {
