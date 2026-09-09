@@ -281,3 +281,54 @@ export function deleteXmlAddEntry(filePath: string, spec: XmlAddBlockSpec, name:
 		return { ok: true };
 	});
 }
+
+/**
+ * Reads/writes one attribute on a standalone self-closing element like
+ * `<fileDesignMode enabled="true" />` — a different shape from the
+ * `<blockTag><add .../></blockTag>` this module otherwise handles (no
+ * container, no `name`/`value` attribute pair). Used for the couple of
+ * top-level toggle-style settings BPMSoft's own root web-host config carries
+ * this way (see `devModeSettings.ts`). Errors (doesn't upsert) when the
+ * element or attribute is missing — unlike the `<add>` helpers above, these
+ * elements always ship in the base file, so absence means the file isn't
+ * what's expected rather than "not configured yet".
+ */
+export function getSelfClosingElementAttr(filePath: string, tagName: string, attrName: string): string | undefined {
+	const loaded = readForEdit(filePath);
+	if (!loaded) {
+		return undefined;
+	}
+	const { lines } = splitLines(loaded.text);
+	const tagRe = new RegExp(`<${escapeRegExp(tagName)}\\b[^>]*/>`);
+	const line = lines.find((l) => tagRe.test(l));
+	return line ? attrValue(line, attrName) : undefined;
+}
+
+export function setSelfClosingElementAttr(
+	filePath: string,
+	tagName: string,
+	attrName: string,
+	newValue: string
+): EditResult {
+	const loaded = readForEdit(filePath);
+	if (!loaded) {
+		return { ok: false, error: "Не удалось прочитать файл" };
+	}
+	const { lines, eol, trailingNewline } = splitLines(loaded.text);
+	const tagRe = new RegExp(`<${escapeRegExp(tagName)}\\b[^>]*/>`);
+	const idx = lines.findIndex((l) => tagRe.test(l));
+	if (idx < 0) {
+		return { ok: false, error: `Элемент <${tagName}> не найден` };
+	}
+	const attrRe = new RegExp(`(\\b${escapeRegExp(attrName)}\\s*=\\s*")([^"]*)(")`);
+	if (!attrRe.test(lines[idx])) {
+		return { ok: false, error: `Атрибут "${attrName}" не найден на <${tagName}>` };
+	}
+	const before = lines[idx];
+	lines[idx] = lines[idx].replace(attrRe, (_m, p1: string, _p2: string, p3: string) => `${p1}${escapeXmlAttr(newValue)}${p3}`);
+	if (lines[idx] === before) {
+		return { ok: true };
+	}
+	fs.writeFileSync(filePath, (loaded.hadBom ? "﻿" : "") + joinLines(lines, eol, trailingNewline), "utf8");
+	return { ok: true };
+}

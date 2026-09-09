@@ -67,10 +67,18 @@ import {
 	CreateMemberCodeActionProvider,
 	executeCreateMember
 } from "./providers/CreateMemberCodeActionProvider";
-import { AppConfigTreeProvider, EDIT_CONFIG_ENTRY_COMMAND } from "./providers/AppConfigTreeProvider";
+import {
+	AppConfigTreeProvider,
+	CONFIGURE_WORKSPACE_CONSOLE_COMMAND,
+	EDIT_CONFIG_ENTRY_COMMAND,
+	TOGGLE_DEBUGGING_COMMAND,
+	TOGGLE_FILE_DESIGN_MODE_COMMAND
+} from "./providers/AppConfigTreeProvider";
 import { ConfigFileWizardPanel } from "./providers/ConfigFileWizardPanel";
 import { NlogTargetsWizardPanel } from "./providers/NlogTargetsWizardPanel";
 import { NlogRulesWizardPanel } from "./providers/NlogRulesWizardPanel";
+import { getDebuggingEnabled, getFileDesignModeEnabled, resolveWebHostConfigPath, setDebugging, setFileDesignMode } from "./index/devModeSettings";
+import { autoConfigureWorkspaceConsole, getWorkspaceConsoleStatus } from "./index/workspaceConsoleSetup";
 import { AppConfigEntry } from "./index/appConfigDiscovery";
 
 let index: SymbolIndex;
@@ -198,6 +206,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			new Set(layouts.map((l) => l.appRoot).filter((p): p is string => Boolean(p)))
 		);
 		const envConfigTree = new AppConfigTreeProvider(appRoots);
+
+		// One-shot-per-session heads-up (not persisted across restarts) — the
+		// same status/action also lives permanently in the Config Files tree
+		// (AppConfigTreeProvider's "workspaceConsole" node), this just makes it
+		// unlikely to go unnoticed since it's easy to never scroll to that tree.
+		void (async () => {
+			for (const appRoot of appRoots) {
+				const status = getWorkspaceConsoleStatus(appRoot);
+				if (!status.applicable || status.configured) {
+					continue;
+				}
+				const actionLabel = "Настроить автоматически";
+				const choice = await vscode.window.showWarningMessage(
+					`Workspace Console не настроена (${path.basename(appRoot)}) — строки подключения отличаются от главного ConnectionStrings.config`,
+					actionLabel
+				);
+				if (choice === actionLabel) {
+					await vscode.commands.executeCommand(CONFIGURE_WORKSPACE_CONSOLE_COMMAND, appRoot);
+				}
+			}
+		})();
 
 		context.subscriptions.push(
 			indexingStatusBar,
@@ -546,6 +575,80 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.commands.registerCommand("bpmsoft.envConfig.refresh", () => {
 				envConfigTree.refresh();
 			}),
+			vscode.commands.registerCommand(TOGGLE_FILE_DESIGN_MODE_COMMAND, async (appRoot: string) => {
+				const filePath = resolveWebHostConfigPath(appRoot);
+				if (!filePath) {
+					return;
+				}
+				const currentlyEnabled = getFileDesignModeEnabled(filePath) ?? false;
+				const actionLabel = currentlyEnabled ? "Выключить" : "Включить";
+				const choice = await vscode.window.showWarningMessage(
+					currentlyEnabled
+						? "Выключить режим разработки в файловой системе? UseStaticFileContent будет включён обратно."
+						: "Включить режим разработки в файловой системе? UseStaticFileContent при этом будет выключен (несовместим с этим режимом).",
+					actionLabel
+				);
+				if (choice !== actionLabel) {
+					return;
+				}
+				const result = setFileDesignMode(filePath, !currentlyEnabled);
+				if (!result.ok) {
+					void vscode.window.showErrorMessage(result.error ?? "Не удалось изменить настройку");
+					return;
+				}
+				envConfigTree.refresh();
+				void vscode.window.showInformationMessage(
+					currentlyEnabled ? "Режим разработки в файловой системе выключен" : "Режим разработки в файловой системе включён"
+				);
+			}),
+			vscode.commands.registerCommand(TOGGLE_DEBUGGING_COMMAND, async (appRoot: string) => {
+				const filePath = resolveWebHostConfigPath(appRoot);
+				if (!filePath) {
+					return;
+				}
+				const currentlyEnabled = getDebuggingEnabled(filePath);
+				const actionLabel = currentlyEnabled ? "Выключить" : "Включить";
+				const choice = await vscode.window.showWarningMessage(
+					currentlyEnabled ? "Выключить отладку в VS Code (LoadAssemblyFromByteArray=true)?" : "Включить отладку в VS Code (LoadAssemblyFromByteArray=false)?",
+					actionLabel
+				);
+				if (choice !== actionLabel) {
+					return;
+				}
+				const result = setDebugging(filePath, !currentlyEnabled);
+				if (!result.ok) {
+					void vscode.window.showErrorMessage(result.error ?? "Не удалось изменить настройку");
+					return;
+				}
+				envConfigTree.refresh();
+				void vscode.window.showInformationMessage(currentlyEnabled ? "Отладка в VS Code выключена" : "Отладка в VS Code включена");
+			}),
+			vscode.commands.registerCommand(CONFIGURE_WORKSPACE_CONSOLE_COMMAND, async (appRoot: string) => {
+				const status = getWorkspaceConsoleStatus(appRoot);
+				if (!status.applicable || status.mismatches.length === 0) {
+					void vscode.window.showInformationMessage("Workspace Console настроена");
+					return;
+				}
+				const detail = status.mismatches
+					.map((m) => `${m.name} (${m.fileLabel}):\n  было: ${m.consoleValue}\n  станет: ${m.mainValue}`)
+					.join("\n\n");
+				const actionLabel = "Настроить автоматически";
+				const choice = await vscode.window.showWarningMessage(
+					"Настроить Workspace Console автоматически по данным из ConnectionStrings.config?",
+					{ modal: true, detail },
+					actionLabel
+				);
+				if (choice !== actionLabel) {
+					return;
+				}
+				const result = autoConfigureWorkspaceConsole(appRoot);
+				if (!result.ok) {
+					void vscode.window.showErrorMessage(result.error ?? "Не удалось настроить Workspace Console");
+					return;
+				}
+				envConfigTree.refresh();
+				void vscode.window.showInformationMessage("Workspace Console настроена");
+			}),
 			vscode.commands.registerCommand("bpmsoft.envConfig.showHelp", () => {
 				void vscode.window.showInformationMessage(
 					"Config Files — мастера для ConnectionStrings/appSettings/appsettings.json/nlog.config",
@@ -567,7 +670,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 							"с разными наборами атрибутов) — тип подставляется из " +
 							"справочника NLog с описанием, а не угадыванием. Правки " +
 							"пишутся точечно (только изменённая запись), остальной файл " +
-							"не переформатируется."
+							"не переформатируется.\n\n" +
+							"Сверху списка — статусные строки-переключатели (если " +
+							"применимо к этому корню): режим разработки в файловой " +
+							"системе, отладка в VS Code, и статус Workspace Console с " +
+							"кнопкой «Настроить автоматически», если её строки " +
+							"подключения разошлись с главным ConnectionStrings.config."
 					}
 				);
 			}),
@@ -576,6 +684,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					"ConnectionStrings.config",
 					"appsettings.json",
 					"*.dll.config",
+					"Web.config",
 					"WorkspaceConsole/*.dll.config",
 					"nlog.config",
 					"nlog.targets.config",

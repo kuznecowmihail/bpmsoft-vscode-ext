@@ -339,7 +339,7 @@ ${
 	this.mode === "json"
 		? `<div id="anonBox">
   <div class="boxHeader">Анонимные веб-сервисы (без авторизации)</div>
-  <p class="muted">Сервисы, к которым можно обращаться по HTTP БЕЗ авторизации BPMSoft (<code>ConfigurationServices.AnonymousRoutes</code>) — например вебхуки от внешних систем, которые не могут прислать логин/пароль или токен. «Класс сервиса» — полное имя класса (с namespace), «Маршруты» — один или несколько (через запятую) адресов вида <code>/ServiceModel/ИмяСервиса.svc</code>. ⚠ Любой, кто знает маршрут, может вызвать сервис без входа в систему — добавляйте сюда только то, что действительно должно быть публичным.</p>
+  <p class="muted">Сервисы, к которым можно обращаться по HTTP БЕЗ авторизации BPMSoft (<code>ConfigurationServices.AnonymousRoutes</code>) — например вебхуки от внешних систем, которые не могут прислать логин/пароль или токен. «Класс сервиса» — полное имя класса (с namespace), «Маршруты» — один или несколько адресов вида <code>/ServiceModel/ИмяСервиса.svc</code> (своя строка на каждый, кнопкой «+ Маршрут» можно добавить ещё). ⚠ Любой, кто знает маршрут, может вызвать сервис без входа в систему — добавляйте сюда только то, что действительно должно быть публичным.</p>
   <input id="anonFilter" type="text" placeholder="Поиск по классу/маршруту..." />
   <div id="anonGridWrap"><table id="anonGrid"><thead><tr><th>Класс сервиса</th><th>Маршруты</th><th></th></tr></thead><tbody id="anonRows"></tbody></table></div>
   <div id="anonAddBox"></div>
@@ -418,6 +418,15 @@ const STYLE = `
 	#anonBox .muted { max-width: 900px; }
 	#anonFilter { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
 	#anonGridWrap { max-height: 30vh; overflow: auto; border: 1px solid var(--vscode-panel-border); }
+	.anonRoutesCell { min-width: 260px; }
+	.anonRouteList { display: flex; flex-direction: column; gap: 3px; margin-bottom: 4px; }
+	.anonRouteItem { display: flex; gap: 4px; align-items: center; }
+	.anonRouteInput { flex: 1; min-width: 180px; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); font-family: var(--vscode-editor-font-family); padding: 2px 4px; }
+	.anonAddRouteBtn { align-self: flex-start; }
+	#anonAddBox { margin-top: 4px; padding: 8px; border: 1px dashed var(--vscode-panel-border); display: flex; flex-direction: column; gap: 6px; }
+	#anonAddBox .anonAddRow { display: flex; gap: 8px; align-items: center; }
+	#anonAddBox input[type=text] { padding: 4px 6px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
+	#anonAddBox .anonRouteList { max-width: 420px; }
 `;
 
 /** Plain browser JS, no build step — same CSP-friendly convention as
@@ -545,26 +554,58 @@ if (anonRowsEl) {
 		return !q || row.serviceClassName.toLowerCase().includes(q) || row.routes.join(',').toLowerCase().includes(q);
 	};
 
+	function anonRouteItemHtml(route) {
+		return '<div class="anonRouteItem"><input class="anonRouteInput" type="text" value="' + escapeHtml(route) + '" />' +
+			'<button class="icon" data-act="removeRoute" title="Удалить маршрут">✕</button></div>';
+	}
+
+	/** Commits the current (possibly mid-edit, e.g. one still-empty freshly
+	 * added input) set of route inputs inside one service's cell — empty
+	 * ones are dropped rather than saved, so an unfilled "+ Маршрут" row
+	 * just quietly disappears again once the change round-trips back
+	 * through renderAnonRows(). */
+	function commitAnonRoutesCell(cell) {
+		const routes = Array.from(cell.querySelectorAll('.anonRouteInput')).map((el) => el.value.trim()).filter(Boolean);
+		vscode.postMessage({ type: 'setAnonymousRoute', serviceClassName: cell.dataset.name, routes });
+	}
+
+	/** Wires exactly one route item (not the whole cell) — called once per
+	 * item, either on initial render or right after it's inserted by
+	 * "+ Маршрут", so re-rendering never stacks duplicate listeners onto
+	 * items that were already there. */
+	function wireAnonRouteItem(item, cell) {
+		const input = item.querySelector('.anonRouteInput');
+		input.addEventListener('blur', () => commitAnonRoutesCell(cell));
+		input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+		item.querySelector('button[data-act="removeRoute"]').addEventListener('click', () => {
+			item.remove();
+			commitAnonRoutesCell(cell);
+		});
+	}
+
 	function renderAnonRows() {
 		let html = '';
 		for (const row of anonRoutes) {
 			if (!anonMatchesFilter(row)) continue;
 			html += '<tr data-name="' + escapeHtml(row.serviceClassName) + '">';
 			html += '<td class="key">' + escapeHtml(row.serviceClassName) + '</td>';
-			html += '<td class="valCell"><input class="val anonRoutesInput" type="text" value="' + escapeHtml(row.routes.join(', ')) + '" /></td>';
+			html += '<td class="anonRoutesCell" data-name="' + escapeHtml(row.serviceClassName) + '">' +
+				'<div class="anonRouteList">' + row.routes.map(anonRouteItemHtml).join('') + '</div>' +
+				'<button class="secondary anonAddRouteBtn" type="button">+ Маршрут</button></td>';
 			html += '<td class="actions"><button class="icon" data-act="rename" title="Переименовать">✎</button> ' +
 				'<button class="icon" data-act="delete" title="Убрать анонимный доступ">\u{1F5D1}</button></td>';
 			html += '</tr>';
 		}
 		anonRowsEl.innerHTML = html || '<tr><td colspan="3" class="muted">Ничего не найдено</td></tr>';
 
-		anonRowsEl.querySelectorAll('input.anonRoutesInput').forEach((el) => {
-			const initial = el.value;
-			el.addEventListener('blur', () => {
-				if (el.value === initial) return;
-				const tr = el.closest('tr');
-				const routes = el.value.split(',').map((s) => s.trim()).filter(Boolean);
-				vscode.postMessage({ type: 'setAnonymousRoute', serviceClassName: tr.dataset.name, routes });
+		anonRowsEl.querySelectorAll('.anonRoutesCell').forEach((cell) => {
+			cell.querySelectorAll('.anonRouteItem').forEach((item) => wireAnonRouteItem(item, cell));
+			cell.querySelector('.anonAddRouteBtn').addEventListener('click', () => {
+				const list = cell.querySelector('.anonRouteList');
+				list.insertAdjacentHTML('beforeend', anonRouteItemHtml(''));
+				const newItem = list.lastElementChild;
+				wireAnonRouteItem(newItem, cell);
+				newItem.querySelector('.anonRouteInput').focus();
 			});
 		});
 		anonRowsEl.querySelectorAll('button[data-act="rename"]').forEach((btn) => {
@@ -588,20 +629,29 @@ if (anonRowsEl) {
 
 	function renderAnonAddBox() {
 		anonAddBox.innerHTML =
-			'<strong>Добавить сервис:</strong> <input type="text" id="newAnonName" placeholder="напр. BPMSoft.Configuration.MyService" style="min-width:320px;" />' +
-			'<input type="text" id="newAnonRoutes" placeholder="/ServiceModel/MyService.svc" style="flex:1;min-width:200px;" />' +
-			'<button id="addAnonBtn">Добавить</button>';
+			'<div class="anonAddRow"><strong>Добавить сервис:</strong> <input type="text" id="newAnonName" placeholder="напр. BPMSoft.Configuration.MyService" style="min-width:320px;" /></div>' +
+			'<div class="anonRouteList" id="newAnonRoutesList">' + anonRouteItemHtml('') + '</div>' +
+			'<div class="anonAddRow"><button class="secondary anonAddRouteBtn" type="button">+ Маршрут</button><button id="addAnonBtn">Добавить</button></div>';
+		const list = document.getElementById('newAnonRoutesList');
+		const wireRemove = (item) => item.querySelector('button[data-act="removeRoute"]').addEventListener('click', () => item.remove());
+		list.querySelectorAll('.anonRouteItem').forEach(wireRemove);
+		anonAddBox.querySelector('.anonAddRouteBtn').addEventListener('click', () => {
+			list.insertAdjacentHTML('beforeend', anonRouteItemHtml(''));
+			const newItem = list.lastElementChild;
+			wireRemove(newItem);
+			newItem.querySelector('.anonRouteInput').focus();
+		});
 		document.getElementById('addAnonBtn').addEventListener('click', () => {
 			const serviceClassName = document.getElementById('newAnonName').value.trim();
 			if (!serviceClassName) return;
-			const routes = document.getElementById('newAnonRoutes').value.split(',').map((s) => s.trim()).filter(Boolean);
+			const routes = Array.from(list.querySelectorAll('.anonRouteInput')).map((el) => el.value.trim()).filter(Boolean);
 			vscode.postMessage({ type: 'addAnonymousRoute', serviceClassName, routes });
 		});
 	}
 
 	anonFilterEl.addEventListener('input', renderAnonRows);
 	renderAnonAddBox();
-	window.__renderAnonRows = renderAnonRows;
+	window.__renderAnonRows = () => { renderAnonRows(); renderAnonAddBox(); };
 }
 
 const referenceBtn = document.getElementById('referenceBtn');
