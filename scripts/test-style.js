@@ -530,67 +530,104 @@ function runNamingCase(name, actual, expectCount) {
 	pass(name);
 }
 
+const defaultClientNamingSettings = { prefixes: [], checkModuleSuffix: false };
+const defaultCsharpNamingSettings = {
+	prefixes: [],
+	checkRoleSuffix: false,
+	roleSuffixes: [],
+	checkSingleClassPerSchema: false
+};
+
 const namingCases = [
 	{
 		name: "naming(schema): Section-typed schema with correct suffix is clean",
 		expect: 0,
-		run: () => checkClientSchemaNaming("GoTicketSection", "MODULE_VIEW_MODEL_SCHEMA", [])
+		run: () =>
+			checkClientSchemaNaming("GoTicketSection", defaultClientNamingSettings, {
+				schemaType: "MODULE_VIEW_MODEL_SCHEMA"
+			})
 	},
 	{
 		name: "naming(schema): Section-typed schema with wrong suffix is flagged",
 		expect: 1,
-		run: () => checkClientSchemaNaming("GoTicketRowItemWrong", "MODULE_VIEW_MODEL_SCHEMA", [])
+		run: () =>
+			checkClientSchemaNaming("GoTicketRowItemWrong", defaultClientNamingSettings, {
+				schemaType: "MODULE_VIEW_MODEL_SCHEMA",
+				parentName: "AccountSectionV2"
+			})
 	},
 	{
 		name: "naming(schema): Page-typed schema with PageV2 suffix is clean",
 		expect: 0,
-		run: () => checkClientSchemaNaming("GoTicketPageV2", "EDIT_VIEW_MODEL_SCHEMA", [])
+		run: () =>
+			checkClientSchemaNaming("GoTicketPageV2", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA"
+			})
 	},
 	{
 		name: "naming(schema): Detail-typed schema with correct suffix is clean",
 		expect: 0,
-		run: () => checkClientSchemaNaming("GoAccessToTicketsDetail", "GRID_DETAIL_VIEW_MODEL_SCHEMA", [])
+		run: () =>
+			checkClientSchemaNaming("GoAccessToTicketsDetail", defaultClientNamingSettings, {
+				schemaType: "GRID_DETAIL_VIEW_MODEL_SCHEMA"
+			})
 	},
 	{
 		name: "naming(schema): ambiguous plain MODULE type is never flagged for suffix",
 		expect: 0,
-		run: () => checkClientSchemaNaming("GoAnythingAtAll", "MODULE", [])
+		run: () =>
+			checkClientSchemaNaming("GoAnythingAtAll", defaultClientNamingSettings, { schemaType: "MODULE" })
 	},
 	{
 		name: "naming(schema): unknown schema type is never flagged for suffix",
 		expect: 0,
-		run: () => checkClientSchemaNaming("GoAnythingAtAll", undefined, [])
+		run: () => checkClientSchemaNaming("GoAnythingAtAll", defaultClientNamingSettings, {})
 	},
 	{
 		name: "naming(schema): configured prefix missing is flagged",
 		expect: 1,
-		run: () => checkClientSchemaNaming("AccountPageV2", "EDIT_VIEW_MODEL_SCHEMA", ["Nau"])
+		run: () =>
+			checkClientSchemaNaming(
+				"AccountPageV2",
+				{ prefixes: ["Nau"], checkModuleSuffix: false },
+				{ schemaType: "EDIT_VIEW_MODEL_SCHEMA" }
+			)
 	},
 	{
 		name: "naming(schema): configured prefix present is clean",
 		expect: 0,
-		run: () => checkClientSchemaNaming("NauAccountPageV2", "EDIT_VIEW_MODEL_SCHEMA", ["Nau"])
+		run: () =>
+			checkClientSchemaNaming(
+				"NauAccountPageV2",
+				{ prefixes: ["Nau"], checkModuleSuffix: false },
+				{ schemaType: "EDIT_VIEW_MODEL_SCHEMA" }
+			)
 	},
 	{
 		name: "naming(schema): EDIT_VIEW_MODEL_SCHEMA with a Page-suffixed parent is still flagged when missing suffix",
 		expect: 1,
-		run: () => checkClientSchemaNaming("GoTicketWrongName", "EDIT_VIEW_MODEL_SCHEMA", [], "BaseModulePageV2")
+		run: () =>
+			checkClientSchemaNaming("GoTicketWrongName", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA",
+				parentName: "BaseModulePageV2"
+			})
 	},
 	{
 		name: "naming(schema): EDIT_VIEW_MODEL_SCHEMA with a non-Page-suffixed parent is not flagged (real GoYaMessengerTemplateContentEditSchema case)",
 		expect: 0,
 		run: () =>
-			checkClientSchemaNaming(
-				"GoYaMessengerTemplateContentEditSchema",
-				"EDIT_VIEW_MODEL_SCHEMA",
-				[],
-				"GoSMSTemplateContentEditSchema"
-			)
+			checkClientSchemaNaming("GoYaMessengerTemplateContentEditSchema", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA",
+				parentName: "GoSMSTemplateContentEditSchema"
+			})
 	},
 	{
-		name: "naming(schema): EDIT_VIEW_MODEL_SCHEMA with unknown parent still enforces suffix (safe default)",
-		expect: 1,
-		run: () => checkClientSchemaNaming("GoTicketWrongName", "EDIT_VIEW_MODEL_SCHEMA", [], undefined)
+		name: "naming(schema): EDIT_VIEW_MODEL_SCHEMA with no parent is not flagged for suffix",
+		expect: 0,
+		run: () =>
+			checkClientSchemaNaming("GoTicketWrongName", defaultClientNamingSettings, {
+				schemaType: "EDIT_VIEW_MODEL_SCHEMA"
+			})
 	},
 	{
 		name: "naming(cs): BaseService-derived class without Service suffix is flagged",
@@ -598,7 +635,7 @@ const namingCases = [
 		run: () =>
 			checkCsharpSchemaNaming(
 				"public class NauAccountHandler : BaseService\n{\n}\n",
-				[]
+				defaultCsharpNamingSettings
 			)
 	},
 	{
@@ -607,7 +644,7 @@ const namingCases = [
 		run: () =>
 			checkCsharpSchemaNaming(
 				"public class NauAccountService : BaseService\n{\n}\n",
-				[]
+				defaultCsharpNamingSettings
 			)
 	},
 	{
@@ -616,7 +653,7 @@ const namingCases = [
 		run: () =>
 			checkCsharpSchemaNaming(
 				'[EntityEventListener(SchemaName = "Account")]\npublic class NauAccountHandler : BaseEntityEventListener\n{\n}\n',
-				[]
+				defaultCsharpNamingSettings
 			)
 	},
 	{
@@ -625,13 +662,13 @@ const namingCases = [
 		run: () =>
 			checkCsharpSchemaNaming(
 				'[EntityEventListener(SchemaName = "Account")]\npublic class NauAccountEventListener : BaseEntityEventListener\n{\n}\n',
-				[]
+				defaultCsharpNamingSettings
 			)
 	},
 	{
 		name: "naming(cs): plain class with no recognizable role is never flagged for suffix",
 		expect: 0,
-		run: () => checkCsharpSchemaNaming("public class NauSomethingPlain\n{\n}\n", [])
+		run: () => checkCsharpSchemaNaming("public class NauSomethingPlain\n{\n}\n", defaultCsharpNamingSettings)
 	},
 	{
 		name: "naming(sql): guide's two-underscore example is clean",

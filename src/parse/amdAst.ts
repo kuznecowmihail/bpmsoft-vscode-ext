@@ -1306,7 +1306,7 @@ function objectPropsByName(node: AnyNode | undefined): Map<string, AnyNode> {
 
 // Rule-type/property code tables + describeRuleCode/normalizeRuleCode moved
 // to `businessRuleDescription.ts` (imported above) — shared with the hover,
-// inlay-hints, and GUID-rule-id naming quick-fix, not just this Outline.
+// inlay-hints, and Outline, not just this Outline.
 
 /** `rules` (hand-written, symbolic `BusinessRuleModule.enums.*` constants)
  * and `businessRules` (Designer "Бизнес-правила" panel output, numeric

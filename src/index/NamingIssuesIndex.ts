@@ -145,6 +145,10 @@ export class NamingIssuesIndex {
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
 	readonly onDidChangeFindings = this.changeEmitter.event;
 	private _findings: NamingFinding[] = [];
+	private readonly findingsByPath = new Map<string, NamingFinding[]>();
+	private readonly dirsWithIssues = new Set<string>();
+	private scanned = false;
+	private scanPromise: Promise<void> | undefined;
 
 	constructor(
 		private readonly index: SymbolIndex,
@@ -155,6 +159,24 @@ export class NamingIssuesIndex {
 
 	get findings(): readonly NamingFinding[] {
 		return this._findings;
+	}
+
+	get hasScanned(): boolean {
+		return this.scanned;
+	}
+
+	async ensureScanned(): Promise<void> {
+		if (this.scanned) {
+			return;
+		}
+		if (this.scanPromise) {
+			await this.scanPromise;
+			return;
+		}
+		this.scanPromise = this.refresh().finally(() => {
+			this.scanPromise = undefined;
+		});
+		await this.scanPromise;
 	}
 
 	/** Full workspace rescan — every descriptor.json/.cs file's *dependency
@@ -175,6 +197,8 @@ export class NamingIssuesIndex {
 		this._findings = namingDiagnosticsEnabled()
 			? filterIgnoredNames(await this.scanWorkspace(forceFresh))
 			: [];
+		this.rebuildLookups();
+		this.scanned = true;
 		this.reporter?.finishNaming(this._findings.length, Date.now() - startedAt);
 		this.changeEmitter.fire();
 	}
@@ -187,6 +211,9 @@ export class NamingIssuesIndex {
 	 * `filePath` are dropped first, then re-added only if the file still
 	 * exists and is still a naming-relevant target. */
 	async refreshFile(filePath: string): Promise<void> {
+		if (!this.scanned) {
+			return;
+		}
 		if (!namingDiagnosticsEnabled()) {
 			return;
 		}
@@ -196,19 +223,37 @@ export class NamingIssuesIndex {
 			...this._findings.filter((f) => path.normalize(f.filePath) !== normPath),
 			...fresh
 		];
+		this.rebuildLookups();
 		this.changeEmitter.fire();
 	}
 
 	getForPath(fileAbsPath: string): NamingFinding[] {
-		const normalized = path.normalize(fileAbsPath);
-		return this._findings.filter((f) => path.normalize(f.filePath) === normalized);
+		return [...(this.findingsByPath.get(path.normalize(fileAbsPath)) ?? [])];
 	}
 
 	/** Whether any finding's file lives under `dirAbsPath` — for bubbling a
 	 * warning indicator up to folder/package tree nodes. */
 	hasIssuesUnder(dirAbsPath: string): boolean {
-		const normalized = path.normalize(dirAbsPath) + path.sep;
-		return this._findings.some((f) => path.normalize(f.filePath).startsWith(normalized));
+		return this.dirsWithIssues.has(path.normalize(dirAbsPath));
+	}
+
+	private rebuildLookups(): void {
+		this.findingsByPath.clear();
+		this.dirsWithIssues.clear();
+		for (const finding of this._findings) {
+			const p = path.normalize(finding.filePath);
+			const existing = this.findingsByPath.get(p);
+			if (existing) {
+				existing.push(finding);
+			} else {
+				this.findingsByPath.set(p, [finding]);
+			}
+			let dir = path.dirname(p);
+			while (dir && dir !== path.dirname(dir)) {
+				this.dirsWithIssues.add(dir);
+				dir = path.dirname(dir);
+			}
+		}
 	}
 
 	private async scanWorkspace(forceFresh: boolean): Promise<NamingFinding[]> {

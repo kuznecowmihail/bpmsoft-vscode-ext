@@ -93,6 +93,7 @@ let styleDiagnostics: StyleDiagnostics;
 let enumInlayHintsProvider: EnumInlayHintsProvider;
 let namingDiagnostics: NamingDiagnostics;
 let namingIndex: NamingIssuesIndex;
+let namingIssuesVisible = false;
 let outlineTree: ViewModelOutlineProvider;
 let plainOutlineTree: PlainOutlineProvider;
 let followViewModelOutlineCursor = false;
@@ -126,6 +127,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		namingDiagnostics = new NamingDiagnostics(index);
 		namingIndex = new NamingIssuesIndex(index, cacheDir, context.extension.packageJSON.version, indexingStatusBar);
 		const namingTree = new NamingIssuesTreeProvider(namingIndex);
+		const namingTreeView = vscode.window.createTreeView("bpmsoftNamingIssues", {
+			treeDataProvider: namingTree
+		});
+		namingIssuesVisible = namingTreeView.visible;
 		const packagesTree = new PackagesTreeProvider(index, namingIndex);
 		const packagesTreeView = vscode.window.createTreeView("bpmsoftPackages", {
 			treeDataProvider: packagesTree
@@ -137,7 +142,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		// jump into BPMSoft Explorer, which is the opposite of what's
 		// wanted. Re-run once the view *becomes* visible again so it still
 		// catches up to whatever's open by then, same as Explorer does.
-		const revealActiveFileInPackages = () => {
+		const revealActiveFileInPackages = debounceVoid(() => {
 			const doc = vscode.window.activeTextEditor?.document;
 			if (!doc || !packagesTreeView.visible) {
 				return;
@@ -151,7 +156,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				.then(undefined, () => {
 					// View not visible / item not found yet — not worth surfacing.
 				});
-		};
+		}, 150);
 		outlineTree = new ViewModelOutlineProvider(index);
 		const outlineTreeView = vscode.window.createTreeView("bpmsoftViewModelOutline", {
 			treeDataProvider: outlineTree,
@@ -241,7 +246,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			diagnostics,
 			styleDiagnostics,
 			namingDiagnostics,
-			vscode.window.registerTreeDataProvider("bpmsoftNamingIssues", namingTree),
+			namingTreeView,
+			namingTreeView.onDidChangeVisibility((e) => {
+				namingIssuesVisible = e.visible;
+				if (e.visible) {
+					void namingIndex.ensureScanned();
+				}
+			}),
 			packagesTreeView,
 			vscode.window.registerFileDecorationProvider(new NamingDecorationProvider(namingIndex)),
 			outlineTreeView,
@@ -530,10 +541,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				}
 			}),
 			vscode.window.onDidChangeActiveTextEditor((editor) => {
-				outlineTree.refresh();
-				void plainOutlineTree.refresh();
-				schemaHistoryTree.refresh();
-				void gitFlowStatusBar.refresh();
+				if (outlineTreeView.visible) {
+					outlineTree.refresh();
+				}
+				if (plainOutlineTreeView.visible) {
+					void plainOutlineTree.refresh();
+				}
+				if (schemaHistoryTreeView.visible) {
+					schemaHistoryTree.refresh();
+				}
 				packageOwnershipStatusBar.refresh();
 				if (editor) {
 					styleDiagnostics.refresh(editor.document);
@@ -542,6 +558,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					}
 				}
 				revealActiveFileInPackages();
+			}),
+			outlineTreeView.onDidChangeVisibility((e) => {
+				if (e.visible) {
+					outlineTree.refresh();
+				}
+			}),
+			plainOutlineTreeView.onDidChangeVisibility((e) => {
+				if (e.visible) {
+					void plainOutlineTree.refresh();
+				}
+			}),
+			schemaHistoryTreeView.onDidChangeVisibility((e) => {
+				if (e.visible) {
+					schemaHistoryTree.refresh();
+				}
 			}),
 			packagesTreeView.onDidChangeVisibility((e) => {
 				if (e.visible) {
@@ -832,7 +863,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					e.affectsConfiguration("bpmsoft.clientSchemaNaming.checkModuleSuffix")
 				) {
 					namingDiagnostics.refreshOpenDocuments();
-					void namingIndex.refresh();
+					if (namingIndex.hasScanned) {
+						void namingIndex.refresh();
+					}
 				}
 				if (e.affectsConfiguration("editor.defaultFormatter")) {
 					formatterTree.refresh();
@@ -865,13 +898,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		packageOwnershipStatusBar.refresh();
 
 		void preferIndexedCompletions();
-		// `rebuildWithProgress` runs `namingIndex.refresh()` itself, after
-		// `indexer.rebuild()` — sequenced on purpose (some naming checks,
-		// e.g. `findingsForClientSchemaText`'s MODULE-schema check, query
-		// `index.hierarchy`, which is only populated once the rebuild
-		// completes). A separate `void namingIndex.refresh()` used to also
-		// fire right here, racing this one — same cache, same status bar,
-		// just two full workspace scans running concurrently for no benefit.
+		// Activation does not scan naming — the first open of the Naming
+		// Issues view (or the manual "Rebuild Naming Issues" command) does.
+		// After a scan has happened once, `rebuildWithProgress` refreshes
+		// naming again after `indexer.rebuild()` — sequenced on purpose
+		// (some naming checks, e.g. `findingsForClientSchemaText`'s
+		// MODULE-schema check, query `index.hierarchy`, which is only
+		// populated once the rebuild completes).
 		void rebuildWithProgress();
 		void ensureDotnetSolution(layouts);
 		const active = vscode.window.activeTextEditor?.document;
@@ -1075,6 +1108,44 @@ function touchSchemaModifiedOnUtcForSavedFile(fsPath: string): void {
 	}
 }
 
+function debounceVoid(fn: () => void, ms: number): () => void {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	return () => {
+		if (timeout !== undefined) {
+			clearTimeout(timeout);
+		}
+		timeout = setTimeout(() => {
+			timeout = undefined;
+			fn();
+		}, ms);
+	};
+}
+
+function debounceUri(
+	fn: (uri: vscode.Uri, deleted: boolean) => void,
+	ms: number
+): (uri: vscode.Uri, deleted: boolean) => void {
+	const pending = new Map<
+		string,
+		{ timeout: ReturnType<typeof setTimeout>; uri: vscode.Uri; deleted: boolean }
+	>();
+	return (uri: vscode.Uri, deleted: boolean) => {
+		const key = uri.fsPath;
+		const existing = pending.get(key);
+		if (existing !== undefined) {
+			clearTimeout(existing.timeout);
+		}
+		const timeout = setTimeout(() => {
+			const entry = pending.get(key);
+			if (entry) {
+				pending.delete(key);
+				fn(entry.uri, entry.deleted);
+			}
+		}, ms);
+		pending.set(key, { timeout, uri, deleted });
+	};
+}
+
 /** Every watcher below is rooted at a specific resolved layout subfolder
  * (`layout.pkgRoot`/`resourcesRoot`/`autogeneratedRoot`/`confContent` — all
  * absolute paths, and `RelativePattern` accepts a plain path string as its
@@ -1116,36 +1187,37 @@ function registerWatchers(
 		watcher.onDidDelete(onDelete);
 		context.subscriptions.push(watcher);
 	};
-	const onSchemaFile = (uri: vscode.Uri) => onWatchedFile(uri, false);
-	const onSchemaFileDeleted = (uri: vscode.Uri) => onWatchedFile(uri, true);
+	const scheduleWatchedFile = debounceUri(onWatchedFile, 100);
+	const onSchemaFile = (uri: vscode.Uri) => scheduleWatchedFile(uri, false);
+	const onSchemaFileDeleted = (uri: vscode.Uri) => scheduleWatchedFile(uri, true);
 
 	for (const layout of layouts) {
 		if (layout.pkgRoot) {
 			const pkgGlobs = [
-				"**/Schemas/**/*.js",
-				"**/Schemas/**/metadata.json",
-				"**/Schemas/**/properties.json",
+				"**/Schemas/**/{*.js,*.cs,*.less,descriptor.json,metadata.json,properties.json}",
 				"**/Resources/**/resource.*.xml",
-				"**/Schemas/**/descriptor.json",
-				"**/Schemas/**/*.cs",
-				"**/Schemas/**/*.less",
 				"**/SqlScripts/**/descriptor.json",
 				"**/Data/**/descriptor.json"
 			];
 			for (const glob of pkgGlobs) {
 				watch(layout.pkgRoot, glob, onSchemaFile, onSchemaFile, onSchemaFileDeleted);
 			}
-			// Broad, structure-only watcher for the Packages tree — mirrors
-			// standard Explorer's "mostly keeps up, occasionally needs a
-			// re-open" auto-refresh rather than trying to track every file
-			// precisely. Content-only changes don't need this (nothing about
-			// the tree's shape changed), so only create/delete are wired.
-			const packagesWatcher = vscode.workspace.createFileSystemWatcher(
-				new vscode.RelativePattern(layout.pkgRoot, "**")
-			);
-			packagesWatcher.onDidCreate(() => packagesTree.refresh());
-			packagesWatcher.onDidDelete(() => packagesTree.refresh());
-			context.subscriptions.push(packagesWatcher);
+			// Shallow, structure-only watchers for the Packages tree — depth
+			// capped at three levels so we never install a recursive `**`
+			// watch over the whole Pkg folder (Windows IPC flood). Content
+			// changes are ignored; create/delete debounce into one refresh.
+			const refreshPackagesTree = debounceVoid(() => packagesTree.refresh(), 400);
+			for (const glob of ["*", "*/*", "*/*/*"]) {
+				const packagesWatcher = vscode.workspace.createFileSystemWatcher(
+					new vscode.RelativePattern(layout.pkgRoot, glob),
+					false,
+					true,
+					false
+				);
+				packagesWatcher.onDidCreate(refreshPackagesTree);
+				packagesWatcher.onDidDelete(refreshPackagesTree);
+				context.subscriptions.push(packagesWatcher);
+			}
 		}
 		if (layout.autogeneratedRoot) {
 			watch(
@@ -1257,7 +1329,9 @@ async function rebuildWithProgress(forceFresh = false): Promise<void> {
 	styleDiagnostics.refreshOpenDocuments();
 	namingDiagnostics.refreshOpenDocuments();
 	enumInlayHintsProvider.refresh();
-	void namingIndex.refresh(forceFresh);
+	if (namingIndex.hasScanned || namingIssuesVisible) {
+		void namingIndex.refresh(forceFresh);
+	}
 	outlineTree.refresh();
 	void plainOutlineTree.refresh();
 	schemaHistoryTree.refresh();

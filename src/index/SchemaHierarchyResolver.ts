@@ -13,6 +13,7 @@ import {
 import { resolveAppLayouts } from "./workspaceLayout";
 import { parsePkgPath } from "./pkgPath";
 import { localeRank } from "../parse/entityMetadata";
+import { pMap } from "./concurrency";
 
 export {
 	packageFromStackEntry,
@@ -59,6 +60,17 @@ function isConfEntityHead(head: string): boolean {
 	);
 }
 
+async function readFileHead(filePath: string, bytes: number): Promise<string> {
+	const fh = await fs.promises.open(filePath, "r");
+	try {
+		const buffer = Buffer.alloc(bytes);
+		const { bytesRead } = await fh.read(buffer, 0, bytes, 0);
+		return buffer.toString("utf8", 0, bytesRead);
+	} finally {
+		await fh.close();
+	}
+}
+
 /**
  * Resolves Creatio/BPMSoft schema replacement chains via conf/content Structures.
  *
@@ -74,11 +86,15 @@ export class SchemaHierarchyResolver {
 	private platformExtendCache = new Map<string, string | null>();
 	private descriptorParentCache = new Map<string, string | null>();
 	private entityNames: string[] = [];
+	private entityNamesGeneration = 0;
+	private entityNamesReady: Promise<void> = Promise.resolve();
 	/** `Pkg/*` package dir listing — static per workspace, but was being
 	 * re-`readdirSync`'d from scratch on every call from several methods
 	 * (readPkgSchemaType, resolveEntityPkgResourceDirs, collectEntityNames),
 	 * which adds up fast across thousands of schemas. */
 	private pkgDirsCache: string[] | undefined;
+	/** Schema folder name → package dirs containing `Schemas/{name}/`. */
+	private schemaPkgIndex: Map<string, string[]> | undefined;
 
 	setWorkspaceRoots(roots: string[]): void {
 		this.clear();
@@ -113,13 +129,15 @@ export class SchemaHierarchyResolver {
 			}
 		}
 
-		this.entityNames = this.collectEntityNames();
+		void this.scheduleCollectEntityNames();
 	}
 
 	clear(): void {
 		this.confContentDirs = [];
 		this.configurationRoots = [];
 		this.pkgDirsCache = undefined;
+		this.schemaPkgIndex = undefined;
+		this.entityNamesGeneration += 1;
 		this.structureCache.clear();
 		this.schemaTypeCache.clear();
 		this.platformExtendCache.clear();
@@ -139,6 +157,10 @@ export class SchemaHierarchyResolver {
 		return this.entityNames.filter((name) =>
 			name.toLowerCase().startsWith(lower)
 		);
+	}
+
+	whenEntityNamesReady(): Promise<void> {
+		return this.entityNamesReady;
 	}
 
 	resolveEntitySchemaPath(entityName: string): string | undefined {
@@ -205,8 +227,10 @@ export class SchemaHierarchyResolver {
 		if (!isEntityName(entityName)) {
 			return [];
 		}
+		this.ensureSchemaPkgIndex();
+		const pkgDirs = this.schemaPkgIndex!.get(entityName) ?? [];
 		const out: string[] = [];
-		for (const pkgDir of this.pkgPackageDirs()) {
+		for (const pkgDir of pkgDirs) {
 			const candidate = joinFromPkg(pkgDir, entityName);
 			if (fs.existsSync(candidate)) {
 				out.push(candidate);
@@ -239,61 +263,131 @@ export class SchemaHierarchyResolver {
 		return out;
 	}
 
-	private collectEntityNames(): string[] {
+	private ensureSchemaPkgIndex(): void {
+		if (this.schemaPkgIndex) {
+			return;
+		}
+		const index = new Map<string, string[]>();
+		for (const pkgDir of this.pkgPackageDirs()) {
+			const schemasRoot = path.join(pkgDir, "Schemas");
+			if (!fs.existsSync(schemasRoot)) {
+				continue;
+			}
+			let entries: fs.Dirent[];
+			try {
+				entries = fs.readdirSync(schemasRoot, { withFileTypes: true });
+			} catch {
+				continue;
+			}
+			for (const entry of entries) {
+				if (!entry.isDirectory()) {
+					continue;
+				}
+				const schemaName = entry.name;
+				const list = index.get(schemaName);
+				if (list) {
+					list.push(pkgDir);
+				} else {
+					index.set(schemaName, [pkgDir]);
+				}
+			}
+		}
+		this.schemaPkgIndex = index;
+	}
+
+	private scheduleCollectEntityNames(): void {
+		const generation = this.entityNamesGeneration;
+		this.entityNamesReady = this.collectEntityNamesAsync(generation).catch(() => {
+			/* swallow — list stays [] */
+		});
+	}
+
+	private async collectEntityNamesAsync(generation: number): Promise<void> {
 		const names = new Set<string>();
-		// conf/content/*.js
+
+		const confTasks: Array<{ filePath: string; schemaName: string }> = [];
 		for (const dir of this.confContentDirs) {
-			if (!fs.existsSync(dir)) continue;
 			let files: string[];
 			try {
-				files = fs.readdirSync(dir);
+				files = await fs.promises.readdir(dir);
 			} catch {
 				continue;
 			}
 			for (const file of files) {
-				if (!file.endsWith(".js") || file.endsWith("Resources.js")) continue;
+				if (!file.endsWith(".js") || file.endsWith("Resources.js")) {
+					continue;
+				}
 				const schemaName = file.slice(0, -".js".length);
-				if (!isEntityName(schemaName)) continue;
-				const filePath = path.join(dir, file);
+				if (!isEntityName(schemaName)) {
+					continue;
+				}
+				confTasks.push({ filePath: path.join(dir, file), schemaName });
+			}
+		}
+
+		await pMap(confTasks, async ({ filePath, schemaName }) => {
+			if (generation !== this.entityNamesGeneration) {
+				return;
+			}
+			try {
+				const head = await readFileHead(filePath, 4000);
+				if (isConfEntityHead(head)) {
+					names.add(schemaName);
+				}
+			} catch {
+				/* ignore */
+			}
+		});
+
+		if (generation !== this.entityNamesGeneration) {
+			return;
+		}
+
+		this.ensureSchemaPkgIndex();
+		const schemaNames = Array.from(this.schemaPkgIndex!.keys()).filter(
+			isEntityName
+		);
+
+		await pMap(schemaNames, async (schemaName) => {
+			if (generation !== this.entityNamesGeneration) {
+				return;
+			}
+			const pkgDirs = this.schemaPkgIndex!.get(schemaName)!;
+			for (const pkgDir of pkgDirs) {
+				const schemaDir = path.join(pkgDir, "Schemas", schemaName);
+				const meta = path.join(schemaDir, "metadata.json");
 				try {
-					const head = fs.readFileSync(filePath, "utf8").slice(0, 4000);
-					if (isConfEntityHead(head)) names.add(schemaName);
+					await fs.promises.access(meta);
+				} catch {
+					continue;
+				}
+				try {
+					await fs.promises.access(
+						path.join(schemaDir, `${schemaName}.js`)
+					);
+					continue;
+				} catch {
+					/* no .js — candidate entity */
+				}
+				const propsPath = path.join(schemaDir, "properties.json");
+				try {
+					const content = await fs.promises.readFile(propsPath, "utf8");
+					const type = parsePkgPropertiesSchemaType(content);
+					if (type) {
+						continue;
+					}
 				} catch {
 					/* ignore */
 				}
-			}
-		}
-		// Pkg/*/Schemas/*/metadata.json
-		for (const pkg of this.pkgPackageDirs()) {
-			const schemasRoot = path.join(pkg, "Schemas");
-			if (!fs.existsSync(schemasRoot)) continue;
-			let entries: string[];
-			try {
-				entries = fs.readdirSync(schemasRoot);
-			} catch {
-				continue;
-			}
-			for (const schemaName of entries) {
-				if (!isEntityName(schemaName)) continue;
-				const schemaDir = path.join(schemasRoot, schemaName);
-				const meta = path.join(schemaDir, "metadata.json");
-				if (!fs.existsSync(meta)) continue;
-				if (fs.existsSync(path.join(schemaDir, `${schemaName}.js`))) continue;
-				const propsPath = path.join(schemaDir, "properties.json");
-				if (fs.existsSync(propsPath)) {
-					try {
-						const type = parsePkgPropertiesSchemaType(
-							fs.readFileSync(propsPath, "utf8"),
-						);
-						if (type) continue;
-					} catch {
-						/* ignore */
-					}
-				}
 				names.add(schemaName);
+				return;
 			}
+		});
+
+		if (generation !== this.entityNamesGeneration) {
+			return;
 		}
-		return Array.from(names).sort((a, b) => a.localeCompare(b));
+		this.entityNames = Array.from(names).sort((a, b) => a.localeCompare(b));
 	}
 
 	/**
@@ -352,11 +446,15 @@ export class SchemaHierarchyResolver {
 	}
 
 	private readPkgSchemaType(schemaName: string): string | undefined {
-		for (const pkg of this.pkgPackageDirs()) {
-			const filePath = path.join(pkg, "Schemas", schemaName, "properties.json");
-			if (!fs.existsSync(filePath)) {
-				continue;
-			}
+		this.ensureSchemaPkgIndex();
+		const pkgDirs = this.schemaPkgIndex!.get(schemaName) ?? [];
+		for (const pkg of pkgDirs) {
+			const filePath = path.join(
+				pkg,
+				"Schemas",
+				schemaName,
+				"properties.json"
+			);
 			try {
 				const type = parsePkgPropertiesSchemaType(
 					fs.readFileSync(filePath, "utf8")
@@ -696,29 +794,18 @@ export class SchemaHierarchyResolver {
 	}
 
 	private findPkgSchemaFiles(schemaName: string): string[] {
+		this.ensureSchemaPkgIndex();
+		const pkgDirs = this.schemaPkgIndex!.get(schemaName) ?? [];
 		const out: string[] = [];
-		for (const root of this.configurationRoots) {
-			const pkgRoot = path.join(root, "Pkg");
-			if (!fs.existsSync(pkgRoot)) {
-				continue;
-			}
-			let packages: string[];
-			try {
-				packages = fs.readdirSync(pkgRoot);
-			} catch {
-				continue;
-			}
-			for (const pkg of packages) {
-				const candidate = path.join(
-					pkgRoot,
-					pkg,
-					"Schemas",
-					schemaName,
-					`${schemaName}.js`
-				);
-				if (fs.existsSync(candidate)) {
-					out.push(candidate);
-				}
+		for (const pkgDir of pkgDirs) {
+			const candidate = path.join(
+				pkgDir,
+				"Schemas",
+				schemaName,
+				`${schemaName}.js`
+			);
+			if (fs.existsSync(candidate)) {
+				out.push(candidate);
 			}
 		}
 		return out;

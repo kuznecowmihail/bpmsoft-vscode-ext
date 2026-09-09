@@ -31,7 +31,6 @@ const CODE_BY_KIND: Record<StyleIssue["kind"], string> = {
 	duplicateKey: "bpmsoft.style.duplicateKey",
 	duplicateDiff: "bpmsoft.style.duplicateDiff",
 	diffGuidName: "bpmsoft.style.diffGuidName",
-	businessRuleGuidName: "bpmsoft.style.businessRuleGuidName",
 	unusedMethod: "bpmsoft.style.unusedMethod",
 	unusedAttribute: "bpmsoft.style.unusedAttribute",
 	unusedMessage: "bpmsoft.style.unusedMessage",
@@ -159,9 +158,6 @@ function isIssueEnabled(kind: StyleIssue["kind"]): boolean {
 	}
 	if (kind === "selectAllColumnsHint") {
 		return config.get<boolean>("selectAllColumnsHint", true);
-	}
-	if (kind === "businessRuleGuidName") {
-		return config.get<boolean>("style.businessRuleGuidName", true);
 	}
 	return true;
 }

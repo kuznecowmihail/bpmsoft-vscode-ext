@@ -3,7 +3,6 @@ import {
 	collectSchemaUnusedIssues,
 	collectDiffDuplicateIssues,
 	collectDiffGuidNameIssues,
-	collectBusinessRuleGuidNameIssues,
 	InheritedSchemaNames
 } from "./schemaUsageAnalyzer";
 import { AnyNode, childNodes, parseJs } from "./jsAst";
@@ -30,7 +29,6 @@ type StyleIssueKind =
 	| "duplicateKey"
 	| "duplicateDiff"
 	| "diffGuidName"
-	| "businessRuleGuidName"
 	| "unusedMethod"
 	| "unusedAttribute"
 	| "unusedMessage"
@@ -76,8 +74,7 @@ export interface StyleIssue {
 /** Kinds that can be silenced at a specific call site via `// bpmsoft-ignore: <id>`. */
 export const SUPPRESSIBLE_RULE_IDS: Partial<Record<StyleIssueKind, string>> = {
 	selectAllColumnsHint: "select-all-columns",
-	diffGuidName: "diff-guid-name",
-	businessRuleGuidName: "business-rule-guid-name"
+	diffGuidName: "diff-guid-name"
 };
 
 /**
@@ -188,7 +185,6 @@ export function collectStyleIssues(
 	issues.push(...collectSchemaUnusedIssues(source, inherited, ast));
 	issues.push(...collectDiffDuplicateIssues(ast));
 	issues.push(...collectDiffGuidNameIssues(ast, source));
-	issues.push(...collectBusinessRuleGuidNameIssues(ast, source));
 	issues.push(...collectTrailingCommentIssues(source, comments));
 	issues.push(...collectJsDocTagIssues(comments));
 	return issues;

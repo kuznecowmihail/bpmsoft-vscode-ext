@@ -1,7 +1,6 @@
 import { collectThisMemberAccesses } from "./amdParser";
 import { AnyNode, childNodes, parseJs } from "./jsAst";
 import type { StyleFix, StyleIssue } from "./styleAnalyzer";
-import { isGuidLikeName, slugifyRuleName } from "./businessRuleDescription";
 import { isSuppressedAbove } from "./suppressComments";
 
 export interface InheritedSchemaNames {
@@ -201,108 +200,6 @@ export function collectDiffGuidNameIssues(parsed: AnyNode, source: string): Styl
 		});
 	}
 	return issues;
-}
-
-/** `rules`/`businessRules` rule-id key that's a bare GUID (Designer output,
- * never renamed) instead of a readable name — deliberately does not walk
- * `businessRulesMultiplyActions`, whose keys are legitimately always UIDs
- * by design (out of scope per the request). Autofix renames the key to a
- * name synthesized from what the rule actually does
- * (`businessRuleDescription.ts`'s `slugifyRuleName`), de-duplicated against
- * sibling rule-ids already on the same attribute. */
-export function collectBusinessRuleGuidNameIssues(parsed: AnyNode, source: string): StyleIssue[] {
-	const issues: StyleIssue[] = [];
-	walkForRuleSections(parsed, issues, source);
-	return issues;
-}
-
-function walkForRuleSections(node: AnyNode | undefined, out: StyleIssue[], source: string): void {
-	if (!node || typeof node.type !== "string") {
-		return;
-	}
-	if (node.type === "ObjectExpression") {
-		const props = (node.properties as AnyNode[]) || [];
-		const keys = new Set(props.map((p) => propertyKeyName(p)).filter(Boolean) as string[]);
-		if (isSchemaObject(keys)) {
-			for (const prop of props) {
-				const key = propertyKeyName(prop);
-				if (key === "rules" || key === "businessRules") {
-					collectRuleIdGuidIssues(prop.value as AnyNode, out, source);
-				}
-			}
-		}
-		for (const prop of props) {
-			if (prop.type === "SpreadElement") {
-				walkForRuleSections(prop.argument, out, source);
-				continue;
-			}
-			if (prop.computed) {
-				walkForRuleSections(prop.key, out, source);
-			}
-			walkForRuleSections(prop.value, out, source);
-		}
-		return;
-	}
-	for (const child of childNodes(node)) {
-		walkForRuleSections(child, out, source);
-	}
-}
-
-function collectRuleIdGuidIssues(attrsObj: AnyNode | undefined, out: StyleIssue[], source: string): void {
-	if (!attrsObj || attrsObj.type !== "ObjectExpression") {
-		return;
-	}
-	for (const attrProp of attrsObj.properties as AnyNode[]) {
-		const attrName = propertyKeyName(attrProp);
-		const ruleMapObj = attrProp.value as AnyNode;
-		if (!attrName || ruleMapObj?.type !== "ObjectExpression") {
-			continue;
-		}
-		const existingNames = new Set<string>();
-		for (const ruleProp of ruleMapObj.properties as AnyNode[]) {
-			const name = propertyKeyName(ruleProp);
-			if (name) {
-				existingNames.add(name);
-			}
-		}
-		for (const ruleProp of ruleMapObj.properties as AnyNode[]) {
-			const ruleId = propertyKeyName(ruleProp);
-			const key = ruleProp.key as AnyNode;
-			if (
-				!ruleId ||
-				!isGuidLikeName(ruleId) ||
-				isSuppressedAbove(source, key.start as number, "business-rule-guid-name")
-			) {
-				continue;
-			}
-			const newName = uniqueRuleName(slugifyRuleName(ruleProp.value as AnyNode, attrName), existingNames);
-			existingNames.add(newName);
-			out.push({
-				kind: "businessRuleGuidName",
-				start: key.start as number,
-				end: key.end as number,
-				message: `Правило «${ruleId}» для «${attrName}» имеет автосгенерированное имя (GUID) — замените на осмысленное (например, «${newName}»)`,
-				severity: "warning",
-				fix: {
-					title: `Переименовать в "${newName}"`,
-					start: key.start as number,
-					end: key.end as number,
-					text: `"${newName}"`
-				}
-			});
-		}
-	}
-}
-
-function uniqueRuleName(base: string, existing: Set<string>): string {
-	if (!existing.has(base)) {
-		return base;
-	}
-	let i = 2;
-	while (existing.has(`${base}_${i}`)) {
-		i++;
-	}
-	return `${base}_${i}`;
 }
 
 function objectStringProp(

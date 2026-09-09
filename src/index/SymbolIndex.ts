@@ -1881,6 +1881,10 @@ export class SymbolIndex {
 		return this.hierarchy.listEntityNames(prefix);
 	}
 
+	whenEntityNamesReady(): Promise<void> {
+		return this.hierarchy.whenEntityNamesReady();
+	}
+
 	resolveEntityColumns(entityName: string): IndexedMember[] {
 		return this.getEntityModule(entityName)?.members.slice() || [];
 	}

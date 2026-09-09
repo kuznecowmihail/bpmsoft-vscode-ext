@@ -6,9 +6,9 @@ import { resolveAppLayouts } from "../index/workspaceLayout";
 import { parseDescriptorInfo } from "../index/schemaStructureParse";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { NamingIssuesIndex } from "../index/NamingIssuesIndex";
-import { findResourceDirs } from "../index/schemaResourceLookup";
 import { parsePkgPath } from "../index/pkgPath";
 import { isBoxedPackage } from "../index/packageOwnershipCheck";
+import { pMap } from "../index/concurrency";
 import { TopFolderKind, topFolderIcon, schemaIcon, PACKAGE_COLOR } from "./packageIcons";
 
 const TOP_FOLDER_ORDER: TopFolderKind[] = [
@@ -45,18 +45,23 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
 	readonly onDidChangeTreeData = this.changeEmitter.event;
 
+	private categoriesCache: PackagesNode[] | undefined;
+	private readonly schemaInfoCache = new Map<string, { managerName?: string; schemaType?: string; name: string }>();
+	private pkgRootsCache: Set<string> | undefined;
+
 	constructor(
 		private readonly index: SymbolIndex,
 		private readonly namingIndex: NamingIssuesIndex
-	) {
-		namingIndex.onDidChangeFindings(() => this.changeEmitter.fire());
-	}
+	) {}
 
 	refresh(): void {
+		this.categoriesCache = undefined;
+		this.schemaInfoCache.clear();
+		this.pkgRootsCache = undefined;
 		this.changeEmitter.fire();
 	}
 
-	getChildren(node?: PackagesNode): PackagesNode[] {
+	async getChildren(node?: PackagesNode): Promise<PackagesNode[]> {
 		if (!node) {
 			return this.getCategories();
 		}
@@ -64,7 +69,7 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 			return node.packages.map((p) => ({ kind: "package", ...p }) as PackagesNode);
 		}
 		if (node.kind === "package") {
-			return [...this.getTopFolders(node.path), ...this.getPackageRootFiles(node.path)];
+			return [...(await this.getTopFolders(node.path)), ...(await this.getPackageRootFiles(node.path))];
 		}
 		if (node.kind === "folder" && node.folderKind === "Schemas") {
 			return this.getSchemaEntries(node.path);
@@ -76,7 +81,11 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 			return this.getFsEntries(node.path);
 		}
 		if (node.kind === "schema") {
-			return [...this.getShortcutGroups(node), ...this.getFsEntries(node.path)];
+			const info = this.getSchemaInfo(node.path);
+			return [
+				...(await this.getShortcutGroups({ ...node, managerName: info.managerName })),
+				...(await this.getFsEntries(node.path))
+			];
 		}
 		if (node.kind === "sqlScript") {
 			return this.getFsEntries(node.path);
@@ -100,12 +109,12 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 	 * a shortcut can point at a file also reachable the plain way (or, for
 	 * hierarchy layers, at a file outside `Pkg` entirely), so it has no
 	 * single well-defined parent chain of its own. */
-	getParent(node: PackagesNode): PackagesNode | undefined {
+	async getParent(node: PackagesNode): Promise<PackagesNode | undefined> {
 		switch (node.kind) {
 			case "category":
 				return undefined;
 			case "package":
-				return this.getCategories().find(
+				return (await this.getCategories()).find(
 					(c) =>
 						c.kind === "category" &&
 						c.packages.some((p) => path.normalize(p.path) === path.normalize(node.path))
@@ -155,11 +164,21 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 
 	/** Whether `dirPath` is itself a package folder, i.e. a direct child of
 	 * some workspace's `Pkg` root. */
-	private isPackageDirRoot(dirPath: string): boolean {
+	private ensurePkgRootsCache(): void {
+		if (this.pkgRootsCache) {
+			return;
+		}
 		const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
 		const layouts = resolveAppLayouts(folders);
-		const parent = path.dirname(dirPath);
-		return layouts.some((l) => l.pkgRoot && path.normalize(l.pkgRoot) === path.normalize(parent));
+		this.pkgRootsCache = new Set(
+			layouts.filter((l) => l.pkgRoot).map((l) => path.normalize(l.pkgRoot!))
+		);
+	}
+
+	private isPackageDirRoot(dirPath: string): boolean {
+		this.ensurePkgRootsCache();
+		const parent = path.normalize(path.dirname(dirPath));
+		return this.pkgRootsCache!.has(parent);
 	}
 
 	/** The node `reveal()` should be asked to show for a file just opened in
@@ -209,9 +228,7 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 			);
 			item.iconPath = topFolderIcon(node.folderKind);
 			item.contextValue = "bpmsoftPackageFolder";
-			if (this.namingIndex.hasIssuesUnder(node.path)) {
-				item.description = "⚠";
-			}
+			item.resourceUri = vscode.Uri.file(node.path);
 			return item;
 		}
 		if (node.kind === "schema") {
@@ -283,11 +300,12 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		managerName?: string;
 		schemaType?: string;
 	}): vscode.TreeItem {
+		const info = this.getSchemaInfo(node.path);
 		const item = new vscode.TreeItem(node.name, vscode.TreeItemCollapsibleState.Collapsed);
 		item.contextValue = "bpmsoftSchema";
 		item.resourceUri = vscode.Uri.file(node.path);
 		const findings = this.namingIndex.getForPath(path.join(node.path, "descriptor.json"));
-		item.iconPath = schemaIcon(node.managerName, node.schemaType);
+		item.iconPath = schemaIcon(info.managerName, info.schemaType);
 		if (findings.length) {
 			item.tooltip = findings.map((f) => f.message).join("\n");
 		}
@@ -310,10 +328,14 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 	 * descriptor.json, §4 of the naming doc — no editable source, just a
 	 * stock/vendor or installed-marketplace drop — see `isBoxedPackage`'s
 	 * own doc) so the two don't clutter the same flat list. */
-	private getCategories(): PackagesNode[] {
-		const all = this.getRawPackages();
-		const regular = all.filter((p) => !isBoxedPackage(p.path));
-		const boxed = all.filter((p) => isBoxedPackage(p.path));
+	private async getCategories(): Promise<PackagesNode[]> {
+		if (this.categoriesCache) {
+			return this.categoriesCache;
+		}
+		const all = await this.getRawPackages();
+		const boxedFlags = await pMap(all, (p) => isBoxedPackageAsync(p.path));
+		const regular = all.filter((_, i) => !boxedFlags[i]);
+		const boxed = all.filter((_, i) => boxedFlags[i]);
 		const out: PackagesNode[] = [];
 		if (regular.length) {
 			out.push({ kind: "category", label: REGULAR_LABEL, packages: regular });
@@ -321,10 +343,11 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		if (boxed.length) {
 			out.push({ kind: "category", label: BOXED_LABEL, packages: boxed });
 		}
+		this.categoriesCache = out;
 		return out;
 	}
 
-	private getRawPackages(): { name: string; path: string }[] {
+	private async getRawPackages(): Promise<{ name: string; path: string }[]> {
 		const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
 		const layouts = resolveAppLayouts(folders);
 		const seen = new Set<string>();
@@ -333,13 +356,17 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 			if (!layout.pkgRoot) {
 				continue;
 			}
-			for (const entry of readDirSafe(layout.pkgRoot)) {
-				if (!entry.isDirectory()) {
-					continue;
-				}
-				const fullPath = path.join(layout.pkgRoot, entry.name);
+			const entries = await readDirSafe(layout.pkgRoot);
+			const dirEntries = entries.filter((e) => e.isDirectory());
+			const isPkgFlags = await pMap(dirEntries, (entry) => {
+				const fullPath = path.join(layout.pkgRoot!, entry.name);
+				return isPackageDir(fullPath);
+			});
+			for (let i = 0; i < dirEntries.length; i++) {
+				const entry = dirEntries[i];
+				const fullPath = path.join(layout.pkgRoot!, entry.name);
 				const key = path.normalize(fullPath);
-				if (seen.has(key) || !isPackageDir(fullPath)) {
+				if (seen.has(key) || !isPkgFlags[i]) {
 					continue;
 				}
 				seen.add(key);
@@ -349,9 +376,9 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		return out.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
-	private getTopFolders(packagePath: string): PackagesNode[] {
+	private async getTopFolders(packagePath: string): Promise<PackagesNode[]> {
 		const present = new Set(
-			readDirSafe(packagePath)
+			(await readDirSafe(packagePath))
 				.filter((e) => e.isDirectory())
 				.map((e) => e.name)
 		);
@@ -361,18 +388,37 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		);
 	}
 
-	private getSchemaEntries(schemasFolderPath: string): PackagesNode[] {
-		return readDirSafe(schemasFolderPath)
+	private async getSchemaEntries(schemasFolderPath: string): Promise<PackagesNode[]> {
+		return (await readDirSafe(schemasFolderPath))
 			.filter((e) => e.isDirectory())
-			.map((e) => this.schemaNodeForDir(path.join(schemasFolderPath, e.name)))
+			.map(
+				(e) =>
+					({
+						kind: "schema",
+						name: e.name,
+						path: path.join(schemasFolderPath, e.name)
+					}) as PackagesNode
+			)
 			.sort((a, b) => byName(a).localeCompare(byName(b)));
 	}
 
 	/** Builds a `schema` node for a known `.../Schemas/{Name}` directory —
-	 * shared by `getSchemaEntries` (forward listing) and `getParent`
-	 * (reconstructing an ancestor for `reveal()`), so the two can never
-	 * disagree about what a schema node looks like. */
+	 * shared by `getParent` (reconstructing an ancestor for `reveal()`).
+	 * Icon/type info is loaded lazily in `getSchemaInfo` / `getTreeItem`. */
 	private schemaNodeForDir(schemaPath: string): PackagesNode {
+		return { kind: "schema", name: path.basename(schemaPath), path: schemaPath };
+	}
+
+	private getSchemaInfo(schemaPath: string): {
+		managerName?: string;
+		schemaType?: string;
+		name: string;
+	} {
+		const key = path.normalize(schemaPath);
+		const cached = this.schemaInfoCache.get(key);
+		if (cached) {
+			return cached;
+		}
 		const name = path.basename(schemaPath);
 		const descriptorPath = path.join(schemaPath, "descriptor.json");
 		const text = readFileSafe(descriptorPath);
@@ -383,14 +429,16 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 			managerName === "ClientUnitSchemaManager"
 				? this.index.hierarchy.resolveSchemaType(schemaName)
 				: undefined;
-		return { kind: "schema", name, path: schemaPath, managerName, schemaType };
+		const result = { managerName, schemaType, name: schemaName };
+		this.schemaInfoCache.set(key, result);
+		return result;
 	}
 
 	/** The package's own `descriptor.json` (and any other stray file sitting
 	 * directly in the package root) — `getTopFolders` only looks at
 	 * subdirectories, so these were previously invisible. */
-	private getPackageRootFiles(packagePath: string): PackagesNode[] {
-		return readDirSafe(packagePath)
+	private async getPackageRootFiles(packagePath: string): Promise<PackagesNode[]> {
+		return (await readDirSafe(packagePath))
 			.filter((e) => e.isFile())
 			.map(
 				(e) =>
@@ -404,8 +452,8 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 			.sort((a, b) => (a.kind === "fsEntry" ? a.label : "").localeCompare(b.kind === "fsEntry" ? b.label : ""));
 	}
 
-	private getSqlScriptEntries(sqlScriptsFolderPath: string): PackagesNode[] {
-		return readDirSafe(sqlScriptsFolderPath)
+	private async getSqlScriptEntries(sqlScriptsFolderPath: string): Promise<PackagesNode[]> {
+		return (await readDirSafe(sqlScriptsFolderPath))
 			.filter((e) => e.isDirectory())
 			.map(
 				(e) =>
@@ -420,13 +468,13 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 
 	/** "Ресурсы"/"Иерархия" shortcut group headers under a schema node —
 	 * only shown when there's actually something to jump to. */
-	private getShortcutGroups(node: {
+	private async getShortcutGroups(node: {
 		name: string;
 		path: string;
 		managerName?: string;
-	}): PackagesNode[] {
+	}): Promise<PackagesNode[]> {
 		const out: PackagesNode[] = [];
-		if (findResourceDirs(node.path, node.name).length) {
+		if ((await findResourceDirsAsync(node.path, node.name)).length) {
 			out.push({ kind: "shortcutGroup", label: "Ресурсы", schemaName: node.name, schemaPath: node.path });
 		}
 		if (node.managerName === "ClientUnitSchemaManager") {
@@ -444,8 +492,8 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		return out;
 	}
 
-	private getResourceShortcuts(node: { schemaName: string; schemaPath: string }): PackagesNode[] {
-		return findResourceDirs(node.schemaPath, node.schemaName).map(
+	private async getResourceShortcuts(node: { schemaName: string; schemaPath: string }): Promise<PackagesNode[]> {
+		return (await findResourceDirsAsync(node.schemaPath, node.schemaName)).map(
 			(dirPath) =>
 				({
 					kind: "fsEntry" as const,
@@ -469,8 +517,8 @@ export class PackagesTreeProvider implements vscode.TreeDataProvider<PackagesNod
 		);
 	}
 
-	private getFsEntries(dirPath: string): PackagesNode[] {
-		return readDirSafe(dirPath)
+	private async getFsEntries(dirPath: string): Promise<PackagesNode[]> {
+		return (await readDirSafe(dirPath))
 			.map(
 				(e) =>
 					({
@@ -523,11 +571,29 @@ function nodeId(node: PackagesNode): string {
 	}
 }
 
-function readDirSafe(dirPath: string): fs.Dirent[] {
+async function readDirSafe(dirPath: string): Promise<fs.Dirent[]> {
 	try {
-		return fs.readdirSync(dirPath, { withFileTypes: true });
+		return await fs.promises.readdir(dirPath, { withFileTypes: true });
 	} catch {
 		return [];
+	}
+}
+
+async function findResourceDirsAsync(schemaPath: string, schemaName: string): Promise<string[]> {
+	const packageRoot = path.dirname(path.dirname(schemaPath));
+	const resourcesRoot = path.join(packageRoot, "Resources");
+	const prefix = `${schemaName}.`;
+	return (await readDirSafe(resourcesRoot))
+		.filter((e) => e.isDirectory() && e.name.startsWith(prefix))
+		.map((e) => path.join(resourcesRoot, e.name));
+}
+
+async function isBoxedPackageAsync(packageDir: string): Promise<boolean> {
+	try {
+		await fs.promises.access(path.join(packageDir, "descriptor.json"));
+		return false;
+	} catch {
+		return true;
 	}
 }
 
@@ -536,15 +602,16 @@ function readDirSafe(dirPath: string): fs.Dirent[] {
  * of its standard content folders or its own `descriptor.json`. Filtering on
  * this keeps such directories out of the Packages tree entirely instead of
  * showing them as empty/misleading package nodes. */
-function isPackageDir(dirPath: string): boolean {
-	if (fs.existsSync(path.join(dirPath, "descriptor.json"))) {
+async function isPackageDir(dirPath: string): Promise<boolean> {
+	try {
+		await fs.promises.access(path.join(dirPath, "descriptor.json"));
 		return true;
+	} catch {
+		const dirs = new Set(
+			(await readDirSafe(dirPath))
+				.filter((e) => e.isDirectory())
+				.map((e) => e.name)
+		);
+		return TOP_FOLDER_ORDER.some((kind) => dirs.has(kind));
 	}
-	const dirs = new Set(
-		readDirSafe(dirPath)
-			.filter((e) => e.isDirectory())
-			.map((e) => e.name)
-	);
-	return TOP_FOLDER_ORDER.some((kind) => dirs.has(kind));
 }
-

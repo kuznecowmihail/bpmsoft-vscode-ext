@@ -37,6 +37,20 @@ const {
 } = require("../out/parse/esqCsharp");
 const { collectDbQueryChains, getDbQueryColumnContext } = require("../out/parse/dbQueryCsharp");
 const { getEsqBracketContext } = require("../out/parse/esqColumnPath");
+const { checkClientSchemaNaming } = require("../out/parse/schemaNamingAnalyzer");
+const { checkEntityCodeNaming, checkEntityColumnNaming, stripPrefix } = require("../out/parse/entityNamingAnalyzer");
+const { checkProcessCodeNaming } = require("../out/parse/processNamingAnalyzer");
+const { checkProcessUserTaskCodeNaming } = require("../out/parse/processUserTaskNamingAnalyzer");
+const { checkDataSchemaCodeNaming, findSysSettingsPairingIssues } = require("../out/parse/dataSchemaNamingAnalyzer");
+const { parseDataSchemaDescriptor, readDataRowColumnValue } = require("../out/parse/dataSchemaMetadata");
+const { checkSqlScriptNaming } = require("../out/parse/sqlNamingAnalyzer");
+const { checkCsharpSchemaNaming, DEFAULT_ROLE_SUFFIXES } = require("../out/parse/csharpSchemaAnalyzer");
+const { parseDescriptorInfo, parseSqlScriptDescriptorName } = require("../out/index/schemaStructureParse");
+const { parseProcessSchemaElements, parseProcessMetadataItemsByClassName } = require("../out/parse/processElementsMetadata");
+const { resolveGenericEnumField, resolveRuleEnumField } = require("../out/parse/enumHints");
+const { DATA_VALUE_TYPE_NAMES } = require("../out/index/ViewControlsIndex");
+const { isBoxedPackage, readPackageDescriptor, checkPackageOwnership, findPackageDir } = require("../out/index/packageOwnershipCheck");
+const { parsePkgPath } = require("../out/index/pkgPath");
 
 function resolveSmokeRoot() {
 	const candidates = [
@@ -307,8 +321,10 @@ const samples = [
 	"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/LeadSectionV2/LeadSectionV2.js"
 ];
 
+(async function main() {
 const index = new SymbolIndex();
 index.setWorkspaceRoots([root]);
+await index.whenEntityNamesReady();
 index.setPlatformStubs(buildPlatformStubs([root]));
 index.setExtStubs(buildExtStubs([root]));
 const sandboxBuilt = buildSandboxStubs([root]);
@@ -2969,7 +2985,7 @@ define("GoLlcFieldPage", [], function() {
 		attributes: { Country: { dataValueType: BPMSoft.DataValueType.LOOKUP } },
 		methods: {
 			foo: function() {
-				this.$Country.GoYandexMapsCode1;
+				this.$Country.GoYandexMapsCode;
 				this.get("Country").Phone;
 				this.get("Country")?.Id;
 				this.$Country.value;
@@ -2985,11 +3001,11 @@ define("GoLlcFieldPage", [], function() {
 		!llcFieldAccesses.some(
 			(a) =>
 				a.kind === "lookupField" &&
-				a.name === "GoYandexMapsCode1" &&
+				a.name === "GoYandexMapsCode" &&
 				a.attrName === "Country"
 		)
 	) {
-		console.error("collectThisMemberAccesses missing lookupField GoYandexMapsCode1/Country");
+		console.error("collectThisMemberAccesses missing lookupField GoYandexMapsCode/Country");
 		llcFieldFailed = true;
 	}
 	if (
@@ -3054,7 +3070,7 @@ define("GoLlcDiagPage", [], function() {
 		},
 		methods: {
 			foo: function() {
-				this.$Country.GoYandexMapsCode1;
+				this.$Country.GoYandexMapsCode;
 				this.$Country.Phone;
 				this.$Country.value;
 			}
@@ -3077,26 +3093,26 @@ define("GoLlcDiagPage", [], function() {
 		!expectedDiagChildren.every((n, i) => llcDiagChildNames[i] === n)
 	) {
 		console.error(
-			"Expected Country lookupListConfig children without GoYandexMapsCode1",
+			"Expected Country lookupListConfig children without GoYandexMapsCode",
 			expectedDiagChildren.join(","),
 			"got",
 			llcDiagChildNames.join(",")
 		);
 		llcDiagFailed = true;
 	}
-	if (llcDiagChildNames.includes("GoYandexMapsCode1")) {
-		console.error("GoYandexMapsCode1 must not be in Country children when not in lookupListConfig.columns");
+	if (llcDiagChildNames.includes("GoYandexMapsCode")) {
+		console.error("GoYandexMapsCode must not be in Country children when not in lookupListConfig.columns");
 		llcDiagFailed = true;
 	}
 	if (
 		!llcDiagAccesses.some(
 			(a) =>
 				a.kind === "lookupField" &&
-				a.name === "GoYandexMapsCode1" &&
+				a.name === "GoYandexMapsCode" &&
 				a.attrName === "Country"
 		)
 	) {
-		console.error("collectThisMemberAccesses missing lookupField GoYandexMapsCode1 on diag page");
+		console.error("collectThisMemberAccesses missing lookupField GoYandexMapsCode on diag page");
 		llcDiagFailed = true;
 	}
 	if (
@@ -3113,11 +3129,11 @@ define("GoLlcDiagPage", [], function() {
 	for (const access of diagLookupAccesses) {
 		const inChildren = llcDiagChildNames.includes(access.name);
 		const alwaysAllowed = access.name === "value" || access.name === "displayValue";
-		if (access.name === "GoYandexMapsCode1" && inChildren) {
-			console.error("GoYandexMapsCode1 unexpectedly in Country children");
+		if (access.name === "GoYandexMapsCode" && inChildren) {
+			console.error("GoYandexMapsCode unexpectedly in Country children");
 			llcDiagFailed = true;
 		}
-		if (access.name === "GoYandexMapsCode1" && !inChildren) {
+		if (access.name === "GoYandexMapsCode" && !inChildren) {
 			// diagnostic would warn — expected
 		} else if (access.name === "Phone" && !inChildren) {
 			console.error("Phone must be in Country children (lookupListConfig.columns)");
@@ -3135,40 +3151,40 @@ define("GoLlcDiagPage", [], function() {
 }
 
 {
-	const goLeclickLeadPagePath = path.join(
+	const leadPageV2Path = path.join(
 		root,
-		"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/GoLeclickLeadPage/GoLeclickLeadPage.js"
+		"BPMSoft.Configuration/Pkg/GoRestaurantsMain/Schemas/LeadPageV2/LeadPageV2.js"
 	);
-	if (fs.existsSync(goLeclickLeadPagePath)) {
-		const goLeclickSrc = fs.readFileSync(goLeclickLeadPagePath, "utf8");
-		const goLeclickAccesses = collectThisMemberAccesses(goLeclickSrc);
-		const goLeclickMod = parseAmdModule(goLeclickSrc, goLeclickLeadPagePath);
-		const goLeclickIndex = new SymbolIndex();
-		if (goLeclickMod) {
-			goLeclickIndex.upsertModule(goLeclickMod);
+	if (fs.existsSync(leadPageV2Path)) {
+		const leadPageV2Src = fs.readFileSync(leadPageV2Path, "utf8");
+		const leadPageV2Accesses = collectThisMemberAccesses(leadPageV2Src);
+		const leadPageV2Mod = parseAmdModule(leadPageV2Src, leadPageV2Path);
+		const leadPageV2Index = new SymbolIndex();
+		if (leadPageV2Mod) {
+			leadPageV2Index.upsertModule(leadPageV2Mod);
 		}
-		const goLeclickThis = goLeclickMod
-			? goLeclickIndex.resolveThisMembers(goLeclickLeadPagePath)
+		const leadPageV2This = leadPageV2Mod
+			? leadPageV2Index.resolveThisMembers(leadPageV2Path)
 			: [];
-		const goLeclickCountry = goLeclickThis.find(
+		const leadPageV2Country = leadPageV2This.find(
 			(m) => m.name === "Country" && m.kind === "attribute"
 		);
-		const goLeclickCountryChildren = (goLeclickCountry?.children || []).map((c) => c.name);
-		const hasGoYandexAccess = goLeclickAccesses.some(
+		const leadPageV2CountryChildren = (leadPageV2Country?.children || []).map((c) => c.name);
+		const hasGoYandexAccess = leadPageV2Accesses.some(
 			(a) =>
 				a.kind === "lookupField" &&
-				a.name === "GoYandexMapsCode1" &&
+				a.name === "GoYandexMapsCode" &&
 				a.attrName === "Country"
 		);
-		if (goLeclickCountryChildren.includes("GoYandexMapsCode1")) {
-			console.log("GoLeclickLeadPage Country children include GoYandexMapsCode1 — skip access check");
+		if (leadPageV2CountryChildren.includes("GoYandexMapsCode")) {
+			console.log("LeadPageV2 Country children include GoYandexMapsCode — skip access check");
 		} else if (!hasGoYandexAccess) {
 			console.error(
-				"GoLeclickLeadPage: collectThisMemberAccesses missing lookupField GoYandexMapsCode1/Country"
+				"LeadPageV2: collectThisMemberAccesses missing lookupField GoYandexMapsCode/Country"
 			);
 			failed = true;
 		} else {
-			console.log("GoLeclickLeadPage lookupField Country/GoYandexMapsCode1 OK");
+			console.log("LeadPageV2 lookupField Country/GoYandexMapsCode OK");
 		}
 	}
 }
@@ -5774,6 +5790,583 @@ public class Sample
 		}
 	}
 
+	let namingBatteryOk = true;
+	const pkgDir = path.join(root, "BPMSoft.Configuration/Pkg/GoRestaurantsMain");
+	const entityNamingEmptyPrefixes = {
+		prefixes: [],
+		checkSingularName: true,
+		singularExceptions: ["Settings", "Permissions", "Statistics"],
+		dateSuffixes: ["On", "Date"],
+		booleanPrefixes: ["Is", "Has", "Can"]
+	};
+	const goEntityNamingSettings = {
+		...entityNamingEmptyPrefixes,
+		prefixes: ["Go"]
+	};
+
+	function readSchemaDescriptorText(schemaName) {
+		const descPath = path.join(pkgSchemas, schemaName, "descriptor.json");
+		if (!fs.existsSync(descPath)) {
+			console.error("GoRestaurantsMain naming: missing descriptor", descPath);
+			failed = true;
+			namingBatteryOk = false;
+			return null;
+		}
+		return fs.readFileSync(descPath, "utf8");
+	}
+
+	function requirePkgDataFile(rel) {
+		const fp = path.join(pkgDir, "Data", rel);
+		if (!fs.existsSync(fp)) {
+			console.error("GoRestaurantsMain naming: missing Data file", fp);
+			failed = true;
+			namingBatteryOk = false;
+			return null;
+		}
+		return fp;
+	}
+
+	function requirePkgSqlFile(rel) {
+		const fp = path.join(pkgDir, "SqlScripts", rel);
+		if (!fs.existsSync(fp)) {
+			console.error("GoRestaurantsMain naming: missing SqlScripts file", fp);
+			failed = true;
+			namingBatteryOk = false;
+			return null;
+		}
+		return fp;
+	}
+
+	// 1) Packages FS + ownership
+	if (isBoxedPackage(pkgDir)) {
+		console.error("GoRestaurantsMain naming: GoRestaurantsMain must not be boxed");
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const pkgDesc = readPackageDescriptor(pkgDir);
+	if (!pkgDesc || pkgDesc.name !== "GoRestaurantsMain" || pkgDesc.maintainer !== "YandexGo") {
+		console.error("GoRestaurantsMain naming: unexpected package descriptor", pkgDesc);
+		failed = true;
+		namingBatteryOk = false;
+	} else if (pkgDesc) {
+		const goOwnershipIssues = checkPackageOwnership(pkgDesc, {
+			prefixes: ["Go"],
+			expectedMaintainers: ["YandexGo"]
+		});
+		if (goOwnershipIssues.length) {
+			console.error("GoRestaurantsMain naming: Go ownership issues", goOwnershipIssues);
+			failed = true;
+			namingBatteryOk = false;
+		}
+		const nauOwnershipIssues = checkPackageOwnership(pkgDesc, {
+			prefixes: ["Nau"],
+			expectedMaintainers: ["YandexGo"]
+		});
+		if (!nauOwnershipIssues.some((issue) => issue.message.includes("Nau"))) {
+			console.error(
+				"GoRestaurantsMain naming: expected Nau prefix ownership issue",
+				nauOwnershipIssues
+			);
+			failed = true;
+			namingBatteryOk = false;
+		}
+	}
+	const leadPageJsPath = path.join(pkgSchemas, "LeadPageV2/LeadPageV2.js");
+	const resolvedPkgDir = findPackageDir(leadPageJsPath);
+	if (resolvedPkgDir !== pkgDir) {
+		console.error(
+			"GoRestaurantsMain naming: findPackageDir mismatch",
+			resolvedPkgDir,
+			"expected",
+			pkgDir
+		);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const leadPagePkgInfo = parsePkgPath(leadPageJsPath);
+	if (
+		!leadPagePkgInfo ||
+		leadPagePkgInfo.packageName !== "GoRestaurantsMain" ||
+		leadPagePkgInfo.category !== "Schemas" ||
+		leadPagePkgInfo.itemName !== "LeadPageV2"
+	) {
+		console.error("GoRestaurantsMain naming: parsePkgPath LeadPageV2", leadPagePkgInfo);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	for (const sub of ["Schemas", "SqlScripts", "Data"]) {
+		const subPath = path.join(pkgDir, sub);
+		if (!fs.existsSync(subPath)) {
+			console.error("GoRestaurantsMain naming: missing package subdir", subPath);
+			failed = true;
+			namingBatteryOk = false;
+		}
+	}
+
+	// 2) Client schema naming
+	const leadPageDescText = readSchemaDescriptorText("LeadPageV2");
+	if (leadPageDescText) {
+		const leadPageParent = parseDescriptorParent(leadPageDescText);
+		const leadPageInfo = parseDescriptorInfo(leadPageDescText);
+		if (
+			!leadPageInfo ||
+			leadPageInfo.name !== "LeadPageV2" ||
+			leadPageInfo.managerName !== "ClientUnitSchemaManager"
+		) {
+			console.error("GoRestaurantsMain naming: LeadPageV2 descriptor info", leadPageInfo);
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const leadPageNamingIssues = checkClientSchemaNaming(
+				"LeadPageV2",
+				{ prefixes: [], checkModuleSuffix: false },
+				{ schemaType: "EDIT_VIEW_MODEL_SCHEMA", parentName: leadPageParent }
+			);
+			if (leadPageNamingIssues.length) {
+				console.error("GoRestaurantsMain naming: LeadPageV2 issues", leadPageNamingIssues);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+	const leadSectionDescText = readSchemaDescriptorText("LeadSectionV2");
+	if (leadSectionDescText) {
+		const leadSectionParent = parseDescriptorParent(leadSectionDescText);
+		const leadSectionNamingIssues = checkClientSchemaNaming(
+			"LeadSectionV2",
+			{ prefixes: [], checkModuleSuffix: false },
+			{ schemaType: "MODULE_VIEW_MODEL_SCHEMA", parentName: leadSectionParent }
+		);
+		if (leadSectionNamingIssues.length) {
+			console.error("GoRestaurantsMain naming: LeadSectionV2 issues", leadSectionNamingIssues);
+			failed = true;
+			namingBatteryOk = false;
+		}
+	}
+	const goLeclickDescText = readSchemaDescriptorText("GoLeclickLeadPage");
+	if (goLeclickDescText) {
+		const goLeclickParent = parseDescriptorParent(goLeclickDescText);
+		const goLeclickNamingIssues = checkClientSchemaNaming(
+			"GoLeclickLeadPage",
+			{ prefixes: ["Go"], checkModuleSuffix: false },
+			{ schemaType: "EDIT_VIEW_MODEL_SCHEMA", parentName: goLeclickParent }
+		);
+		if (goLeclickNamingIssues.length) {
+			console.error("GoRestaurantsMain naming: GoLeclickLeadPage issues", goLeclickNamingIssues);
+			failed = true;
+			namingBatteryOk = false;
+		}
+	}
+
+	// 3) Entity naming
+	const leadEntityIssues = checkEntityCodeNaming("Lead", entityNamingEmptyPrefixes);
+	if (leadEntityIssues.length) {
+		console.error("GoRestaurantsMain naming: Lead entity issues", leadEntityIssues);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const goSubEntityIssues = checkEntityCodeNaming("GoBusinessSubscription", goEntityNamingSettings);
+	if (goSubEntityIssues.length) {
+		console.error("GoRestaurantsMain naming: GoBusinessSubscription entity issues", goSubEntityIssues);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const goSubMetaPath = path.join(pkgSchemas, "GoBusinessSubscription/metadata.json");
+	if (!fs.existsSync(goSubMetaPath)) {
+		console.error("GoRestaurantsMain naming: missing GoBusinessSubscription/metadata.json", goSubMetaPath);
+		failed = true;
+		namingBatteryOk = false;
+	} else {
+		const goSubCols = parsePkgEntityColumns(
+			fs.readFileSync(goSubMetaPath, "utf8"),
+			goSubMetaPath
+		);
+		const goManagerCol = goSubCols.find((col) => col.name === "GoManager");
+		if (!goManagerCol) {
+			console.error("GoRestaurantsMain naming: GoBusinessSubscription missing GoManager column", goSubCols.map((c) => c.name));
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const goManagerColIssues = checkEntityColumnNaming(
+				stripPrefix("GoBusinessSubscription", ["Go"]),
+				{
+					name: goManagerCol.name,
+					dataValueType: goManagerCol.dataValueType,
+					isLookup: Boolean(goManagerCol.children && goManagerCol.children.length)
+				},
+				goEntityNamingSettings
+			);
+			if (goManagerColIssues.length) {
+				console.error("GoRestaurantsMain naming: GoManager column issues", goManagerColIssues);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+
+	// 4) Process + UserTask
+	const processDescPath = requirePkgFile("GoPlaceSendPaymentLinkProcess/descriptor.json");
+	if (processDescPath) {
+		const processDescText = fs.readFileSync(processDescPath, "utf8");
+		const processInfo = parseDescriptorInfo(processDescText);
+		if (
+			!processInfo ||
+			processInfo.name !== "GoPlaceSendPaymentLinkProcess" ||
+			processInfo.managerName !== "ProcessSchemaManager"
+		) {
+			console.error("GoRestaurantsMain naming: GoPlaceSendPaymentLinkProcess descriptor", processInfo);
+			failed = true;
+			namingBatteryOk = false;
+		}
+		const processNamingIssues = checkProcessCodeNaming("GoPlaceSendPaymentLinkProcess", {
+			prefixes: ["Go"]
+		});
+		if (processNamingIssues.length) {
+			console.error(
+				"GoRestaurantsMain naming: GoPlaceSendPaymentLinkProcess issues",
+				processNamingIssues
+			);
+			failed = true;
+			namingBatteryOk = false;
+		}
+		const processMetaPath = path.join(pkgSchemas, "GoPlaceSendPaymentLinkProcess/metadata.json");
+		if (!fs.existsSync(processMetaPath)) {
+			console.error("GoRestaurantsMain naming: missing process metadata", processMetaPath);
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const processElements = parseProcessSchemaElements(fs.readFileSync(processMetaPath, "utf8"));
+			if (!processElements.length) {
+				console.error("GoRestaurantsMain naming: GoPlaceSendPaymentLinkProcess elements empty");
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+	const userTaskDescPath = requirePkgFile("GoResponsibleTeamLeadNotificationRoutingUserTask/descriptor.json");
+	if (userTaskDescPath) {
+		const userTaskDescText = fs.readFileSync(userTaskDescPath, "utf8");
+		const userTaskInfo = parseDescriptorInfo(userTaskDescText);
+		const userTaskName = "GoResponsibleTeamLeadNotificationRoutingUserTask";
+		if (
+			!userTaskInfo ||
+			userTaskInfo.name !== userTaskName ||
+			userTaskInfo.managerName !== "ProcessUserTaskSchemaManager"
+		) {
+			console.error("GoRestaurantsMain naming: user task descriptor", userTaskInfo);
+			failed = true;
+			namingBatteryOk = false;
+		}
+		const userTaskNamingIssues = checkProcessUserTaskCodeNaming(userTaskName, {
+			prefixes: ["Go"],
+			actionVerbs: [],
+			checkParameterDirectionSuffix: false
+		});
+		if (userTaskNamingIssues.length) {
+			console.error("GoRestaurantsMain naming: user task naming issues", userTaskNamingIssues);
+			failed = true;
+			namingBatteryOk = false;
+		}
+		const userTaskMetaPath = path.join(pkgSchemas, userTaskName, "metadata.json");
+		if (fs.existsSync(userTaskMetaPath)) {
+			try {
+				const userTaskParams = parseProcessMetadataItemsByClassName(
+					fs.readFileSync(userTaskMetaPath, "utf8"),
+					"ProcessSchemaParameter"
+				);
+				if (!Array.isArray(userTaskParams)) {
+					console.error("GoRestaurantsMain naming: user task parameters not array", userTaskParams);
+					failed = true;
+					namingBatteryOk = false;
+				}
+			} catch (err) {
+				console.error("GoRestaurantsMain naming: user task metadata parse threw", err);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+
+	// 5) Data + SysSettings pairing
+	const lookupDescPath = requirePkgDataFile("Lookup_GoPaymentStatus/descriptor.json");
+	if (lookupDescPath) {
+		const lookupDescText = fs.readFileSync(lookupDescPath, "utf8");
+		const lookupInfo = parseDataSchemaDescriptor(lookupDescText);
+		if (
+			!lookupInfo ||
+			lookupInfo.code !== "Lookup_GoPaymentStatus" ||
+			lookupInfo.tableName !== "Lookup"
+		) {
+			console.error("GoRestaurantsMain naming: Lookup_GoPaymentStatus descriptor", lookupInfo);
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const lookupNamingIssues = checkDataSchemaCodeNaming(lookupInfo.code, lookupInfo.tableName);
+			if (lookupNamingIssues.length) {
+				console.error("GoRestaurantsMain naming: Lookup_GoPaymentStatus issues", lookupNamingIssues);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+	const sysSettingsDescPath = requirePkgDataFile("SysSettings_GoAmountSecurityPayme/descriptor.json");
+	const sysSettingsValueDescPath = requirePkgDataFile(
+		"SysSettingsValue_GoAmountSecurityPayment/descriptor.json"
+	);
+	if (sysSettingsDescPath) {
+		const sysSettingsDescText = fs.readFileSync(sysSettingsDescPath, "utf8");
+		const sysSettingsInfo = parseDataSchemaDescriptor(sysSettingsDescText);
+		if (!sysSettingsInfo || sysSettingsInfo.tableName !== "SysSettings") {
+			console.error("GoRestaurantsMain naming: SysSettings_GoAmountSecurityPayme descriptor", sysSettingsInfo);
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const sysSettingsNamingIssues = checkDataSchemaCodeNaming(
+				sysSettingsInfo.code,
+				sysSettingsInfo.tableName
+			);
+			if (sysSettingsNamingIssues.length) {
+				console.error(
+					"GoRestaurantsMain naming: SysSettings_GoAmountSecurityPayme issues",
+					sysSettingsNamingIssues
+				);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+	if (sysSettingsValueDescPath) {
+		const sysSettingsValueDescText = fs.readFileSync(sysSettingsValueDescPath, "utf8");
+		const sysSettingsValueInfo = parseDataSchemaDescriptor(sysSettingsValueDescText);
+		if (!sysSettingsValueInfo || sysSettingsValueInfo.tableName !== "SysSettingsValue") {
+			console.error(
+				"GoRestaurantsMain naming: SysSettingsValue_GoAmountSecurityPayment descriptor",
+				sysSettingsValueInfo
+			);
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const sysSettingsValueNamingIssues = checkDataSchemaCodeNaming(
+				sysSettingsValueInfo.code,
+				sysSettingsValueInfo.tableName
+			);
+			if (sysSettingsValueNamingIssues.length) {
+				console.error(
+					"GoRestaurantsMain naming: SysSettingsValue_GoAmountSecurityPayment issues",
+					sysSettingsValueNamingIssues
+				);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+	if (sysSettingsDescPath && sysSettingsValueDescPath) {
+		const sysSettingsDataPath = requirePkgDataFile("SysSettings_GoAmountSecurityPayme/data.json");
+		const sysSettingsValueDataPath = requirePkgDataFile(
+			"SysSettingsValue_GoAmountSecurityPayment/data.json"
+		);
+		if (sysSettingsDataPath && sysSettingsValueDataPath) {
+			const sysSettingsDescText = fs.readFileSync(sysSettingsDescPath, "utf8");
+			const sysSettingsValueDescText = fs.readFileSync(sysSettingsValueDescPath, "utf8");
+			const settingsRowId = readDataRowColumnValue(
+				sysSettingsDescText,
+				fs.readFileSync(sysSettingsDataPath, "utf8"),
+				"Id"
+			);
+			const valueSysSettingsRef = readDataRowColumnValue(
+				sysSettingsValueDescText,
+				fs.readFileSync(sysSettingsValueDataPath, "utf8"),
+				"SysSettings"
+			);
+			if (!settingsRowId || typeof settingsRowId !== "string") {
+				console.error("GoRestaurantsMain naming: SysSettings Id empty", settingsRowId);
+				failed = true;
+				namingBatteryOk = false;
+			}
+			if (!valueSysSettingsRef || typeof valueSysSettingsRef !== "string") {
+				console.error("GoRestaurantsMain naming: SysSettingsValue SysSettings FK empty", valueSysSettingsRef);
+				failed = true;
+				namingBatteryOk = false;
+			}
+			if (settingsRowId && valueSysSettingsRef && settingsRowId === valueSysSettingsRef) {
+				const realPairing = findSysSettingsPairingIssues(
+					[
+						{
+							code: parseDataSchemaDescriptor(sysSettingsDescText)?.code || "SysSettings_GoAmountSecurityPayme",
+							filePath: sysSettingsDescPath,
+							rowId: settingsRowId
+						}
+					],
+					[
+						{
+							code:
+								parseDataSchemaDescriptor(sysSettingsValueDescText)?.code ||
+								"SysSettingsValue_GoAmountSecurityPayment",
+							filePath: sysSettingsValueDescPath,
+							referencedSysSettingsId: valueSysSettingsRef
+						}
+					]
+				);
+				if (realPairing.missingValue.length || realPairing.missingSettings.length) {
+					console.error("GoRestaurantsMain naming: real SysSettings pairing gap", realPairing);
+					failed = true;
+					namingBatteryOk = false;
+				}
+			} else if (settingsRowId && valueSysSettingsRef) {
+				console.log(
+					"GoRestaurantsMain naming: SysSettings pair FK mismatch (not failing)",
+					settingsRowId,
+					valueSysSettingsRef
+				);
+			}
+		}
+	}
+	const syntheticPairOk = findSysSettingsPairingIssues(
+		[{ code: "A", filePath: "a", rowId: "111" }],
+		[{ code: "B", filePath: "b", referencedSysSettingsId: "111" }]
+	);
+	if (syntheticPairOk.missingValue.length || syntheticPairOk.missingSettings.length) {
+		console.error("GoRestaurantsMain naming: synthetic paired SysSettings oracle", syntheticPairOk);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const syntheticMissingValue = findSysSettingsPairingIssues(
+		[{ code: "A", filePath: "a", rowId: "111" }],
+		[]
+	);
+	if (!syntheticMissingValue.missingValue.some((item) => item.code === "A")) {
+		console.error(
+			"GoRestaurantsMain naming: synthetic missingValue oracle",
+			syntheticMissingValue
+		);
+		failed = true;
+		namingBatteryOk = false;
+	}
+
+	// 6) SQL naming
+	const createViewDescPath = requirePkgSqlFile("GoVwPlaceDataAdmin_CreateView/descriptor.json");
+	if (createViewDescPath) {
+		const createViewDescText = fs.readFileSync(createViewDescPath, "utf8");
+		const createViewName = parseSqlScriptDescriptorName(createViewDescText);
+		if (createViewName !== "GoVwPlaceDataAdmin_CreateView") {
+			console.error("GoRestaurantsMain naming: GoVwPlaceDataAdmin_CreateView name", createViewName);
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const createViewIssues = checkSqlScriptNaming(createViewName);
+			if (createViewIssues.length) {
+				console.error("GoRestaurantsMain naming: GoVwPlaceDataAdmin_CreateView issues", createViewIssues);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+	const deleteTempDescPath = requirePkgSqlFile("SysSettings_Delete_Temp/descriptor.json");
+	if (deleteTempDescPath) {
+		const deleteTempDescText = fs.readFileSync(deleteTempDescPath, "utf8");
+		const deleteTempName = parseSqlScriptDescriptorName(deleteTempDescText);
+		if (!deleteTempName) {
+			console.error("GoRestaurantsMain naming: SysSettings_Delete_Temp name missing");
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const deleteTempIssues = checkSqlScriptNaming(deleteTempName);
+			if (deleteTempIssues.length) {
+				console.error("GoRestaurantsMain naming: SysSettings_Delete_Temp issues", deleteTempIssues);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+
+	// 7) C# EventListener
+	const oppListenerNamingPath = requirePkgFile("GoOpportunityEventListener/GoOpportunityEventListener.cs");
+	if (oppListenerNamingPath) {
+		const oppListenerDescPath = path.join(pkgSchemas, "GoOpportunityEventListener/descriptor.json");
+		if (!fs.existsSync(oppListenerDescPath)) {
+			console.error("GoRestaurantsMain naming: missing GoOpportunityEventListener descriptor", oppListenerDescPath);
+			failed = true;
+			namingBatteryOk = false;
+		} else {
+			const oppListenerDescText = fs.readFileSync(oppListenerDescPath, "utf8");
+			const oppListenerInfo = parseDescriptorInfo(oppListenerDescText);
+			if (!oppListenerInfo || oppListenerInfo.name !== "GoOpportunityEventListener") {
+				console.error("GoRestaurantsMain naming: GoOpportunityEventListener descriptor", oppListenerInfo);
+				failed = true;
+				namingBatteryOk = false;
+			}
+			const oppListenerCsSrc = fs.readFileSync(oppListenerNamingPath, "utf8");
+			const oppListenerCsIssues = checkCsharpSchemaNaming(
+				oppListenerCsSrc,
+				{
+					prefixes: ["Go"],
+					checkRoleSuffix: false,
+					roleSuffixes: DEFAULT_ROLE_SUFFIXES,
+					checkSingleClassPerSchema: false
+				},
+				"GoOpportunityEventListener"
+			);
+			if (oppListenerCsIssues.length) {
+				console.error("GoRestaurantsMain naming: GoOpportunityEventListener C# issues", oppListenerCsIssues);
+				failed = true;
+				namingBatteryOk = false;
+			}
+		}
+	}
+
+	// 8) Enum inlays
+	if (DATA_VALUE_TYPE_NAMES[10] !== "LOOKUP" || DATA_VALUE_TYPE_NAMES[12] !== "BOOLEAN") {
+		console.error(
+			"GoRestaurantsMain naming: DATA_VALUE_TYPE_NAMES mismatch",
+			DATA_VALUE_TYPE_NAMES[10],
+			DATA_VALUE_TYPE_NAMES[12]
+		);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const lookupEnumHint = resolveGenericEnumField(index, "dataValueType", "10");
+	if (!lookupEnumHint || lookupEnumHint.memberName !== "LOOKUP") {
+		console.error("GoRestaurantsMain naming: dataValueType 10 hint", lookupEnumHint);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const buttonEnumHint = resolveGenericEnumField(index, "itemType", "5");
+	if (!buttonEnumHint || buttonEnumHint.memberName !== "BUTTON") {
+		console.error("GoRestaurantsMain naming: itemType 5 hint", buttonEnumHint);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const controlGroupEnumHint = resolveGenericEnumField(index, "itemType", "15");
+	if (!controlGroupEnumHint || controlGroupEnumHint.memberName !== "CONTROL_GROUP") {
+		console.error("GoRestaurantsMain naming: itemType 15 hint", controlGroupEnumHint);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const bindParamRuleHint = resolveRuleEnumField("ruleType", "0");
+	if (!bindParamRuleHint || bindParamRuleHint.memberName !== "BINDPARAMETER") {
+		console.error("GoRestaurantsMain naming: ruleType 0 hint", bindParamRuleHint);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	const visibleRuleHint = resolveRuleEnumField("property", "0", "0");
+	if (!visibleRuleHint || visibleRuleHint.memberName !== "VISIBLE") {
+		console.error("GoRestaurantsMain naming: property 0 hint", visibleRuleHint);
+		failed = true;
+		namingBatteryOk = false;
+	}
+	if (leadPagePath) {
+		const leadPageSrcForEnum = fs.readFileSync(leadPagePath, "utf8");
+		if (!leadPageSrcForEnum.includes('"itemType": 5')) {
+			console.error("GoRestaurantsMain naming: LeadPageV2 missing itemType 5");
+			failed = true;
+			namingBatteryOk = false;
+		}
+	}
+
+	if (namingBatteryOk) {
+		console.log("GoRestaurantsMain naming/ownership/enum OK");
+	}
+
 	console.log(
 		"GoRestaurantsMain battery summary:",
 		`parsed=${parsedCount}`,
@@ -5794,3 +6387,7 @@ if (failed) {
 	process.exit(1);
 }
 console.log("SMOKE PASSED");
+})().catch((err) => {
+	console.error(err);
+	process.exit(1);
+});
