@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, schemaMessageDirectionLabel } from "../parse/types";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix, isObjectKeyDeclaration } from "../parse/amdParser";
 import { getQueryColumnContext, getRootSchemaNameContext, resolveQueryClassNames, resolveQueryEntities } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
 import {
@@ -28,17 +28,22 @@ export class HoverProvider implements vscode.HoverProvider {
 	 * walked to the nearest real description) and styled as their own
 	 * paragraphs, rather than dumped as raw JSDoc tag lines - see the
 	 * conversation that prompted this for why the default TS/JS hover can't
-	 * be fixed the same way (it's not ours to restyle). */
+	 * be fixed the same way (it's not ours to restyle). `base`, when given,
+	 * is the real chain-parent implementation `declarationHover` already
+	 * found via `findOverriddenMember` - folded into `resolved` here so
+	 * `formatResolvedJsDoc` renders it alongside everything else. */
 	private memberHover(
 		title: string,
 		m: Pick<IndexedMember, "detail" | "documentation">,
-		extra: string[] = []
+		extra: string[] = [],
+		base?: { owner: string; description?: string }
 	): vscode.Hover {
 		const resolved = this.index.resolveJsDoc(m.documentation);
+		const withBase = base && resolved ? { ...resolved, base } : resolved;
 		return markdownHover([
 			title,
 			...(m.detail ? [m.detail] : []),
-			...(resolved ? ["", ...formatResolvedJsDoc(resolved)] : []),
+			...(withBase ? ["", ...formatResolvedJsDoc(withBase)] : []),
 			...extra
 		]);
 	}
@@ -51,33 +56,31 @@ export class HoverProvider implements vscode.HoverProvider {
 	 * `@inheritdoc`/`@overriden`; ours stacks alongside it with the
 	 * resolved, styled version (there's no API to suppress the built-in
 	 * one). Only fires on a genuine object-literal key: next non-space char
-	 * is `:`, and the nearest non-space char before the identifier is `{`
-	 * or `,` (same check `objectKeyPrefix` in amdOverride.ts uses for the
-	 * override-snippet completion) - guards against a ternary's `a : b` or
-	 * a label statement matching by accident. Matched against the member's
-	 * own recorded declaration position (not just name) so an unrelated key
-	 * elsewhere in the file that happens to share a method's name doesn't
-	 * borrow its docs. */
+	 * is `:`, and the nearest non-space/non-JSDoc-comment character before
+	 * the identifier is `{` or `,` (same check `objectKeyPrefix` in
+	 * amdOverride.ts uses for the override-snippet completion, extended to
+	 * look past the comment every documented member actually has) - guards
+	 * against a ternary's `a : b` or a label statement matching by
+	 * accident. Matched against the member's own recorded declaration
+	 * position (not just name) so an unrelated key elsewhere in the file
+	 * that happens to share a method's name doesn't borrow its docs.
+	 *
+	 * Real schemas overwhelmingly write a bare `@override`/`@overriden`
+	 * with their *own* description, not an explicit `@inheritdoc
+	 * Owner#member` pointer - so on top of `resolveJsDoc`'s text-based
+	 * chain, this also walks the schema's actual mixin/inheritance chain
+	 * (`findOverriddenMember`) to find what `@override` really overrides,
+	 * and shows its description too. */
 	private declarationHover(
 		document: vscode.TextDocument,
 		text: string,
 		ident: { name: string; start: number; end: number }
 	): vscode.Hover | undefined {
-		let after = ident.end;
-		while (after < text.length && /[ \t]/.test(text[after])) {
-			after++;
-		}
-		if (text[after] !== ":") {
+		if (!isObjectKeyDeclaration(text, ident)) {
 			return undefined;
 		}
-		let before = ident.start - 1;
-		while (before >= 0 && /\s/.test(text[before])) {
-			before--;
-		}
-		if (text[before] !== "{" && text[before] !== ",") {
-			return undefined;
-		}
-		const mod = this.index.ensureModule(document.uri.fsPath);
+		const filePath = document.uri.fsPath;
+		const mod = this.index.ensureModule(filePath);
 		if (!mod) {
 			return undefined;
 		}
@@ -92,7 +95,21 @@ export class HoverProvider implements vscode.HoverProvider {
 		if (!member) {
 			return undefined;
 		}
-		return this.memberHover(`**${member.name}** *(${member.kind})*`, member);
+		// The real chain-walk (`findOverriddenMember`) only runs when the
+		// local comment actually claims to override something - most
+		// members aren't overrides, and walking the full owner/mixin chain
+		// on every declaration hover would be wasted work for them.
+		const localDoc = this.index.resolveJsDoc(member.documentation);
+		const overridden = localDoc?.overridden
+			? this.index.findOverriddenMember(filePath, member.name)
+			: undefined;
+		const base = overridden
+			? {
+					owner: `${overridden.owner}#${member.name}`,
+					description: this.index.resolveJsDoc(overridden.member.documentation)?.description
+				}
+			: undefined;
+		return this.memberHover(`**${member.name}** *(${member.kind})*`, member, [], base);
 	}
 
 	provideHover(

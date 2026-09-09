@@ -33,7 +33,11 @@ export function parseJsDocComment(raw: string | undefined): ParsedJsDoc {
 	const descLines: string[] = [];
 	const tags: ParsedJsDocTag[] = [];
 	let current: ParsedJsDocTag | undefined;
-	for (const line of raw.split("\n")) {
+	// Real schemas are commonly CRLF (confirmed against a real file) - a
+	// bare split("\n") would leave a stray "\r" at the end of every line
+	// but the last, invisible in a single-line description but embedded
+	// mid-paragraph for a multi-line one.
+	for (const line of raw.split(/\r\n|\r|\n/)) {
 		const m = /^\s*@(\S+)\s*(.*)$/.exec(line);
 		if (m) {
 			current = { tag: m[1], text: m[2].trim() };
@@ -102,6 +106,19 @@ export interface ResolvedJsDoc {
 	truncated?: boolean;
 	/** Remaining tags (`@param`, `@deprecated`, team-specific ones, ...). */
 	extraTags: ParsedJsDocTag[];
+	/** The real base implementation this member shadows, found by walking
+	 * the schema's actual mixin/inheritance chain (`SymbolIndex.
+	 * findOverriddenMember`) rather than parsing an explicit `@inheritdoc
+	 * Owner#member` pointer out of the text - real schemas overwhelmingly
+	 * write a bare `@override`/`@overriden` with their *own* description,
+	 * not a pointer, so this is what actually answers "what does @override
+	 * override" in practice. Populated by the caller (`HoverProvider`,
+	 * which has the file/member context this module doesn't), not by
+	 * `SymbolIndex.resolveJsDoc` itself. */
+	base?: {
+		owner: string;
+		description?: string;
+	};
 }
 
 /** Markdown paragraphs - one array entry per paragraph, join with a blank
@@ -128,7 +145,12 @@ export function formatResolvedJsDoc(resolved: ResolvedJsDoc | undefined): string
 			lines.push(`*@inheritdoc:* ${chainPath} *(без описания)*`);
 		}
 	}
-	if (resolved.overridden) {
+	if (resolved.base) {
+		lines.push(`**Переопределяет** \`${resolved.base.owner}\``);
+		if (resolved.base.description) {
+			lines.push(resolved.base.description);
+		}
+	} else if (resolved.overridden) {
 		lines.push(
 			resolved.chain.length
 				? `**Переопределяет** \`${resolved.chain[0]}\``

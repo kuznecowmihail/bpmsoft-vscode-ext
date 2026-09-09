@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const fs = require("fs");
 const path = require("path");
-const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert, getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, collectEsqColumnAccesses, getConstructorConfigContext } = require("../out/parse/amdParser");
+const { parseAmdModule, parseAmdAst, parseEntityColumns, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getCallParentContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, collectThisMemberAccesses, planCreateMemberInsert, getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, collectEsqColumnAccesses, getConstructorConfigContext, isObjectKeyDeclaration, getIdentifierAt } = require("../out/parse/amdParser");
 const { parsePkgEntityColumns, parseEntityResourceCaptions } = require("../out/parse/entityMetadata");
 const { collectStyleIssues } = require("../out/parse/styleAnalyzer");
 const { collectCsharpStyleIssues } = require("../out/parse/csharpStyleAnalyzer");
@@ -2542,6 +2542,96 @@ if (!docBase || !docMid || !docChild) {
 		failed = true;
 	} else {
 		console.log("@inheritdoc unresolved target reported OK");
+	}
+}
+
+{
+	// Regression for the real ContactMiniPage.js case: a JSDoc comment sits
+	// between the previous property's trailing "," and the key being
+	// checked - isObjectKeyDeclaration must look past it, not bail out on
+	// the comment's own "*/" as if it were unrelated code.
+	const src = `
+	return {
+		methods: {
+			foo: function() {},
+
+			/**
+			 * Задает настройки полей с персональными данными.
+			 * @override
+			 */
+			getPersonalFieldsConfig: function() {}
+		}
+	};
+	`;
+	const ident = getIdentifierAt(src, src.indexOf("getPersonalFieldsConfig") + 3);
+	if (!ident || !isObjectKeyDeclaration(src, ident)) {
+		console.error("Expected isObjectKeyDeclaration to look past a preceding JSDoc comment", ident);
+		failed = true;
+	} else {
+		console.log("isObjectKeyDeclaration past JSDoc comment OK");
+	}
+}
+
+const docMixin = parseAmdModule(
+	`
+define("GoDocPDFieldMixin", [], function() {
+	Ext.define("BPMSoft.configuration.mixins.GoDocPDFieldMixin", {
+		alternateClassName: "BPMSoft.GoDocPDFieldMixin",
+		/**
+		 * Получить конфигурацию полей с персональными данными для объекта.
+		 * @returns {Object[]} Массив конфигураций, совместимый с initPersonalDataField.
+		 */
+		getPersonalFieldsConfig: function() { return []; }
+	});
+	return Ext.create("BPMSoft.configuration.mixins.GoDocPDFieldMixin");
+});
+`,
+	path.join(root, "synthetic/GoDocPDFieldMixin.js")
+);
+const docOverridePage = parseAmdModule(
+	`
+define("GoDocOverridePage", ["GoDocPDFieldMixin"], function() {
+	return {
+		mixins: {
+			GoDocPDFieldMixin: "BPMSoft.GoDocPDFieldMixin"
+		},
+		methods: {
+			/**
+			 * Задает настройки полей с персональными данными.
+			 * @override
+			 * @returns {Array} Массив с конфигурацией колонок.
+			 */
+			getPersonalFieldsConfig: function() { return []; }
+		}
+	};
+});
+`,
+	path.join(root, "synthetic/GoDocOverridePage.js")
+);
+if (!docMixin || !docOverridePage) {
+	console.error("Failed to parse synthetic bare-@override fixtures");
+	failed = true;
+} else {
+	index.upsertModule(docMixin);
+	index.upsertModule(docOverridePage);
+	const overridden = index.findOverriddenMember(docOverridePage.filePath, "getPersonalFieldsConfig");
+	if (!overridden || overridden.owner !== "BPMSoft.GoDocPDFieldMixin") {
+		console.error("Expected findOverriddenMember to walk the mixin chain by name, not @inheritdoc text", overridden);
+		failed = true;
+	} else {
+		const baseDoc = index.resolveJsDoc(overridden.member.documentation);
+		if (!baseDoc || !baseDoc.description || !baseDoc.description.includes("Получить конфигурацию")) {
+			console.error("Expected the mixin's own description to resolve", baseDoc);
+			failed = true;
+		} else {
+			console.log("findOverriddenMember bare @override chain OK", overridden.owner);
+		}
+	}
+	const localMember = docOverridePage.members.find((m) => m.name === "getPersonalFieldsConfig");
+	const localDoc = localMember && index.resolveJsDoc(localMember.documentation);
+	if (!localDoc || !localDoc.overridden || !localDoc.description || !localDoc.description.includes("Задает настройки")) {
+		console.error("Expected the override's own local description to still resolve as-is", localDoc);
+		failed = true;
 	}
 }
 

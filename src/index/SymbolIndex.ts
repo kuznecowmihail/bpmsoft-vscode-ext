@@ -806,6 +806,55 @@ export class SymbolIndex {
 		return { description, overridden, chain, unresolved, truncated, extraTags };
 	}
 
+	/**
+	 * The real base implementation a locally-declared member shadows, found
+	 * by walking the schema's actual owner chain (parents + mixins, same
+	 * traversal `resolveOverridableMethods` uses) and matching by name -
+	 * unlike `resolveJsDoc`'s `@inheritdoc Owner#member` handling, this
+	 * doesn't need the comment to name its target explicitly, which is the
+	 * overwhelmingly common real case (`@override`/`@overriden` written
+	 * bare, with the override's own description above it - see the
+	 * conversation that prompted this). `undefined` when nothing up the
+	 * chain declares a same-named method/property/attribute.
+	 */
+	findOverriddenMember(
+		filePath: string,
+		memberName: string
+	): { owner: string; member: IndexedMember } | undefined {
+		const mod = this.ensureModule(filePath);
+		if (!mod) {
+			return undefined;
+		}
+		const chainMods = this.collectOwnerChain(mod);
+		const matchIn = (ownerMod: IndexedModule): IndexedMember | undefined => {
+			if (ownerMod.filePath === mod.filePath) {
+				return undefined;
+			}
+			return ownerMod.members.find(
+				(m) =>
+					m.name === memberName &&
+					(m.kind === "method" || m.kind === "property" || m.kind === "attribute")
+			);
+		};
+		for (const ownerMod of chainMods) {
+			const member = matchIn(ownerMod);
+			if (member) {
+				return { owner: inheritdocTarget(ownerMod), member };
+			}
+		}
+		let found: { owner: string; member: IndexedMember } | undefined;
+		this.forEachMixinModule(chainMods, (ownerMod) => {
+			if (found) {
+				return;
+			}
+			const member = matchIn(ownerMod);
+			if (member) {
+				found = { owner: inheritdocTarget(ownerMod), member };
+			}
+		});
+		return found;
+	}
+
 	findThisMemberLocations(
 		filePath: string,
 		memberName: string,
