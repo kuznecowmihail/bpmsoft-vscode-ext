@@ -33,6 +33,52 @@ export function getMemberAccessPrefix(
 	return expr;
 }
 
+/** Nearest non-whitespace character index at or before `from`, skipping
+ * back over a single trailing `/** ... *\/` block comment (a JSDoc comment
+ * sitting right before the position being checked - the normal case for
+ * any documented object-literal key) as well as plain whitespace. Doesn't
+ * handle `//` line comments in the same spot - not a real pattern for
+ * JSDoc'd schema members. */
+export function skipTrailingBlockComment(text: string, from: number): number {
+	let i = from;
+	for (;;) {
+		while (i >= 0 && /\s/.test(text[i])) {
+			i--;
+		}
+		if (i >= 1 && text[i] === "/" && text[i - 1] === "*") {
+			const start = text.lastIndexOf("/*", i - 2);
+			if (start < 0) {
+				return i;
+			}
+			i = start - 1;
+			continue;
+		}
+		return i;
+	}
+}
+
+/**
+ * True when `ident` sits at a genuine object-literal key declaration: the
+ * next non-space character after it is `:`, and the nearest non-space,
+ * non-JSDoc-comment character before it is `{` or `,` (comment-aware so a
+ * documented member - the normal case - still matches). Guards against a
+ * ternary's `a : b` or a label statement matching by accident.
+ */
+export function isObjectKeyDeclaration(
+	text: string,
+	ident: { start: number; end: number }
+): boolean {
+	let after = ident.end;
+	while (after < text.length && /\s/.test(text[after])) {
+		after++;
+	}
+	if (text[after] !== ":") {
+		return false;
+	}
+	const before = skipTrailingBlockComment(text, ident.start - 1);
+	return text[before] === "{" || text[before] === ",";
+}
+
 /**
  * Word at position for definition/hover (identifier only).
  */

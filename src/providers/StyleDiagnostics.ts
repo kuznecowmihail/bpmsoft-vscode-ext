@@ -30,6 +30,8 @@ const CODE_BY_KIND: Record<StyleIssue["kind"], string> = {
 	nanCompare: "bpmsoft.style.nanCompare",
 	duplicateKey: "bpmsoft.style.duplicateKey",
 	duplicateDiff: "bpmsoft.style.duplicateDiff",
+	diffGuidName: "bpmsoft.style.diffGuidName",
+	businessRuleGuidName: "bpmsoft.style.businessRuleGuidName",
 	unusedMethod: "bpmsoft.style.unusedMethod",
 	unusedAttribute: "bpmsoft.style.unusedAttribute",
 	unusedMessage: "bpmsoft.style.unusedMessage",

@@ -22,7 +22,10 @@ export interface ViewControlInfo {
 
 // Authoritative, straight from the enum's own source —
 // `Resources/ui/BPMSoft/core/enums/sysenums.js`'s `BPMSoft.DataValueType = {...}`.
-const DATA_VALUE_TYPE_NAMES: Record<number, string> = {
+// Exported for reuse by `enumHints.ts` (numeric `dataValueType` inlay
+// hints/hover) — keep this the one source of truth rather than duplicating
+// the table.
+export const DATA_VALUE_TYPE_NAMES: Record<number, string> = {
 	0: "GUID",
 	1: "TEXT",
 	4: "INTEGER",

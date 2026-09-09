@@ -141,7 +141,9 @@ export {
 	getThisSandboxMessageContext,
 	getDiffBindToContext,
 	getThisLookupAccessContext,
-	rewriteThisRuntimePrefix
+	rewriteThisRuntimePrefix,
+	skipTrailingBlockComment,
+	isObjectKeyDeclaration
 } from "./amdCursor";
 export type {
 	ThisGetSetContext,

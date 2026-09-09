@@ -8,6 +8,7 @@ export function cloneStub(s: PlatformStubMember): PlatformStubMember {
 		documentation: s.documentation,
 		filePath: s.filePath,
 		position: s.position,
+		value: s.value,
 		children: s.children?.map(cloneStub)
 	};
 }
@@ -40,6 +41,7 @@ export function mergeStubDeep(
 		prev.documentation = prev.documentation || child.documentation;
 		prev.filePath = prev.filePath || child.filePath;
 		prev.position = prev.position || child.position;
+		prev.value = prev.value ?? child.value;
 	}
 	return Array.from(map.values());
 }

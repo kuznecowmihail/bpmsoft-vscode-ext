@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, MemberKind, IndexedSchemaMessage, schemaMessageDirectionLabel } from "../parse/types";
 import { getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, getOverrideInsertContext, formatOverrideSnippet, collectLocalMethodKeys, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { formatResolvedJsDoc } from "../parse/jsDocResolve";
 import { getRootSchemaNameContext, getQueryColumnContext, resolveQueryEntities, resolveQueryClassNames, getConstructorConfigContext, EsqNameSpan } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
 import {
@@ -551,11 +552,11 @@ export class CompletionProvider implements vscode.CompletionItemProvider {
 					formatOverrideSnippet(m.owner, m.name, m.params)
 				);
 				item.range = range;
+				const resolved = this.index.resolveJsDoc(m.documentation);
 				const doc = [
-					`@inheritdoc ${m.owner}#${m.name}`,
-					"@override",
-					...(m.documentation ? ["", m.documentation] : [])
-				].join("\n");
+					`**override** \`${m.owner}#${m.name}\``,
+					...formatResolvedJsDoc(resolved)
+				].join("\n\n");
 				item.documentation = new vscode.MarkdownString(doc);
 				return item;
 			});

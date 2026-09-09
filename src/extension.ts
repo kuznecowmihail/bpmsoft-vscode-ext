@@ -17,6 +17,8 @@ import { resetLocalizationCaches } from "./index/localizationLookup";
 import { MissingMemberDiagnostics } from "./providers/MissingMemberDiagnostics";
 import { StyleDiagnostics } from "./providers/StyleDiagnostics";
 import { StyleCodeActionProvider } from "./providers/StyleCodeActionProvider";
+import { EnumInlayHintsProvider } from "./providers/EnumInlayHintsProvider";
+import { EnumLiteralCodeActionProvider } from "./providers/EnumLiteralCodeActionProvider";
 import { JsFormattingProvider } from "./providers/JsFormattingProvider";
 import { CsharpFormattingProvider } from "./providers/CsharpFormattingProvider";
 import { SqlFormattingProvider } from "./providers/SqlFormattingProvider";
@@ -67,11 +69,27 @@ import {
 	CreateMemberCodeActionProvider,
 	executeCreateMember
 } from "./providers/CreateMemberCodeActionProvider";
+import { AppConfigTreeProvider, EDIT_CONFIG_ENTRY_COMMAND } from "./providers/AppConfigTreeProvider";
+import {
+	CONFIGURE_WORKSPACE_CONSOLE_COMMAND,
+	DevModeTreeProvider,
+	RUN_WORKSPACE_CONSOLE_OPERATION_COMMAND,
+	TOGGLE_DEBUGGING_COMMAND,
+	TOGGLE_FILE_DESIGN_MODE_COMMAND
+} from "./providers/DevModeTreeProvider";
+import { ConfigFileWizardPanel } from "./providers/ConfigFileWizardPanel";
+import { NlogTargetsWizardPanel } from "./providers/NlogTargetsWizardPanel";
+import { NlogRulesWizardPanel } from "./providers/NlogRulesWizardPanel";
+import { WorkspaceConsoleOperationsPanel } from "./providers/WorkspaceConsoleOperationsPanel";
+import { getDebuggingEnabled, getFileDesignModeEnabled, resolveWebHostConfigPath, setDebugging, setFileDesignMode } from "./index/devModeSettings";
+import { autoConfigureWorkspaceConsole, getWorkspaceConsoleStatus } from "./index/workspaceConsoleSetup";
+import { AppConfigEntry } from "./index/appConfigDiscovery";
 
 let index: SymbolIndex;
 let indexer: ModuleIndexer;
 let diagnostics: MissingMemberDiagnostics;
 let styleDiagnostics: StyleDiagnostics;
+let enumInlayHintsProvider: EnumInlayHintsProvider;
 let namingDiagnostics: NamingDiagnostics;
 let namingIndex: NamingIssuesIndex;
 let outlineTree: ViewModelOutlineProvider;
@@ -182,6 +200,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 		const completionProvider = new CompletionProvider(index);
 		const csharpCompletionProvider = new CsharpCompletionProvider(index);
+		enumInlayHintsProvider = new EnumInlayHintsProvider(index);
 
 		const gitFlowCandidateRoots = layouts
 			.map((l) => l.pkgRoot || l.configurationRoot || l.appRoot || l.workspaceRoot)
@@ -189,6 +208,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		const gitFlowStatusBar = new GitFlowStatusBar(gitFlowCandidateRoots);
 		const packageOwnershipStatusBar = new PackageOwnershipStatusBar();
 		const packageSettingsTree = new PackageSettingsTreeProvider();
+		const appRoots = Array.from(
+			new Set(layouts.map((l) => l.appRoot).filter((p): p is string => Boolean(p)))
+		);
+		const envConfigTree = new AppConfigTreeProvider(appRoots);
+		const devModeTree = new DevModeTreeProvider(appRoots);
+
+		// One-shot-per-session heads-up (not persisted across restarts) — the
+		// same status/action also lives permanently in the Dev Mode tree
+		// (DevModeTreeProvider's "workspaceConsole" node), this just makes it
+		// unlikely to go unnoticed since it's easy to never scroll to that view.
+		void (async () => {
+			for (const appRoot of appRoots) {
+				const status = getWorkspaceConsoleStatus(appRoot);
+				if (!status.applicable || status.configured) {
+					continue;
+				}
+				const actionLabel = "Настроить автоматически";
+				const choice = await vscode.window.showWarningMessage(
+					`Workspace Console не настроена (${path.basename(appRoot)}) — строки подключения отличаются от главного ConnectionStrings.config`,
+					actionLabel
+				);
+				if (choice === actionLabel) {
+					await vscode.commands.executeCommand(CONFIGURE_WORKSPACE_CONSOLE_COMMAND, appRoot);
+				}
+			}
+		})();
 
 		context.subscriptions.push(
 			indexingStatusBar,
@@ -316,6 +361,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					);
 				}
 			),
+			vscode.commands.registerCommand("bpmsoft.formatting.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Formatting — форматтер BPMSoft по умолчанию",
+					{
+						modal: true,
+						detail:
+							"Здесь можно сделать расширение BPMSoft форматтером по умолчанию " +
+							"для JavaScript, C# и SQL — оно форматирует по конвенциям " +
+							"команды (Allman/K&R, var/let/const и т.д.), а не по общим " +
+							"настройкам VS Code.\n\n" +
+							"У каждого языка своя строка: зелёная галочка означает, что " +
+							"BPMSoft уже форматтер по умолчанию для него; иначе показано, " +
+							"что задано сейчас. Клик по строке делает BPMSoft форматтером " +
+							"по умолчанию (настройка сохраняется на уровне рабочей области)."
+					}
+				);
+			}),
 			vscode.languages.registerCompletionItemProvider(
 				jsSelector,
 				completionProvider,
@@ -360,6 +422,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
 			),
 			vscode.languages.registerCodeActionsProvider(
+				jsSelector,
+				new EnumLiteralCodeActionProvider(index),
+				{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+			),
+			vscode.languages.registerInlayHintsProvider(jsSelector, enumInlayHintsProvider),
+			vscode.languages.registerCodeActionsProvider(
 				csharpSelector,
 				new StyleCodeActionProvider(),
 				{ providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
@@ -383,6 +451,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			),
 			vscode.commands.registerCommand("bpmsoft.rebuildIndex", async () => {
 				await rebuildWithProgress(true);
+			}),
+			vscode.commands.registerCommand("bpmsoft.namingIssues.refresh", async () => {
+				await vscode.window.withProgress(
+					{
+						location: vscode.ProgressLocation.Window,
+						title: "BPMSoft: rebuilding naming issues"
+					},
+					async () => {
+						await namingIndex.refresh(true);
+						namingDiagnostics.refreshOpenDocuments();
+					}
+				);
 			}),
 			vscode.commands.registerCommand(
 				"bpmsoft.naming.markFalsePositive",
@@ -486,6 +566,199 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					packageOwnershipStatusBar.refresh();
 				}
 			}),
+			vscode.commands.registerCommand("bpmsoft.packageSettings.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Package Settings — локальные аналоги системных настроек BPMSoft",
+					{
+						modal: true,
+						detail:
+							"Расширение не подключается к БД, поэтому три системные " +
+							"настройки, которые нужны перед началом работы над пакетом, " +
+							"задаются здесь вручную и хранятся в настройках рабочей области:\n\n" +
+							"• Текущий пакет — аналог «CurrentPackageId», используется только " +
+							"как справочная информация.\n" +
+							"• Префикс пакетов/схем — аналог «SchemaNamePrefix» (через " +
+							"запятую, если пакетов несколько).\n" +
+							"• Издатель — аналог «Maintainer».\n\n" +
+							"Префикс и Издатель также используются проверкой владения " +
+							"пакетом (строка состояния и предупреждения о нейминге) — если " +
+							"они не заполнены или заполнены неверно, эти проверки будут " +
+							"молчать или ошибаться. Клик по строке открывает поле ввода."
+					}
+				);
+			}),
+			vscode.window.registerTreeDataProvider("bpmsoftEnvConfig", envConfigTree),
+			vscode.commands.registerCommand(EDIT_CONFIG_ENTRY_COMMAND, (entry: AppConfigEntry) => {
+				if (entry.kind === "nlogTargets") {
+					NlogTargetsWizardPanel.show(entry);
+				} else if (entry.kind === "nlogRules") {
+					NlogRulesWizardPanel.show(entry);
+				} else {
+					ConfigFileWizardPanel.show(entry);
+				}
+			}),
+			vscode.commands.registerCommand("bpmsoft.envConfig.refresh", () => {
+				envConfigTree.refresh();
+			}),
+			vscode.commands.registerCommand("bpmsoft.envConfig.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Config Files — мастера для ConnectionStrings/appSettings/appsettings.json/nlog.config",
+					{
+						modal: true,
+						detail:
+							"Список найденных в корне приложения (не в Pkg) файлов " +
+							"деплоя — ConnectionStrings.config, appsettings.json, любой " +
+							"*.dll.config (в т.ч. в WorkspaceConsole) со своим блоком " +
+							"<connectionStrings>/<appSettings>, и nlog.config (+ " +
+							"включаемый nlog.targets.config, + отдельный " +
+							"WorkspaceConsole\\*.nlog.config) — отдельно Variables, " +
+							"Extensions, Targets, Rules. Клик по строке открывает " +
+							"таблицу вместо ручного поиска нужной записи в большом " +
+							"XML/JSON.\n\n" +
+							"Значения строк подключения и ключи вида *Password*/*Secret* " +
+							"по умолчанию скрыты — показ по иконке-глазку. Таргеты NLog " +
+							"редактируются как XML целиком (у NLog 115+ типов таргетов " +
+							"с разными наборами атрибутов) — тип подставляется из " +
+							"справочника NLog с описанием, а не угадыванием. Правки " +
+							"пишутся точечно (только изменённая запись), остальной файл " +
+							"не переформатируется."
+					}
+				);
+			}),
+			vscode.window.registerTreeDataProvider("bpmsoftDevMode", devModeTree),
+			vscode.commands.registerCommand(TOGGLE_FILE_DESIGN_MODE_COMMAND, async (appRoot: string) => {
+				const filePath = resolveWebHostConfigPath(appRoot);
+				if (!filePath) {
+					return;
+				}
+				const currentlyEnabled = getFileDesignModeEnabled(filePath) ?? false;
+				const actionLabel = currentlyEnabled ? "Выключить" : "Включить";
+				const choice = await vscode.window.showWarningMessage(
+					currentlyEnabled
+						? "Выключить режим разработки в файловой системе? UseStaticFileContent будет включён обратно."
+						: "Включить режим разработки в файловой системе? UseStaticFileContent при этом будет выключен (несовместим с этим режимом).",
+					actionLabel
+				);
+				if (choice !== actionLabel) {
+					return;
+				}
+				const result = setFileDesignMode(filePath, !currentlyEnabled);
+				if (!result.ok) {
+					void vscode.window.showErrorMessage(result.error ?? "Не удалось изменить настройку");
+					return;
+				}
+				devModeTree.refresh();
+				void vscode.window.showInformationMessage(
+					currentlyEnabled ? "Режим разработки в файловой системе выключен" : "Режим разработки в файловой системе включён"
+				);
+			}),
+			vscode.commands.registerCommand(TOGGLE_DEBUGGING_COMMAND, async (appRoot: string) => {
+				const filePath = resolveWebHostConfigPath(appRoot);
+				if (!filePath) {
+					return;
+				}
+				const currentlyEnabled = getDebuggingEnabled(filePath);
+				const actionLabel = currentlyEnabled ? "Выключить" : "Включить";
+				const choice = await vscode.window.showWarningMessage(
+					currentlyEnabled ? "Выключить отладку в VS Code (LoadAssemblyFromByteArray=true)?" : "Включить отладку в VS Code (LoadAssemblyFromByteArray=false)?",
+					actionLabel
+				);
+				if (choice !== actionLabel) {
+					return;
+				}
+				const result = setDebugging(filePath, !currentlyEnabled);
+				if (!result.ok) {
+					void vscode.window.showErrorMessage(result.error ?? "Не удалось изменить настройку");
+					return;
+				}
+				devModeTree.refresh();
+				void vscode.window.showInformationMessage(currentlyEnabled ? "Отладка в VS Code выключена" : "Отладка в VS Code включена");
+			}),
+			vscode.commands.registerCommand(CONFIGURE_WORKSPACE_CONSOLE_COMMAND, async (appRoot: string) => {
+				const status = getWorkspaceConsoleStatus(appRoot);
+				if (!status.applicable || status.mismatches.length === 0) {
+					void vscode.window.showInformationMessage("Workspace Console настроена");
+					return;
+				}
+				const detail = status.mismatches
+					.map((m) => `${m.name} (${m.fileLabel}):\n  было: ${m.consoleValue}\n  станет: ${m.mainValue}`)
+					.join("\n\n");
+				const actionLabel = "Настроить автоматически";
+				const choice = await vscode.window.showWarningMessage(
+					"Настроить Workspace Console автоматически по данным из ConnectionStrings.config?",
+					{ modal: true, detail },
+					actionLabel
+				);
+				if (choice !== actionLabel) {
+					return;
+				}
+				const result = autoConfigureWorkspaceConsole(appRoot);
+				if (!result.ok) {
+					void vscode.window.showErrorMessage(result.error ?? "Не удалось настроить Workspace Console");
+					return;
+				}
+				devModeTree.refresh();
+				void vscode.window.showInformationMessage("Workspace Console настроена");
+			}),
+			vscode.commands.registerCommand(RUN_WORKSPACE_CONSOLE_OPERATION_COMMAND, (appRoot: string, dllPath: string) => {
+				WorkspaceConsoleOperationsPanel.show(appRoot, dllPath, context.globalState);
+			}),
+			vscode.commands.registerCommand("bpmsoft.devMode.refresh", () => {
+				devModeTree.refresh();
+			}),
+			vscode.commands.registerCommand("bpmsoft.devMode.showHelp", () => {
+				void vscode.window.showInformationMessage(
+					"Dev Mode — переключатели режима разработки и статус Workspace Console",
+					{
+						modal: true,
+						detail:
+							"Режим разработки в файловой системе — <fileDesignMode enabled=.../> " +
+							"в BPMSoft.WebHost.dll.config/Web.config; включение одновременно " +
+							"выключает UseStaticFileContent (несовместим с этим режимом), " +
+							"выключение включает обратно.\n\n" +
+							"Отладка в VS Code — appSetting LoadAssemblyFromByteArray (по " +
+							"мотивам _enableDebugging.bat/_disableDebugging.bat): false — " +
+							"отладка работает, true — сборки грузятся из памяти и отладчик " +
+							"не может сопоставить их с исходниками.\n\n" +
+							"Workspace Console — сверяет <connectionStrings> каждого " +
+							"WorkspaceConsole\\*.dll.config с главным ConnectionStrings.config " +
+							"по именам записей, которые есть в обоих файлах (WorkspaceConsole " +
+							"никогда не читает ConnectionStrings.config напрямую, поэтому они " +
+							"легко расходятся). «Настроить автоматически» копирует значения " +
+							"из главного файла.\n\n" +
+							"«Операции Workspace Console…» — конструктор команды `dotnet " +
+							"BPMSoft.Tools.WorkspaceConsole.dll -operation=...` для любой из " +
+							"поддерживаемых операций (полный список — в самом мастере), с " +
+							"открытием готовой команды в терминале для проверки перед запуском.\n\n" +
+							"Каждая строка кликабельна и переключает/чинит своё состояние " +
+							"(со спросом подтверждения)."
+					}
+				);
+			}),
+			...appRoots.flatMap((appRoot) =>
+				[
+					"ConnectionStrings.config",
+					"appsettings.json",
+					"*.dll.config",
+					"Web.config",
+					"WorkspaceConsole/*.dll.config",
+					"nlog.config",
+					"nlog.targets.config",
+					"WorkspaceConsole/*.nlog.config"
+				].map(
+					(rel) => {
+						const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(appRoot, rel));
+						const refreshBoth = () => {
+							envConfigTree.refresh();
+							devModeTree.refresh();
+						};
+						watcher.onDidChange(refreshBoth);
+						watcher.onDidCreate(refreshBoth);
+						watcher.onDidDelete(refreshBoth);
+						return watcher;
+					}
+				)
+			),
 			vscode.commands.registerCommand(
 				"bpmsoft.editLocalizedStrings",
 				(node?: { name?: string; path?: string; key?: string }) => {
@@ -531,6 +804,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			vscode.workspace.onDidChangeConfiguration((e) => {
 				if (e.affectsConfiguration("bpmsoft.styleDiagnostics")) {
 					styleDiagnostics.refreshOpenDocuments();
+				}
+				if (
+					e.affectsConfiguration("bpmsoft.enumInlayHints") ||
+					e.affectsConfiguration("bpmsoft.enablePlatformStubs")
+				) {
+					enumInlayHintsProvider.refresh();
 				}
 				if (
 					e.affectsConfiguration("bpmsoft.namingDiagnostics") ||
@@ -963,6 +1242,7 @@ async function rebuildWithProgress(forceFresh = false): Promise<void> {
 	diagnostics.refreshOpenDocuments();
 	styleDiagnostics.refreshOpenDocuments();
 	namingDiagnostics.refreshOpenDocuments();
+	enumInlayHintsProvider.refresh();
 	void namingIndex.refresh(forceFresh);
 	outlineTree.refresh();
 	void plainOutlineTree.refresh();

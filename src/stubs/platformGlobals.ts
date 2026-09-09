@@ -220,7 +220,8 @@ function extractAssignments(
 							: literal || "enum value",
 					documentation: literal ? `\`${literal}\`` : undefined,
 					filePath,
-					position: namePos
+					position: namePos,
+					value: literal
 				};
 				if (underBpm.length === 1) {
 					const prev = root.get(name);
@@ -263,12 +264,19 @@ function objectEnumChildren(obj: AnyNode, filePath: string): PlatformStubMember[
 		} else if (value?.type === "ObjectExpression") {
 			kind = "enum";
 		}
+		const literal =
+			value?.type === "Literal" &&
+			(typeof value.value === "string" || typeof value.value === "number")
+				? String(value.value)
+				: undefined;
 		out.push({
 			name,
 			kind,
-			detail: kind === "method" ? "method" : "enum value",
+			detail: kind === "method" ? "method" : literal !== undefined ? literal : "enum value",
+			documentation: literal !== undefined ? `\`${literal}\`` : undefined,
 			filePath,
-			position: posFromNode(key)
+			position: posFromNode(key),
+			value: literal
 		});
 	}
 	return out;

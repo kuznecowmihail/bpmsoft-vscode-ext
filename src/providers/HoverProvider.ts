@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { SymbolIndex } from "../index/SymbolIndex";
 import { IndexedMember, schemaMessageDirectionLabel } from "../parse/types";
-import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix } from "../parse/amdParser";
+import { getIdentifierAt, getMemberAccessPrefix, getThisGetSetContext, getThisLookupAccessContext, getThisSandboxMessageContext, getDiffBindToContext, rewriteThisRuntimePrefix, isObjectKeyDeclaration } from "../parse/amdParser";
 import { getQueryColumnContext, getRootSchemaNameContext, resolveQueryClassNames, resolveQueryEntities } from "../parse/esqQuery";
 import { enablePlatformStubs } from "../config";
 import {
@@ -15,23 +15,103 @@ import {
 } from "./platformLookup";
 import { findSchemaDir } from "../index/schemaResourceLookup";
 import { resolveLocalizedString, resolveLocalizedImage } from "../index/localizationLookup";
-
-function memberHover(
-	title: string,
-	m: Pick<IndexedMember, "detail" | "documentation" | "caption">,
-	extra: string[] = []
-): vscode.Hover {
-	return markdownHover([
-		title,
-		...(m.caption ? [`*${m.caption}*`] : []),
-		...(m.detail ? [m.detail] : []),
-		...(m.documentation ? ["", m.documentation] : []),
-		...extra
-	]);
-}
+import { parseJs } from "../parse/jsAst";
+import { collectEnumHintSites } from "../parse/enumHintSites";
+import { resolveGenericEnumField, resolveRuleEnumField } from "../parse/enumHints";
+import { describeRule } from "../parse/businessRuleDescription";
+import { formatResolvedJsDoc } from "../parse/jsDocResolve";
 
 export class HoverProvider implements vscode.HoverProvider {
 	constructor(private readonly index: SymbolIndex) {}
+
+	/** `@inheritdoc`/`@override` in `m.documentation` get resolved (chain
+	 * walked to the nearest real description) and styled as their own
+	 * paragraphs, rather than dumped as raw JSDoc tag lines - see the
+	 * conversation that prompted this for why the default TS/JS hover can't
+	 * be fixed the same way (it's not ours to restyle). `base`, when given,
+	 * is the real chain-parent implementation `declarationHover` already
+	 * found via `findOverriddenMember` - folded into `resolved` here so
+	 * `formatResolvedJsDoc` renders it alongside everything else. */
+	private memberHover(
+		title: string,
+		m: Pick<IndexedMember, "detail" | "documentation" | "caption">,
+		extra: string[] = [],
+		base?: { owner: string; description?: string }
+	): vscode.Hover {
+		const resolved = this.index.resolveJsDoc(m.documentation);
+		const withBase = base && resolved ? { ...resolved, base } : resolved;
+		return markdownHover([
+			title,
+			...(m.caption ? [`*${m.caption}*`] : []),
+			...(m.detail ? [m.detail] : []),
+			...(withBase ? ["", ...formatResolvedJsDoc(withBase)] : []),
+			...extra
+		]);
+	}
+
+	/** Hovering a member's own declaration key inside `methods: {}` / an
+	 * `Ext.define` class body - as opposed to a `this.name`/`Owner.name`
+	 * usage, which the branches in `provideHover` already cover. This is
+	 * the one hover position VS Code's built-in TS/JS "quick info" also
+	 * fires for, showing the raw JSDoc comment with no special handling for
+	 * `@inheritdoc`/`@overriden`; ours stacks alongside it with the
+	 * resolved, styled version (there's no API to suppress the built-in
+	 * one). Only fires on a genuine object-literal key: next non-space char
+	 * is `:`, and the nearest non-space/non-JSDoc-comment character before
+	 * the identifier is `{` or `,` (same check `objectKeyPrefix` in
+	 * amdOverride.ts uses for the override-snippet completion, extended to
+	 * look past the comment every documented member actually has) - guards
+	 * against a ternary's `a : b` or a label statement matching by
+	 * accident. Matched against the member's own recorded declaration
+	 * position (not just name) so an unrelated key elsewhere in the file
+	 * that happens to share a method's name doesn't borrow its docs.
+	 *
+	 * Real schemas overwhelmingly write a bare `@override`/`@overriden`
+	 * with their *own* description, not an explicit `@inheritdoc
+	 * Owner#member` pointer - so on top of `resolveJsDoc`'s text-based
+	 * chain, this also walks the schema's actual mixin/inheritance chain
+	 * (`findOverriddenMember`) to find what `@override` really overrides,
+	 * and shows its description too. */
+	private declarationHover(
+		document: vscode.TextDocument,
+		text: string,
+		ident: { name: string; start: number; end: number }
+	): vscode.Hover | undefined {
+		if (!isObjectKeyDeclaration(text, ident)) {
+			return undefined;
+		}
+		const filePath = document.uri.fsPath;
+		const mod = this.index.ensureModule(filePath);
+		if (!mod) {
+			return undefined;
+		}
+		const identPos = document.positionAt(ident.start);
+		const member = mod.members.find(
+			(m) =>
+				m.name === ident.name &&
+				(m.kind === "method" || m.kind === "property" || m.kind === "attribute") &&
+				m.position?.line === identPos.line &&
+				m.position?.character === identPos.character
+		);
+		if (!member) {
+			return undefined;
+		}
+		// The real chain-walk (`findOverriddenMember`) only runs when the
+		// local comment actually claims to override something - most
+		// members aren't overrides, and walking the full owner/mixin chain
+		// on every declaration hover would be wasted work for them.
+		const localDoc = this.index.resolveJsDoc(member.documentation);
+		const overridden = localDoc?.overridden
+			? this.index.findOverriddenMember(filePath, member.name)
+			: undefined;
+		const base = overridden
+			? {
+					owner: `${overridden.owner}#${member.name}`,
+					description: this.index.resolveJsDoc(overridden.member.documentation)?.description
+				}
+			: undefined;
+		return this.memberHover(`**${member.name}** *(${member.kind})*`, member, [], base);
+	}
 
 	provideHover(
 		document: vscode.TextDocument,
@@ -40,6 +120,11 @@ export class HoverProvider implements vscode.HoverProvider {
 		const text = document.getText();
 		const offset = document.offsetAt(position);
 		const filePath = document.uri.fsPath;
+
+		const enumHint = this.enumHintHover(text, offset);
+		if (enumHint) {
+			return enumHint;
+		}
 
 		const rootCtx = getRootSchemaNameContext(text, offset);
 		if (rootCtx?.name) {
@@ -91,7 +176,7 @@ export class HoverProvider implements vscode.HoverProvider {
 				(x) => x.name === getSet.name && x.kind === "attribute"
 			);
 			if (m) {
-				return memberHover(
+				return this.memberHover(
 					`**this.${getSet.method}("${m.name}")** *(attribute)*`,
 					m
 				);
@@ -118,13 +203,18 @@ export class HoverProvider implements vscode.HoverProvider {
 			);
 			if (m) {
 				const kindLabel = m.kind === "method" ? "method" : "attribute";
-				return memberHover(`**bindTo: "${m.name}"** *(${kindLabel})*`, m);
+				return this.memberHover(`**bindTo: "${m.name}"** *(${kindLabel})*`, m);
 			}
 		}
 
 		const ident = getIdentifierAt(text, offset);
 		if (!ident) {
 			return undefined;
+		}
+
+		const declHover = this.declarationHover(document, text, ident);
+		if (declHover) {
+			return declHover;
 		}
 
 		const lookupAccess = getThisLookupAccessContext(text, offset);
@@ -159,7 +249,7 @@ export class HoverProvider implements vscode.HoverProvider {
 				ident.name
 			);
 			if (nested) {
-				return memberHover(`**${left}.${nested.name}** *(${nested.kind})*`, nested);
+				return this.memberHover(`**${left}.${nested.name}** *(${nested.kind})*`, nested);
 			}
 		}
 
@@ -172,7 +262,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			const m = members.find((x) => x.name === ident.name);
 			if (m) {
 				const titleRoot = runtimePrefix ? `this.${globalLeft}` : globalLeft;
-				return memberHover(
+				return this.memberHover(
 					`**${titleRoot}.${m.name}** *(${m.kind})*`,
 					m,
 					m.filePath ? [`\`${m.filePath}\``] : []
@@ -190,7 +280,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			if (m) {
 				const title =
 					m.kind === "attribute" ? `**$${m.name}** *(attribute)*` : `**${m.name}** *(${m.kind})*`;
-				return memberHover(title, m);
+				return this.memberHover(title, m);
 			}
 		}
 
@@ -198,7 +288,7 @@ export class HoverProvider implements vscode.HoverProvider {
 			const classNames = resolveQueryClassNames(text, ident.start, left);
 			const m = this.index.findQueryInstanceMember(classNames, ident.name);
 			if (m) {
-				return memberHover(
+				return this.memberHover(
 					`**${left}.${m.name}** *(${m.kind})*`,
 					m,
 					m.filePath ? [`\`${m.filePath}\``] : []
@@ -210,11 +300,11 @@ export class HoverProvider implements vscode.HoverProvider {
 			for (const mod of modulesFromExpr(this.index, filePath, left)) {
 				const m = mod.members.find((x) => x.name === ident.name);
 				if (m) {
-					return markdownHover([
+					return this.memberHover(
 						`**${mod.name}.${m.name}** *(${m.kind})*`,
-						`\`${mod.filePath}\``,
-						...(m.documentation ? ["", m.documentation] : [])
-					]);
+						m,
+						[`\`${mod.filePath}\``]
+					);
 				}
 			}
 		}
@@ -241,6 +331,37 @@ export class HoverProvider implements vscode.HoverProvider {
 		}
 
 		return undefined;
+	}
+
+	/** Hovering a coded numeric literal (`dataValueType`/`itemType`/
+	 * `contentType`/`comparisonType` anywhere, `ruleType`/`property` inside a
+	 * `rules`/`businessRules` rule) shows its resolved symbolic constant;
+	 * hovering a `rules`/`businessRules` rule-id key shows what that rule
+	 * does. Shares `enumHintSites.ts`'s site list with
+	 * `EnumInlayHintsProvider.ts` so hover and inlay hint always agree. */
+	private enumHintHover(text: string, offset: number): vscode.Hover | undefined {
+		const ast = parseJs(text);
+		if (!ast) {
+			return undefined;
+		}
+		const site = collectEnumHintSites(ast).find((s) => offset >= s.start && offset <= s.end);
+		if (!site) {
+			return undefined;
+		}
+		if (site.kind === "literal") {
+			const resolved =
+				site.scope === "generic"
+					? resolveGenericEnumField(this.index, site.fieldName, site.rawValue)
+					: resolveRuleEnumField(site.fieldName, site.rawValue, site.ruleTypeRaw);
+			if (!resolved) {
+				return undefined;
+			}
+			return markdownHover([`**${site.rawValue}** → \`${resolved.symbol}\``]);
+		}
+		const description = describeRule(site.ruleObj, (raw) =>
+			this.index.resolvePlatformEnumMemberName("ComparisonType", raw)
+		);
+		return markdownHover([`**${site.attrName}** *(rule)*`, description.full]);
 	}
 
 	/** Entity/schema hover (root ESQ argument, or a schema landed on mid-path

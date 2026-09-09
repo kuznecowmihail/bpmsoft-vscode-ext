@@ -15,6 +15,7 @@ import {
 	setLocalizedStringValue
 } from "../index/localizationEditor";
 import { PREFERRED_CULTURE_ORDER, listSchemaCultures } from "../index/localizationLookup";
+import { DIALOG_CLIENT_SCRIPT, DIALOG_HTML, DIALOG_STYLE } from "./webviewDialogs";
 
 export type LocalizationWizardMode = "strings" | "images";
 
@@ -249,6 +250,7 @@ export class LocalizationWizardPanel {
 <title>${title}</title>
 <style>
 ${STYLE}
+${DIALOG_STYLE}
 </style>
 </head>
 <body>
@@ -259,9 +261,11 @@ ${STYLE}
 <div id="gridWrap"><table id="grid"><thead><tr id="headRow"></tr></thead><tbody id="rows"></tbody></table></div>
 <div id="addBox"></div>
 <div id="toast"></div>
+${DIALOG_HTML}
 <script nonce="${csp}">
 window.__mode = ${JSON.stringify(this.mode)};
 window.__schemaName = ${JSON.stringify(this.schemaName)};
+${DIALOG_CLIENT_SCRIPT}
 ${CLIENT_SCRIPT}
 </script>
 </body>
@@ -359,18 +363,18 @@ function renderStringsRows() {
 		});
 	});
 	rowsEl.querySelectorAll('button[data-act="rename"]').forEach((btn) => {
-		btn.addEventListener('click', () => {
+		btn.addEventListener('click', async () => {
 			const tr = btn.closest('tr');
 			const oldKey = tr.dataset.key;
-			const newKey = prompt('Новый ключ для "' + oldKey + '":', oldKey);
+			const newKey = await showPrompt('Новый ключ для "' + oldKey + '":', oldKey);
 			if (newKey && newKey !== oldKey) vscode.postMessage({ type: 'renameString', oldKey, newKey });
 		});
 	});
 	rowsEl.querySelectorAll('button[data-act="delete"]').forEach((btn) => {
-		btn.addEventListener('click', () => {
+		btn.addEventListener('click', async () => {
 			const tr = btn.closest('tr');
 			const key = tr.dataset.key;
-			if (confirm('Удалить ключ "' + key + '" из всех культур?')) vscode.postMessage({ type: 'deleteString', key });
+			if (await showConfirm('Удалить ключ "' + key + '" из всех культур?')) vscode.postMessage({ type: 'deleteString', key });
 		});
 	});
 }
@@ -418,18 +422,18 @@ function renderImagesRows() {
 		});
 	});
 	rowsEl.querySelectorAll('button[data-act="rename"]').forEach((btn) => {
-		btn.addEventListener('click', () => {
+		btn.addEventListener('click', async () => {
 			const tr = btn.closest('tr');
 			const row = rows.find((r) => r.guid === tr.dataset.guid);
-			const newName = prompt('Новое имя для "' + row.name + '":', row.name);
+			const newName = await showPrompt('Новое имя для "' + row.name + '":', row.name);
 			if (newName && newName !== row.name) vscode.postMessage({ type: 'renameImage', guid: row.guid, newName });
 		});
 	});
 	rowsEl.querySelectorAll('button[data-act="delete"]').forEach((btn) => {
-		btn.addEventListener('click', () => {
+		btn.addEventListener('click', async () => {
 			const tr = btn.closest('tr');
 			const row = rows.find((r) => r.guid === tr.dataset.guid);
-			if (confirm('Удалить изображение "' + row.name + '" из всех культур?')) vscode.postMessage({ type: 'deleteImage', guid: row.guid });
+			if (await showConfirm('Удалить изображение "' + row.name + '" из всех культур?')) vscode.postMessage({ type: 'deleteImage', guid: row.guid });
 		});
 	});
 }

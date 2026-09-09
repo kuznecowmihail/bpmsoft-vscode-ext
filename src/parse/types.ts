@@ -202,4 +202,9 @@ export interface PlatformStubMember {
 	filePath?: string;
 	position?: SourcePosition;
 	children?: PlatformStubMember[];
+	/** Raw literal value backing this member (e.g. `"5"` for `LOOKUP: 5` in a
+	 * `BPMSoft.X = {...}` object-literal enum), when it's a number/string
+	 * literal. Lets a numeric literal found elsewhere in source be resolved
+	 * back to its symbolic enum member name — see `enumHints.ts`. */
+	value?: string;
 }

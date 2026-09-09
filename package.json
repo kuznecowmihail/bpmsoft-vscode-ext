@@ -55,6 +55,12 @@
         "icon": "$(sync)"
       },
       {
+        "command": "bpmsoft.namingIssues.refresh",
+        "title": "Rebuild Naming Issues",
+        "category": "BPMSoft",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "bpmsoft.naming.markFalsePositive",
         "title": "Пометить как ложное срабатывание (игнорировать это имя во всех проверках нейминга)",
         "category": "BPMSoft",
@@ -64,6 +70,42 @@
         "command": "bpmsoft.setDefaultFormatter",
         "title": "Set as Default Formatter (JS/C#/SQL)",
         "category": "BPMSoft"
+      },
+      {
+        "command": "bpmsoft.formatting.showHelp",
+        "title": "О разделе Formatting",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
+        "command": "bpmsoft.packageSettings.showHelp",
+        "title": "О разделе Package Settings",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
+        "command": "bpmsoft.envConfig.refresh",
+        "title": "Обновить Config Files",
+        "category": "BPMSoft",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "bpmsoft.envConfig.showHelp",
+        "title": "О разделе Config Files",
+        "category": "BPMSoft",
+        "icon": "$(info)"
+      },
+      {
+        "command": "bpmsoft.devMode.refresh",
+        "title": "Обновить Dev Mode",
+        "category": "BPMSoft",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "bpmsoft.devMode.showHelp",
+        "title": "О разделе Dev Mode",
+        "category": "BPMSoft",
+        "icon": "$(info)"
       },
       {
         "command": "bpmsoft.editLocalizedStrings",
@@ -159,6 +201,56 @@
         "title": "По категории",
         "category": "BPMSoft",
         "toggled": "bpmsoftPlainOutlineSortCategory"
+      },
+      {
+        "command": "bpmsoftFormatting.focus",
+        "title": "Focus on Formatting View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftPackageSettings.focus",
+        "title": "Focus on Package Settings View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftDevMode.focus",
+        "title": "Focus on Dev Mode View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftEnvConfig.focus",
+        "title": "Focus on Config Files View",
+        "category": "BPMSoft Settings"
+      },
+      {
+        "command": "bpmsoftViewModelOutline.focus",
+        "title": "Focus on ViewModel Outline View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftPlainOutline.focus",
+        "title": "Focus on Outline View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftSchemaHistory.focus",
+        "title": "Focus on Timeline View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftOpenSchemas.focus",
+        "title": "Focus on Open Schemas View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftPackages.focus",
+        "title": "Focus on Packages View",
+        "category": "BPMSoft Explorer"
+      },
+      {
+        "command": "bpmsoftNamingIssues.focus",
+        "title": "Focus on Naming Issues View",
+        "category": "BPMSoft Explorer"
       }
     ],
     "submenus": [
@@ -188,6 +280,48 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "bpmsoftFormatting.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftPackageSettings.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftDevMode.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftEnvConfig.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftViewModelOutline.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftPlainOutline.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftSchemaHistory.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftOpenSchemas.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftPackages.focus",
+          "when": "false"
+        },
+        {
+          "command": "bpmsoftNamingIssues.focus",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "bpmsoft.schemaHistory.pin",
@@ -228,6 +362,56 @@
           "command": "bpmsoft.rebuildIndex",
           "when": "view == bpmsoftPackageSettings",
           "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.namingIssues.refresh",
+          "when": "view == bpmsoftPackageSettings",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bpmsoft.packageSettings.showHelp",
+          "when": "view == bpmsoftPackageSettings",
+          "group": "navigation@3"
+        },
+        {
+          "command": "bpmsoft.formatting.showHelp",
+          "when": "view == bpmsoftFormatting",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.rebuildIndex",
+          "when": "view == bpmsoftPackages",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.namingIssues.refresh",
+          "when": "view == bpmsoftPackages",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bpmsoft.namingIssues.refresh",
+          "when": "view == bpmsoftNamingIssues",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.envConfig.refresh",
+          "when": "view == bpmsoftEnvConfig",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.envConfig.showHelp",
+          "when": "view == bpmsoftEnvConfig",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bpmsoft.devMode.refresh",
+          "when": "view == bpmsoftDevMode",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bpmsoft.devMode.showHelp",
+          "when": "view == bpmsoftDevMode",
+          "group": "navigation@2"
         }
       ],
       "bpmsoft.viewModelOutline.actionsMenu": [
@@ -354,6 +538,11 @@
           "type": "boolean",
           "default": true,
           "description": "Disable JS word/name history suggestions in workspace so indexed BPMSoft completions rank first"
+        },
+        "bpmsoft.enumInlayHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline hints decoding coded numeric fields (dataValueType, itemType, contentType, comparisonType, business-rule ruleType/property) to their BPMSoft.* constant, and a short description at each rules/businessRules rule"
         },
         "bpmsoft.styleDiagnostics": {
           "type": "boolean",
@@ -536,6 +725,14 @@
         {
           "id": "bpmsoftPackageSettings",
           "name": "Package Settings"
+        },
+        {
+          "id": "bpmsoftDevMode",
+          "name": "Dev Mode"
+        },
+        {
+          "id": "bpmsoftEnvConfig",
+          "name": "Config Files"
         }
       ],
       "bpmsoftExplorer": [
