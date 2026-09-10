@@ -26,8 +26,8 @@ export function findResourceDirs(schemaPath: string, schemaName: string): string
 		.map((e) => path.join(resourcesRoot, e.name));
 }
 
-/** Reverse of `findResourceDirs`: given a `Resources/{SchemaName}.{Suffix}/
- * resource.{culture}.xml` path, resolves back to that schema's own
+/** Reverse of `findResourceDirs`: given any file inside
+ * `Resources/{SchemaName}.{Suffix}/`, resolves back to that schema's own
  * `Schemas/{SchemaName}/descriptor.json` — used so a resource-file edit
  * (which several naming checks read, e.g. a missing RU/EN Title, or a
  * Process element's own caption) can re-trigger the naming check for the
@@ -40,7 +40,7 @@ export function findResourceDirs(schemaPath: string, schemaName: string): string
  * `Resources/` at all, or no matching schema/descriptor exists on disk. */
 export function findOwningSchemaDescriptor(resourceFilePath: string): string | undefined {
 	const info = parsePkgPath(resourceFilePath);
-	if (info?.category !== "Resources" || !info.itemName || !info.rest || !/^resource\.[^/]+\.xml$/i.test(info.rest)) {
+	if (info?.category !== "Resources" || !info.itemName || !info.rest) {
 		return undefined;
 	}
 	const resourceFolderName = info.itemName;
@@ -69,14 +69,13 @@ export function findSchemaDir(filePath: string): { schemaDir: string; schemaName
 	return { schemaDir: match[1].replace(/\//g, path.sep), schemaName: match[2] };
 }
 
-/** `findSchemaDir`, extended to also resolve a `Resources/{SchemaName}.
- * {Suffix}/resource.{culture}.xml` file back to its owning schema (via
- * `findOwningSchemaDescriptor`) — the localization wizards' own entry
- * points (editor title-bar button, editor context menu, hover links) need
- * to work from a resource XML file open in the editor just as well as from
- * the schema's own `.js`/`.cs`, and `findSchemaDir` alone only covers the
- * `Schemas/{Name}/` half of that (a resource file physically lives in a
- * sibling `Resources/` folder, not under `Schemas/` at all). */
+/** `findSchemaDir`, extended to also resolve any file under
+ * `Resources/{SchemaName}.{Suffix}/` back to its owning schema (via
+ * `findOwningSchemaDescriptor`) — entry points (editor title-bar button,
+ * context menu, hover links) need to work from a resource file open in the
+ * editor just as well as from the schema's own `.js`/`.cs`, and
+ * `findSchemaDir` alone only covers the `Schemas/{Name}/` half (resource
+ * files live in a sibling `Resources/` folder, not under `Schemas/`). */
 export function findSchemaDirForAnyPath(filePath: string): { schemaDir: string; schemaName: string } | undefined {
 	const direct = findSchemaDir(filePath);
 	if (direct) {

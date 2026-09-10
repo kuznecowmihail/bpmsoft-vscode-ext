@@ -11,11 +11,11 @@ import { pMap } from "./concurrency";
  * when nothing had changed since the last run. This mirrors
  * `ownedSchemaCache.ts`'s per-item granularity (editing one schema must not
  * invalidate the cached result of every other one) but keys freshness on
- * each dependency file's own `(size, mtimeMs)` — via `fs.stat`, not a
- * `ModifiedOnUtc` JSON field — because two of the four categories cached
- * here (`SqlScripts/`, `Data/`) have no equivalent of `extension.ts`'s
- * `touchSchemaModifiedOnUtc` keeping such a field current, and a plain file
- * stamp works uniformly across all four without needing one.
+ * each dependency file's own `(size, mtimeMs)` — via `fs.stat`, not the
+ * `ModifiedOnUtc` JSON field that `extension.ts`'s `touchSchemaModifiedOnUtc`
+ * maintains in schema descriptors — because a plain file stamp works
+ * uniformly across all four categories (schema descriptors, .cs, SqlScripts,
+ * Data) without routing through that JSON field.
  */
 
 export interface FileStamp {
