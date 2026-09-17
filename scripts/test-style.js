@@ -530,6 +530,88 @@ define("X", [], function () {
 `,
 		expect: [],
 		notExpect: ["selectAllColumnsHint"]
+	},
+
+	// --- diff GUID name: only operation insert ---
+	{
+		name: "js: diff insert with GUID name flagged as diffGuidName",
+		lang: "js",
+		source: `
+define("X", [], function () {
+	return {
+		methods: {},
+		diff: [
+			{ operation: "insert", name: "GeneralInfo9db678f5-1234-5678-9abc-def012345678" }
+		]
+	};
+});
+`,
+		expect: ["diffGuidName"],
+		notExpect: []
+	},
+	{
+		name: "js: diff merge with GUID name is not flagged as diffGuidName",
+		lang: "js",
+		source: `
+define("X", [], function () {
+	return {
+		methods: {},
+		diff: [
+			{ operation: "merge", name: "GeneralInfo9db678f5-1234-5678-9abc-def012345678" }
+		]
+	};
+});
+`,
+		expect: [],
+		notExpect: ["diffGuidName"]
+	},
+	{
+		name: "js: diff move with GUID name is not flagged as diffGuidName",
+		lang: "js",
+		source: `
+define("X", [], function () {
+	return {
+		methods: {},
+		diff: [
+			{ operation: "move", name: "GeneralInfo9db678f5-1234-5678-9abc-def012345678" }
+		]
+	};
+});
+`,
+		expect: [],
+		notExpect: ["diffGuidName"]
+	},
+	{
+		name: "js: diff remove with GUID name is not flagged as diffGuidName",
+		lang: "js",
+		source: `
+define("X", [], function () {
+	return {
+		methods: {},
+		diff: [
+			{ operation: "remove", name: "GeneralInfo9db678f5-1234-5678-9abc-def012345678" }
+		]
+	};
+});
+`,
+		expect: [],
+		notExpect: ["diffGuidName"]
+	},
+	{
+		name: "js: diff insert with non-GUID name is clean",
+		lang: "js",
+		source: `
+define("X", [], function () {
+	return {
+		methods: {},
+		diff: [
+			{ operation: "insert", name: "GeneralInfo" }
+		]
+	};
+});
+`,
+		expect: [],
+		notExpect: ["diffGuidName"]
 	}
 ];
 
